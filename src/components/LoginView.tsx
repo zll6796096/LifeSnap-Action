@@ -121,7 +121,7 @@ export default function LoginView({ onLogin }: LoginViewProps) {
       </div>
 
       {/* Google Sign-In Button */}
-      <div className="w-full mb-6 px-4 flex justify-center min-h-[48px]">
+      <div className="w-full mb-4 px-4 flex flex-col items-center justify-center min-h-[48px]">
         {loading ? (
           <div className="flex items-center gap-2 text-secondary">
             <div className="w-5 h-5 border-2 border-primary/30 border-t-primary rounded-full animate-spin"></div>
@@ -134,7 +134,38 @@ export default function LoginView({ onLogin }: LoginViewProps) {
             <span className="font-label-sm text-secondary">GOOGLE_CLIENT_ID が未設定です。</span>
           </p>
         ) : (
-          <div ref={googleBtnRef}></div>
+          <div ref={googleBtnRef} className="flex justify-center w-full"></div>
+        )}
+      </div>
+
+      {/* Fallback Demo Button */}
+      <div className="w-full mb-6 px-4 flex flex-col items-center">
+        {!loading && (
+          <>
+            <div className="w-full flex items-center justify-center gap-2 my-2 text-secondary/40 font-label-sm">
+              <div className="h-[1px] bg-outline-variant/30 flex-1"></div>
+              <span>または</span>
+              <div className="h-[1px] bg-outline-variant/30 flex-1"></div>
+            </div>
+            
+            <button
+              onClick={() => {
+                onLogin({
+                  googleId: "demo-user",
+                  name: "ゲストユーザー",
+                  email: "guest@example.com",
+                  avatar: "https://ui-avatars.com/api/?name=G&background=707070&color=fff&size=128&bold=true",
+                  calendarLinked: false
+                });
+              }}
+              className="w-full py-3 px-6 bg-surface border border-outline rounded-full shadow-sm hover:bg-surface-container-low transition-colors duration-200 font-body-md font-medium text-secondary cursor-pointer"
+            >
+              デモモードで試す (Googleログインをスキップ)
+            </button>
+            <p className="font-label-xs text-secondary/60 mt-2 max-w-[280px] text-center leading-relaxed">
+              ※LINEやWeChatなどのアプリ内ブラウザでは、Googleのセキュリティ方針によりGoogleログインボタンが表示されない、または機能しない場合があります。
+            </p>
+          </>
         )}
       </div>
 
