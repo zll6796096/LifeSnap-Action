@@ -7,7 +7,7 @@ import { createServer as createViteServer } from "vite";
 dotenv.config();
 
 const app = express();
-const PORT = 3000;
+const PORT = parseInt(process.env.PORT || "8080", 10);
 
 // Increase payload size limit to handle large base64 images
 app.use(express.json({ limit: "20mb" }));
@@ -19,6 +19,51 @@ const ai = new GoogleGenAI({
     headers: {
       'User-Agent': 'aistudio-build',
     }
+  }
+});
+
+// API Route: Get frontend config (Google Client ID)
+app.get("/api/config", (req, res) => {
+  res.json({
+    googleClientId: process.env.GOOGLE_CLIENT_ID || "",
+  });
+});
+
+// API Route: Verify Google ID Token
+app.post("/api/auth/google", async (req, res): Promise<any> => {
+  try {
+    const { credential } = req.body;
+    if (!credential) {
+      return res.status(400).json({ error: "credential is required" });
+    }
+
+    // Verify the ID token with Google's tokeninfo endpoint
+    const tokenRes = await fetch(
+      `https://oauth2.googleapis.com/tokeninfo?id_token=${credential}`
+    );
+
+    if (!tokenRes.ok) {
+      return res.status(401).json({ error: "Invalid token" });
+    }
+
+    const tokenInfo = await tokenRes.json() as any;
+
+    // Verify the audience matches our client ID
+    const expectedClientId = process.env.GOOGLE_CLIENT_ID;
+    if (expectedClientId && tokenInfo.aud !== expectedClientId) {
+      return res.status(401).json({ error: "Token audience mismatch" });
+    }
+
+    res.json({
+      googleId: tokenInfo.sub,
+      name: tokenInfo.name || tokenInfo.email?.split("@")[0] || "User",
+      email: tokenInfo.email,
+      avatar: tokenInfo.picture || `https://ui-avatars.com/api/?name=${encodeURIComponent(tokenInfo.name || "U")}&background=4285F4&color=fff&size=128&bold=true`,
+      calendarLinked: false,
+    });
+  } catch (error: any) {
+    console.error("Auth error:", error);
+    res.status(500).json({ error: "認証中にエラーが発生しました。" });
   }
 });
 

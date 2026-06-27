@@ -1,14 +1,16 @@
 import React, { useState, useRef, useEffect } from "react";
 import { Camera, Image as ImageIcon, AlertCircle, Sparkles, User } from "lucide-react";
+import { UserProfile } from "../types";
 import { motion } from "motion/react";
 
 interface ScanViewProps {
+  user: UserProfile | null;
   onAnalyzeBase64: (base64: string, mimeType: string) => void;
   onOpenAccount: () => void;
   key?: string;
 }
 
-export default function ScanView({ onAnalyzeBase64, onOpenAccount }: ScanViewProps) {
+export default function ScanView({ user, onAnalyzeBase64, onOpenAccount }: ScanViewProps) {
   const [cameraActive, setCameraActive] = useState(false);
   const [cameraError, setCameraError] = useState("");
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -100,7 +102,11 @@ export default function ScanView({ onAnalyzeBase64, onOpenAccount }: ScanViewPro
           className="w-10 h-10 rounded-full bg-surface-container-highest overflow-hidden border border-outline-variant hover:bg-surface-container-high transition-colors flex items-center justify-center cursor-pointer"
           aria-label="アカウント設定"
         >
-          <User className="w-5 h-5 text-on-surface-variant" />
+          {user?.avatar ? (
+            <img src={user.avatar} alt={user.name} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+          ) : (
+            <User className="w-5 h-5 text-on-surface-variant" />
+          )}
         </button>
       </header>
 

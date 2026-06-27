@@ -20,6 +20,7 @@ export type ScreenType =
   | "ACCOUNT";
 
 export interface UserProfile {
+  googleId: string;
   name: string;
   email: string;
   avatar: string;

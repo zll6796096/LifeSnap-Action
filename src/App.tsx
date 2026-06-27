@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { ScreenType, EventDetails, UserProfile } from "./types";
 import LoginView from "./components/LoginView";
 import ScanView from "./components/ScanView";
@@ -10,27 +10,33 @@ import ErrorView from "./components/ErrorView";
 import AccountSettings from "./components/AccountSettings";
 import { AnimatePresence } from "motion/react";
 
-const INITIAL_USER: UserProfile = {
-  name: "zll6796096",
-  email: "zll6796096@gmail.com",
-  avatar: "https://ui-avatars.com/api/?name=Z&background=4285F4&color=fff&size=128&bold=true",
-  calendarLinked: true,
-};
+const SESSION_KEY = "lifesnap_user";
+
+function loadSavedUser(): UserProfile | null {
+  try {
+    const saved = sessionStorage.getItem(SESSION_KEY);
+    if (saved) return JSON.parse(saved);
+  } catch {}
+  return null;
+}
 
 export default function App() {
-  const [currentScreen, setCurrentScreen] = useState<ScreenType>("SCAN");
-  const [user, setUser] = useState<UserProfile | null>(INITIAL_USER);
+  const savedUser = loadSavedUser();
+  const [currentScreen, setCurrentScreen] = useState<ScreenType>(savedUser ? "SCAN" : "LOGIN");
+  const [user, setUser] = useState<UserProfile | null>(savedUser);
   const [analyzingProgress, setAnalyzingProgress] = useState(0);
   const [currentEvent, setCurrentEvent] = useState<EventDetails | null>(null);
   const [errorDetails, setErrorDetails] = useState<string>("");
 
-  const handleLogin = () => {
-    setUser(INITIAL_USER);
+  const handleLogin = (profile: UserProfile) => {
+    setUser(profile);
+    sessionStorage.setItem(SESSION_KEY, JSON.stringify(profile));
     setCurrentScreen("SCAN");
   };
 
   const handleLogout = () => {
     setUser(null);
+    sessionStorage.removeItem(SESSION_KEY);
     setCurrentScreen("LOGIN");
   };
 
@@ -110,6 +116,7 @@ export default function App() {
             {currentScreen === "SCAN" && (
               <ScanView
                 key="scan"
+                user={user}
                 onAnalyzeBase64={handleAnalyzeBase64}
                 onOpenAccount={() => setCurrentScreen("ACCOUNT")}
               />
