@@ -1,0 +1,6 @@
+{
+  "name": "LifeSnap Action",
+  "description": "紙のお知らせ、請求書、予約通知などをスキャンし、AIが自動で内容を解析してGoogleカレンダーへ簡単に登録できるアプリ",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
