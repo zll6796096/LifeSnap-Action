@@ -10,7 +10,7 @@ interface ReviewCardProps {
   onBack: () => void;
   isCreating: boolean;
   needsCalendarAuth: boolean;
-  onCalendarLinked: (accessToken: string) => void;
+  onCalendarLinked: () => void;
   key?: string;
 }
 
@@ -66,8 +66,7 @@ export default function ReviewCard({
 
             if (!tokenRes.ok) throw new Error("Token exchange failed");
 
-            const { accessToken } = await tokenRes.json();
-            onCalendarLinked(accessToken);
+            onCalendarLinked();
             // After linking, proceed to create
             // Small delay to ensure state is updated
             setTimeout(() => onConfirm(), 100);
@@ -252,32 +251,46 @@ export default function ReviewCard({
 
           {/* Action Buttons */}
           <div className="flex flex-col gap-2 mt-4 w-full">
-            <button
-              onClick={handleConfirmClick}
-              disabled={isCreating}
-              className="bg-primary text-on-primary font-label-md rounded-xl py-4 w-full flex justify-center items-center gap-2 hover:opacity-90 transition-opacity cursor-pointer shadow-sm disabled:opacity-60 disabled:cursor-not-allowed"
-            >
-              {isCreating ? (
-                <>
-                  <Loader2 className="w-5 h-5 animate-spin" />
-                  作成中...
-                </>
-              ) : needsCalendarAuth ? (
-                <>
-                  <Calendar className="w-5 h-5" />
-                  カレンダーを認証して追加
-                </>
-              ) : (
-                <>
-                  <Calendar className="w-5 h-5" />
-                  カレンダーに追加
-                </>
-              )}
-            </button>
+            {extraction.route === "needs_review" ? (
+              <button
+                disabled={true}
+                className="bg-secondary/20 text-secondary font-label-md rounded-xl py-4 w-full flex justify-center items-center gap-2 cursor-not-allowed shadow-sm border border-outline-variant/30"
+              >
+                <AlertTriangle className="w-5 h-5 text-amber-600" />
+                確認が必要です（修正してください）
+              </button>
+            ) : (
+              <button
+                onClick={handleConfirmClick}
+                disabled={isCreating}
+                className="bg-primary text-on-primary font-label-md rounded-xl py-4 w-full flex justify-center items-center gap-2 hover:opacity-90 transition-opacity cursor-pointer shadow-sm disabled:opacity-60 disabled:cursor-not-allowed"
+              >
+                {isCreating ? (
+                  <>
+                    <Loader2 className="w-5 h-5 animate-spin" />
+                    作成中...
+                  </>
+                ) : needsCalendarAuth ? (
+                  <>
+                    <Calendar className="w-5 h-5" />
+                    カレンダーを認証して追加
+                  </>
+                ) : (
+                  <>
+                    <Calendar className="w-5 h-5" />
+                    カレンダーに追加
+                  </>
+                )}
+              </button>
+            )}
             <button
               onClick={onEdit}
               disabled={isCreating}
-              className="bg-transparent border border-outline-variant text-on-surface font-label-md rounded-xl py-4 w-full flex justify-center items-center gap-2 hover:bg-surface-container transition-colors cursor-pointer disabled:opacity-60"
+              className={`font-label-md rounded-xl py-4 w-full flex justify-center items-center gap-2 transition-colors cursor-pointer disabled:opacity-60 ${
+                extraction.route === "needs_review"
+                  ? "bg-primary text-on-primary hover:opacity-90 shadow-sm"
+                  : "bg-transparent border border-outline-variant text-on-surface hover:bg-surface-container"
+              }`}
             >
               <Edit3 className="w-4 h-4" />
               修正する

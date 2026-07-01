@@ -166,6 +166,36 @@ export function normalizeJapaneseEraDate(text: string): string {
 
   let normalized = text.trim();
 
+  // 1. Convert full-width characters to half-width
+  normalized = normalized.replace(/[！-～]/g, (s) => String.fromCharCode(s.charCodeAt(0) - 0xfee0));
+  normalized = normalized.replace(/　/g, " ");
+
+  // 2. Remove weekday suffixes like (水), （水）, (水曜日) etc.
+  normalized = normalized.replace(/[([（][日月火水木金土](?:曜日)?[\)\]）]/g, "");
+
+  // 3. Normalize 午前/午後 and Japanese time representations (X時Y分, X時)
+  // E.g. 午後2時 -> 14:00, 午前9時30分 -> 09:30
+  // Convert 午後X to X+12
+  normalized = normalized.replace(/午後\s*(\d+)/g, (_, h) => {
+    const hour = parseInt(h, 10);
+    return hour === 12 ? "12" : String(hour + 12);
+  });
+  // Convert 午前X to X (or 00 if 12)
+  normalized = normalized.replace(/午前\s*(\d+)/g, (_, h) => {
+    const hour = parseInt(h, 10);
+    return hour === 12 ? "00" : String(hour);
+  });
+
+  // Convert X時Y分 to X:Y
+  normalized = normalized.replace(/(\d+)\s*時\s*(\d+)\s*分?/g, (_, h, m) => {
+    return `${String(parseInt(h, 10)).padStart(2, "0")}:${String(parseInt(m, 10)).padStart(2, "0")}`;
+  });
+
+  // Convert X時 to X:00
+  normalized = normalized.replace(/(\d+)\s*時/g, (_, h) => {
+    return `${String(parseInt(h, 10)).padStart(2, "0")}:00`;
+  });
+
   // Helper regexes for Japanese Era conversion
   // Matches "令和8年7月15日", "令和元年10月1日", "令8/7/15", "R8.7.15", "R8/7/15" etc.
   const reiwaRegex = /^(?:令和|令|[Rr])[.\s]?(?:元|\d+)\s*年?\s*[-/./年]\s*(\d+)\s*月?\s*[-/./月]\s*(\d+)\s*日?/i;

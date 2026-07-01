@@ -252,4 +252,67 @@ describe("buildCalendarEventPayload", () => {
     expect(payload.start.dateTime).toBe("2026-07-20T14:00:30");
     expect(payload.end.dateTime).toBe("2026-07-20T15:00:45");
   });
+
+  // ── Duplicate Event Hash ─────────────────────────────────────
+
+  it("includes issuer, amount, task_type, and end time in duplicate hash", () => {
+    const extraction1 = makeExtraction({
+      issuer: "Issuer A",
+      amount: 1000,
+      task_type: "event",
+      end_datetime: "2026-07-20T15:00",
+    });
+
+    const extraction2 = makeExtraction({
+      issuer: "Issuer B", // different issuer
+      amount: 1000,
+      task_type: "event",
+      end_datetime: "2026-07-20T15:00",
+    });
+
+    const extraction3 = makeExtraction({
+      issuer: "Issuer A",
+      amount: 2000, // different amount
+      task_type: "event",
+      end_datetime: "2026-07-20T15:00",
+    });
+
+    const extraction4 = makeExtraction({
+      issuer: "Issuer A",
+      amount: 1000,
+      task_type: "payment_deadline", // different task_type
+      end_datetime: "2026-07-20T15:00",
+    });
+
+    const extraction5 = makeExtraction({
+      issuer: "Issuer A",
+      amount: 1000,
+      task_type: "event",
+      end_datetime: "2026-07-20T16:00", // different end_datetime
+      calendar_event: {
+        title: "テストイベント",
+        start: "2026-07-20T14:00",
+        end: "2026-07-20T16:00",
+        description: "",
+        location: "",
+      },
+    });
+
+    const hash1 = buildCalendarEventPayload(extraction1).extendedProperties?.private?.lifesnap_draft_hash;
+    const hash2 = buildCalendarEventPayload(extraction2).extendedProperties?.private?.lifesnap_draft_hash;
+    const hash3 = buildCalendarEventPayload(extraction3).extendedProperties?.private?.lifesnap_draft_hash;
+    const hash4 = buildCalendarEventPayload(extraction4).extendedProperties?.private?.lifesnap_draft_hash;
+    const hash5 = buildCalendarEventPayload(extraction5).extendedProperties?.private?.lifesnap_draft_hash;
+
+    expect(hash1).toBeDefined();
+    expect(hash2).toBeDefined();
+    expect(hash3).toBeDefined();
+    expect(hash4).toBeDefined();
+    expect(hash5).toBeDefined();
+
+    expect(hash1).not.toBe(hash2);
+    expect(hash1).not.toBe(hash3);
+    expect(hash1).not.toBe(hash4);
+    expect(hash1).not.toBe(hash5);
+  });
 });

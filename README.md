@@ -51,11 +51,15 @@ Scan paper documents (school notices, invoices, appointment confirmations) with 
    cp .env.example .env
    ```
    Edit `.env` with your values:
-   ```
+   ```env
    GEMINI_API_KEY=your-gemini-api-key
    GOOGLE_CLIENT_ID=your-oauth-client-id
    GOOGLE_CLIENT_SECRET=your-oauth-client-secret
+   GEMINI_MODEL=gemini-2.5-flash
+   MOCK_MODE=false
    ```
+   *   `GEMINI_MODEL`: The specific Gemini model version to use for extraction.
+   *   `MOCK_MODE`: If set to `true`, the API returns mock data instead of calling the live Gemini API (useful for testing UI/UX).
 
 3. **Configure OAuth Client**
    - Go to [Google Cloud Console → Credentials](https://console.cloud.google.com/apis/credentials)
@@ -83,7 +87,7 @@ Scan paper documents (school notices, invoices, appointment confirmations) with 
 
 ### POST `/api/extract`
 
-Accepts an image (base64 or URL) and returns structured extraction:
+Accepts a base64 encoded image and returns structured extraction:
 
 ```json
 {

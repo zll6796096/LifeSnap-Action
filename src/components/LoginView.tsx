@@ -22,7 +22,7 @@ declare global {
 
 interface LoginViewProps {
   onLogin: (user: UserProfile) => void;
-  onCalendarLinked: (accessToken: string) => void;
+  onCalendarLinked: () => void;
   key?: string;
 }
 
@@ -133,12 +133,10 @@ export default function LoginView({ onLogin, onCalendarLinked }: LoginViewProps)
             throw new Error("Token exchange failed");
           }
 
-          const { accessToken } = await tokenRes.json();
-
           // Update user with calendar access
-          const linkedUser = { ...userProfile, calendarLinked: true, calendarAccessToken: accessToken };
+          const linkedUser = { ...userProfile, calendarLinked: true };
           onLogin(linkedUser);
-          onCalendarLinked(accessToken);
+          onCalendarLinked();
         } catch (err: any) {
           console.error("Calendar auth error:", err);
           // Still log in without calendar

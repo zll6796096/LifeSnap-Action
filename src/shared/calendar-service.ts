@@ -25,9 +25,27 @@ export function generateEventHash(payload: {
   summary: string;
   location?: string;
   start: { dateTime?: string; date?: string };
+  end?: { dateTime?: string; date?: string };
+  issuer?: string;
+  amount?: number;
+  task_type?: string;
 }): string {
   const startVal = payload.start.dateTime || payload.start.date || "";
-  const data = `${payload.summary}|${startVal}|${payload.location || ""}`;
+  const endVal = payload.end?.dateTime || payload.end?.date || "";
+  const issuer = payload.issuer || "";
+  const amount = payload.amount || 0;
+  const taskType = payload.task_type || "";
+
+  const data = [
+    payload.summary,
+    startVal,
+    endVal,
+    payload.location || "",
+    issuer,
+    amount.toString(),
+    taskType,
+  ].join("|");
+
   return createHash("sha256").update(data).digest("hex");
 }
 
@@ -147,6 +165,10 @@ export function buildCalendarEventPayload(
     summary: title,
     location,
     start,
+    end,
+    issuer: extraction.issuer,
+    amount: extraction.amount,
+    task_type: extraction.task_type,
   });
 
   return {

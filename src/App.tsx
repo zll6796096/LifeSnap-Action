@@ -38,9 +38,9 @@ export default function App() {
     setCurrentScreen("SCAN");
   };
 
-  const handleCalendarLinked = (accessToken: string) => {
+  const handleCalendarLinked = () => {
     if (user) {
-      const updatedUser = { ...user, calendarLinked: true, calendarAccessToken: accessToken };
+      const updatedUser = { ...user, calendarLinked: true };
       setUser(updatedUser);
       sessionStorage.setItem(SESSION_KEY, JSON.stringify(updatedUser));
     }
@@ -118,7 +118,7 @@ export default function App() {
 
   // Create calendar event via API
   const handleConfirmEvent = async () => {
-    if (!currentExtraction || !user?.calendarAccessToken) return;
+    if (!currentExtraction || !user?.calendarLinked) return;
 
     setIsCreatingEvent(true);
     try {
@@ -127,7 +127,6 @@ export default function App() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           extraction: currentExtraction,
-          accessToken: user.calendarAccessToken,
         }),
       });
 
@@ -136,7 +135,7 @@ export default function App() {
 
         // If token expired, clear it and re-prompt
         if (response.status === 401) {
-          const updatedUser = { ...user, calendarLinked: false, calendarAccessToken: undefined };
+          const updatedUser = { ...user, calendarLinked: false };
           setUser(updatedUser);
           sessionStorage.setItem(SESSION_KEY, JSON.stringify(updatedUser));
           throw new Error("カレンダーの認証が期限切れです。再度認証してください。");
@@ -191,7 +190,7 @@ export default function App() {
                 onEdit={() => setCurrentScreen("EDIT")}
                 onBack={() => setCurrentScreen("SCAN")}
                 isCreating={isCreatingEvent}
-                needsCalendarAuth={!user?.calendarAccessToken}
+                needsCalendarAuth={!user?.calendarLinked}
                 onCalendarLinked={handleCalendarLinked}
               />
             )}

@@ -191,6 +191,24 @@ describe("GeminiExtractionSchema", () => {
     expect(normalizeJapaneseEraDate("H30.5.20")).toBe("2018-05-20");
     expect(normalizeJapaneseEraDate("平30/5/20 09:30")).toBe("2018-05-20T09:30");
 
+    // Full-width digits & characters
+    expect(normalizeJapaneseEraDate("令和８年７月１５日")).toBe("2026-07-15");
+    expect(normalizeJapaneseEraDate("Ｒ８／７／１５")).toBe("2026-07-15");
+
+    // Weekday suffixes
+    expect(normalizeJapaneseEraDate("令和8年7月15日(水)")).toBe("2026-07-15");
+    expect(normalizeJapaneseEraDate("令和8年7月15日（水曜日）")).toBe("2026-07-15");
+
+    // 14時00分
+    expect(normalizeJapaneseEraDate("令和8年7月15日 14時00分")).toBe("2026-07-15T14:00");
+    expect(normalizeJapaneseEraDate("令和8年7月15日 14時")).toBe("2026-07-15T14:00");
+
+    // 午前/午後
+    expect(normalizeJapaneseEraDate("令和8年7月15日 午後2時00分")).toBe("2026-07-15T14:00");
+    expect(normalizeJapaneseEraDate("令和8年7月15日 午前9時30分")).toBe("2026-07-15T09:30");
+    expect(normalizeJapaneseEraDate("令和8年7月15日 午後12時30分")).toBe("2026-07-15T12:30");
+    expect(normalizeJapaneseEraDate("令和8年7月15日 午前12時30分")).toBe("2026-07-15T00:30");
+
     // Standard dates unchanged
     expect(normalizeJapaneseEraDate("2026-07-15")).toBe("2026-07-15");
     expect(normalizeJapaneseEraDate("2026-07-15T14:00")).toBe("2026-07-15T14:00");

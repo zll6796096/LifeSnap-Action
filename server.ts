@@ -34,6 +34,18 @@ const ai = new GoogleGenAI({
   },
 });
 
+const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash";
+
+function parseCookies(cookieHeader?: string): Record<string, string> {
+  const list: Record<string, string> = {};
+  if (!cookieHeader) return list;
+  cookieHeader.split(";").forEach((cookie) => {
+    const parts = cookie.split("=");
+    list[parts.shift()!.trim()] = decodeURIComponent(parts.join("="));
+  });
+  return list;
+}
+
 // ─── Health Check ──────────────────────────────────────────────
 
 app.get("/healthz", (_req, res) => {
@@ -74,6 +86,9 @@ app.post("/api/auth/google", async (req, res): Promise<any> => {
       return res.status(401).json({ error: "Token audience mismatch" });
     }
 
+    const cookies = parseCookies(req.headers.cookie);
+    const hasCalendarToken = !!cookies["calendar_access_token"];
+
     res.json({
       googleId: tokenInfo.sub,
       name: tokenInfo.name || tokenInfo.email?.split("@")[0] || "User",
@@ -83,7 +98,7 @@ app.post("/api/auth/google", async (req, res): Promise<any> => {
         `https://ui-avatars.com/api/?name=${encodeURIComponent(
           tokenInfo.name || "U"
         )}&background=4285F4&color=fff&size=128&bold=true`,
-      calendarLinked: false,
+      calendarLinked: hasCalendarToken,
     });
   } catch (error: any) {
     console.error("Auth error:", error);
@@ -116,9 +131,15 @@ app.post("/api/auth/google/calendar", async (req, res): Promise<any> => {
       redirectUri || "postmessage"
     );
 
+    res.cookie("calendar_access_token", tokenData.access_token, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "lax",
+      maxAge: tokenData.expires_in * 1000,
+    });
+
     res.json({
-      accessToken: tokenData.access_token,
-      expiresIn: tokenData.expires_in,
+      calendarLinked: true,
     });
   } catch (error: any) {
     console.error("Calendar OAuth error:", error);
@@ -167,8 +188,14 @@ app.post("/api/extract", async (req, res): Promise<any> => {
     }
 
     if (!process.env.GEMINI_API_KEY) {
+      if (process.env.NODE_ENV === "production" || process.env.MOCK_MODE !== "true") {
+        return res.status(503).json({
+          error: "Service not configured: GEMINI_API_KEY is missing.",
+        });
+      }
+
       console.warn(
-        "GEMINI_API_KEY is not defined. Falling back to mock extraction."
+        "GEMINI_API_KEY is not defined. Falling back to mock extraction (MOCK_MODE=true in dev)."
       );
       // Fallback response for dev when API key is missing
       const mockResult = {
@@ -198,10 +225,10 @@ app.post("/api/extract", async (req, res): Promise<any> => {
       return res.json(validateGeminiExtraction(mockResult));
     }
 
-    console.log("Calling Gemini API for image analysis...");
+    console.log(`Calling Gemini API (${GEMINI_MODEL}) for image analysis...`);
 
     const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
+      model: GEMINI_MODEL,
       contents: [
         {
           inlineData: {
@@ -245,10 +272,13 @@ app.post("/api/extract", async (req, res): Promise<any> => {
 
 app.post("/api/create-calendar-event", async (req, res): Promise<any> => {
   try {
-    const { extraction, accessToken } = req.body;
+    const { extraction } = req.body;
+
+    const cookies = parseCookies(req.headers.cookie);
+    const accessToken = cookies["calendar_access_token"];
 
     if (!accessToken) {
-      return res.status(401).json({ error: "accessToken is required" });
+      return res.status(401).json({ error: "カレンダーの認証情報が見つかりません。再ログインしてください。" });
     }
 
     if (!extraction) {
@@ -278,6 +308,7 @@ app.post("/api/create-calendar-event", async (req, res): Promise<any> => {
         return res.json({
           eventId: existingEvent.eventId,
           htmlLink: existingEvent.htmlLink,
+          isDuplicate: true,
         });
       }
     }

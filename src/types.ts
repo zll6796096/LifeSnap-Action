@@ -20,7 +20,6 @@ export interface UserProfile {
   email: string;
   avatar: string;
   calendarLinked: boolean;
-  calendarAccessToken?: string;
 }
 
 export interface CalendarEventResult {
