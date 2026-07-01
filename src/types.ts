@@ -11,7 +11,8 @@ export type ScreenType =
   | "EDIT"
   | "SUCCESS"
   | "ERROR"
-  | "ACCOUNT";
+  | "ACCOUNT"
+  | "NO_ACTION";
 
 export interface UserProfile {
   googleId: string;

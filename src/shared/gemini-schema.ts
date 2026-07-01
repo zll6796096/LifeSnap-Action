@@ -159,8 +159,89 @@ export const GEMINI_EXTRACTION_PROMPT = `あなたは書類・画像から予定
 
 日本語で分かりやすく抽出してください。`;
 
+// ─── Japanese Era Date Normalizer ───────────────────────────────
+
+export function normalizeJapaneseEraDate(text: string): string {
+  if (!text) return text;
+
+  let normalized = text.trim();
+
+  // Helper regexes for Japanese Era conversion
+  // Matches "令和8年7月15日", "令和元年10月1日", "令8/7/15", "R8.7.15", "R8/7/15" etc.
+  const reiwaRegex = /^(?:令和|令|[Rr])[.\s]?(?:元|\d+)\s*年?\s*[-/./年]\s*(\d+)\s*月?\s*[-/./月]\s*(\d+)\s*日?/i;
+  const heiseiRegex = /^(?:平成|平|[Hh])[.\s]?(?:元|\d+)\s*年?\s*[-/./年]\s*(\d+)\s*月?\s*[-/./月]\s*(\d+)\s*日?/i;
+
+  let datePart = normalized;
+  let timePart = "";
+
+  // Split by space, T, or look for times
+  const timeMatch = normalized.match(/(?:\s+|T)(\d{2}:\d{2}(?::\d{2})?)$/);
+  if (timeMatch) {
+    timePart = timeMatch[1];
+    datePart = normalized.substring(0, timeMatch.index).trim();
+  }
+
+  let parsedDate = "";
+
+  const rMatch = datePart.match(reiwaRegex);
+  if (rMatch) {
+    const yearStr = datePart.match(/(?:令和|令|[Rr])[.\s]?(元|\d+)/i)?.[1];
+    const yearNum = yearStr === "元" ? 1 : parseInt(yearStr || "1", 10);
+    const year = 2018 + yearNum;
+    const month = String(parseInt(rMatch[1], 10)).padStart(2, "0");
+    const day = String(parseInt(rMatch[2], 10)).padStart(2, "0");
+    parsedDate = `${year}-${month}-${day}`;
+  } else {
+    const hMatch = datePart.match(heiseiRegex);
+    if (hMatch) {
+      const yearStr = datePart.match(/(?:平成|平|[Hh])[.\s]?(元|\d+)/i)?.[1];
+      const yearNum = yearStr === "元" ? 1 : parseInt(yearStr || "1", 10);
+      const year = 1988 + yearNum;
+      const month = String(parseInt(hMatch[1], 10)).padStart(2, "0");
+      const day = String(parseInt(hMatch[2], 10)).padStart(2, "0");
+      parsedDate = `${year}-${month}-${day}`;
+    }
+  }
+
+  if (parsedDate) {
+    return timePart ? `${parsedDate}T${timePart}` : parsedDate;
+  }
+
+  return normalized;
+}
+
+export function normalizeExtractionDates(raw: any): any {
+  if (!raw || typeof raw !== "object") return raw;
+
+  const result = { ...raw };
+
+  if (result.start_datetime) {
+    result.start_datetime = normalizeJapaneseEraDate(result.start_datetime);
+  }
+  if (result.end_datetime) {
+    result.end_datetime = normalizeJapaneseEraDate(result.end_datetime);
+  }
+  if (result.due_date) {
+    result.due_date = normalizeJapaneseEraDate(result.due_date);
+  }
+
+  if (result.calendar_event && typeof result.calendar_event === "object") {
+    result.calendar_event = { ...result.calendar_event };
+    if (result.calendar_event.start) {
+      result.calendar_event.start = normalizeJapaneseEraDate(result.calendar_event.start);
+    }
+    if (result.calendar_event.end) {
+      result.calendar_event.end = normalizeJapaneseEraDate(result.calendar_event.end);
+    }
+  }
+
+  return result;
+}
+
 // ─── Validation Helper ─────────────────────────────────────────
 
 export function validateGeminiExtraction(raw: unknown): GeminiExtraction {
-  return GeminiExtractionSchema.parse(raw);
+  const normalized = normalizeExtractionDates(raw);
+  return GeminiExtractionSchema.parse(normalized);
 }
+

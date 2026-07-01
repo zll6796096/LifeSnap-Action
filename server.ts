@@ -12,6 +12,7 @@ import {
   buildCalendarEventPayload,
   createCalendarEvent,
   exchangeCodeForToken,
+  checkForDuplicateEvent,
 } from "./src/shared/calendar-service";
 import { GeminiExtractionSchema } from "./src/shared/gemini-schema";
 
@@ -129,55 +130,39 @@ app.post("/api/auth/google/calendar", async (req, res): Promise<any> => {
 
 app.post("/api/extract", async (req, res): Promise<any> => {
   try {
-    const { image, mimeType, imageUrl } = req.body;
-    let base64Data = "";
-    let finalMimeType = mimeType || "image/jpeg";
-
-    if (imageUrl) {
-      console.log(`Fetching image from URL: ${imageUrl}`);
-      try {
-        const response = await fetch(imageUrl);
-        if (!response.ok) {
-          throw new Error(
-            `Failed to fetch image from URL. Status: ${response.status}`
-          );
-        }
-        const arrayBuffer = await response.arrayBuffer();
-        base64Data = Buffer.from(arrayBuffer).toString("base64");
-
-        // Try to guess mime type from content-type header or URL extension
-        const contentType = response.headers.get("content-type");
-        if (contentType && contentType.startsWith("image/")) {
-          finalMimeType = contentType;
-        } else if (imageUrl.toLowerCase().endsWith(".png")) {
-          finalMimeType = "image/png";
-        } else if (imageUrl.toLowerCase().endsWith(".webp")) {
-          finalMimeType = "image/webp";
-        } else if (imageUrl.toLowerCase().endsWith(".gif")) {
-          finalMimeType = "image/gif";
-        } else {
-          finalMimeType = "image/jpeg";
-        }
-      } catch (err: any) {
-        console.error("Error fetching hotlinked image:", err);
-        return res.status(400).json({
-          error:
-            "画像の取得に失敗しました。URLが正しいか、またはホットリンク（外部からのアクセス）が許可されているか確認してください。",
-          details: err.message,
-        });
-      }
-    } else if (image) {
-      // Direct base64 input — strip out base64 header if present
-      const match = image.match(/^data:(image\/\w+);base64,(.+)$/);
-      if (match) {
-        finalMimeType = match[1];
-        base64Data = match[2];
-      } else {
-        base64Data = image;
-      }
-    } else {
+    const { image, mimeType } = req.body;
+    
+    if (!image) {
       return res.status(400).json({
-        error: "画像データ、または画像URL（imageUrl）を指定してください。",
+        error: "画像データ（image）を指定してください。",
+      });
+    }
+
+    let finalMimeType = mimeType || "image/jpeg";
+    let base64Data = "";
+
+    // Direct base64 input — strip out base64 header if present
+    const match = image.match(/^data:(image\/\w+);base64,(.+)$/);
+    if (match) {
+      finalMimeType = match[1];
+      base64Data = match[2];
+    } else {
+      base64Data = image;
+    }
+
+    // MIME type validation (SSRF / Format restriction)
+    const allowedMimes = ["image/jpeg", "image/png", "image/webp", "image/jpg"];
+    if (!allowedMimes.includes(finalMimeType.toLowerCase())) {
+      return res.status(400).json({
+        error: "許可されていない画像形式です。JPEG、PNG、WebP画像のみアップロード可能です。",
+      });
+    }
+
+    // Size validation (Max 10MB)
+    const approximateSizeBytes = (base64Data.length * 3) / 4;
+    if (approximateSizeBytes > 10 * 1024 * 1024) {
+      return res.status(400).json({
+        error: "画像サイズが大きすぎます。10MB以下の画像をアップロードしてください。",
       });
     }
 
@@ -281,6 +266,21 @@ app.post("/api/create-calendar-event", async (req, res): Promise<any> => {
 
     // Build Calendar API payload
     const payload = buildCalendarEventPayload(validatedExtraction);
+
+    // Check for duplicate event using the hash
+    if (payload.extendedProperties?.private?.lifesnap_draft_hash) {
+      const existingEvent = await checkForDuplicateEvent(
+        accessToken,
+        payload.extendedProperties.private.lifesnap_draft_hash
+      );
+      if (existingEvent) {
+        console.log("Duplicate event found, returning existing event details:", existingEvent.eventId);
+        return res.json({
+          eventId: existingEvent.eventId,
+          htmlLink: existingEvent.htmlLink,
+        });
+      }
+    }
 
     // Create event via Calendar API
     const result = await createCalendarEvent(accessToken, payload);

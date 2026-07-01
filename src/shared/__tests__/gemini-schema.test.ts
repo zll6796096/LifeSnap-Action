@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   GeminiExtractionSchema,
   validateGeminiExtraction,
+  normalizeJapaneseEraDate,
 } from "../gemini-schema";
 
 describe("GeminiExtractionSchema", () => {
@@ -171,5 +172,46 @@ describe("GeminiExtractionSchema", () => {
     expect(result.confidence).toBe(0);
     expect(result.risk_flags).toEqual([]);
     expect(result.evidence).toBe("");
+  });
+
+  // ── Japanese Era Normalization ────────────────────────────────
+
+  it("normalizes Japanese era dates correctly", () => {
+
+    // Reiwa
+    expect(normalizeJapaneseEraDate("令和8年7月15日")).toBe("2026-07-15");
+    expect(normalizeJapaneseEraDate("令和元年10月1日")).toBe("2019-10-01");
+    expect(normalizeJapaneseEraDate("令8/7/15")).toBe("2026-07-15");
+    expect(normalizeJapaneseEraDate("R8.7.15")).toBe("2026-07-15");
+    expect(normalizeJapaneseEraDate("R8/7/15 14:00")).toBe("2026-07-15T14:00");
+
+    // Heisei
+    expect(normalizeJapaneseEraDate("平成30年5月20日")).toBe("2018-05-20");
+    expect(normalizeJapaneseEraDate("平成元年1月1日")).toBe("1989-01-01");
+    expect(normalizeJapaneseEraDate("H30.5.20")).toBe("2018-05-20");
+    expect(normalizeJapaneseEraDate("平30/5/20 09:30")).toBe("2018-05-20T09:30");
+
+    // Standard dates unchanged
+    expect(normalizeJapaneseEraDate("2026-07-15")).toBe("2026-07-15");
+    expect(normalizeJapaneseEraDate("2026-07-15T14:00")).toBe("2026-07-15T14:00");
+  });
+
+  it("normalizes era dates inside validateGeminiExtraction", () => {
+    const input = {
+      route: "calendar_action",
+      start_datetime: "令和8年7月15日 14:00",
+      end_datetime: "令和8年7月15日 15:30",
+      calendar_event: {
+        title: "保護者会",
+        start: "令和8年7月15日 14:00",
+        end: "令和8年7月15日 15:30",
+      },
+    };
+
+    const result = validateGeminiExtraction(input);
+    expect(result.start_datetime).toBe("2026-07-15T14:00");
+    expect(result.end_datetime).toBe("2026-07-15T15:30");
+    expect(result.calendar_event?.start).toBe("2026-07-15T14:00");
+    expect(result.calendar_event?.end).toBe("2026-07-15T15:30");
   });
 });

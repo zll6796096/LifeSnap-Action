@@ -8,6 +8,7 @@ import ReviewCard from "./components/ReviewCard";
 import EditForm from "./components/EditForm";
 import SuccessView from "./components/SuccessView";
 import ErrorView from "./components/ErrorView";
+import NoActionView from "./components/NoActionView";
 import AccountSettings from "./components/AccountSettings";
 import { AnimatePresence } from "motion/react";
 
@@ -74,8 +75,7 @@ export default function App() {
         setCurrentScreen("REVIEW");
       } else {
         // no_action_detected
-        setErrorDetails("この画像からはカレンダーに登録すべき予定が見つかりませんでした。");
-        setCurrentScreen("ERROR");
+        setCurrentScreen("NO_ACTION");
       }
     } catch (err: any) {
       console.error("Analysis failed:", err);
@@ -224,6 +224,20 @@ export default function App() {
                 errorMessage={errorDetails}
                 onScanAgain={() => setCurrentScreen("SCAN")}
                 onGoHome={() => setCurrentScreen("SCAN")}
+              />
+            )}
+
+            {currentScreen === "NO_ACTION" && (
+              <NoActionView
+                key="no_action"
+                onScanAgain={() => {
+                  setCurrentExtraction(null);
+                  setCurrentScreen("SCAN");
+                }}
+                onGoHome={() => {
+                  setCurrentExtraction(null);
+                  setCurrentScreen("SCAN");
+                }}
               />
             )}
 

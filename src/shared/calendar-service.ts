@@ -1,3 +1,4 @@
+import { createHash } from "crypto";
 import type { GeminiExtraction } from "./gemini-schema";
 
 // ─── Types ─────────────────────────────────────────────────────
@@ -8,12 +9,28 @@ export interface GoogleCalendarEventPayload {
   location?: string;
   start: { dateTime?: string; date?: string; timeZone?: string };
   end: { dateTime?: string; date?: string; timeZone?: string };
+  extendedProperties?: {
+    private: {
+      lifesnap_draft_hash: string;
+    };
+  };
 }
 
 export interface CalendarEventResult {
   eventId: string;
   htmlLink: string;
 }
+
+export function generateEventHash(payload: {
+  summary: string;
+  location?: string;
+  start: { dateTime?: string; date?: string };
+}): string {
+  const startVal = payload.start.dateTime || payload.start.date || "";
+  const data = `${payload.summary}|${startVal}|${payload.location || ""}`;
+  return createHash("sha256").update(data).digest("hex");
+}
+
 
 // ─── Date/Time Parsing ─────────────────────────────────────────
 
@@ -126,18 +143,58 @@ export function buildCalendarEventPayload(
     }
   }
 
+  const hash = generateEventHash({
+    summary: title,
+    location,
+    start,
+  });
+
   return {
     summary: title,
     description,
     location,
     start,
     end,
+    extendedProperties: {
+      private: {
+        lifesnap_draft_hash: hash,
+      },
+    },
   };
 }
 
 // ─── Calendar API Client ───────────────────────────────────────
 
 const CALENDAR_API_BASE = "https://www.googleapis.com/calendar/v3";
+
+export async function checkForDuplicateEvent(
+  accessToken: string,
+  hash: string
+): Promise<CalendarEventResult | null> {
+  const url = `${CALENDAR_API_BASE}/calendars/primary/events?privateExtendedProperty=lifesnap_draft_hash%3D${hash}`;
+  const response = await fetch(url, {
+    method: "GET",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+    },
+  });
+
+  if (!response.ok) {
+    console.warn("Failed to check for duplicate event:", await response.text());
+    return null;
+  }
+
+  const data = (await response.json()) as { items?: Array<{ id: string; htmlLink: string }> };
+  if (data.items && data.items.length > 0) {
+    return {
+      eventId: data.items[0].id,
+      htmlLink: data.items[0].htmlLink,
+    };
+  }
+
+  return null;
+}
+
 
 export async function createCalendarEvent(
   accessToken: string,
