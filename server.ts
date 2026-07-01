@@ -1,8 +1,19 @@
 import express from "express";
 import path from "path";
 import dotenv from "dotenv";
-import { GoogleGenAI, Type } from "@google/genai";
+import { GoogleGenAI } from "@google/genai";
 import { createServer as createViteServer } from "vite";
+import {
+  geminiResponseSchema,
+  GEMINI_EXTRACTION_PROMPT,
+  validateGeminiExtraction,
+} from "./src/shared/gemini-schema";
+import {
+  buildCalendarEventPayload,
+  createCalendarEvent,
+  exchangeCodeForToken,
+} from "./src/shared/calendar-service";
+import { GeminiExtractionSchema } from "./src/shared/gemini-schema";
 
 dotenv.config();
 
@@ -17,19 +28,27 @@ const ai = new GoogleGenAI({
   apiKey: process.env.GEMINI_API_KEY,
   httpOptions: {
     headers: {
-      'User-Agent': 'aistudio-build',
-    }
-  }
+      "User-Agent": "aistudio-build",
+    },
+  },
 });
 
-// API Route: Get frontend config (Google Client ID)
-app.get("/api/config", (req, res) => {
+// ─── Health Check ──────────────────────────────────────────────
+
+app.get("/healthz", (_req, res) => {
+  res.json({ status: "ok", timestamp: new Date().toISOString() });
+});
+
+// ─── API Route: Frontend Config ────────────────────────────────
+
+app.get("/api/config", (_req, res) => {
   res.json({
     googleClientId: process.env.GOOGLE_CLIENT_ID || "",
   });
 });
 
-// API Route: Verify Google ID Token
+// ─── API Route: Verify Google ID Token ─────────────────────────
+
 app.post("/api/auth/google", async (req, res): Promise<any> => {
   try {
     const { credential } = req.body;
@@ -46,7 +65,7 @@ app.post("/api/auth/google", async (req, res): Promise<any> => {
       return res.status(401).json({ error: "Invalid token" });
     }
 
-    const tokenInfo = await tokenRes.json() as any;
+    const tokenInfo = (await tokenRes.json()) as any;
 
     // Verify the audience matches our client ID
     const expectedClientId = process.env.GOOGLE_CLIENT_ID;
@@ -58,7 +77,11 @@ app.post("/api/auth/google", async (req, res): Promise<any> => {
       googleId: tokenInfo.sub,
       name: tokenInfo.name || tokenInfo.email?.split("@")[0] || "User",
       email: tokenInfo.email,
-      avatar: tokenInfo.picture || `https://ui-avatars.com/api/?name=${encodeURIComponent(tokenInfo.name || "U")}&background=4285F4&color=fff&size=128&bold=true`,
+      avatar:
+        tokenInfo.picture ||
+        `https://ui-avatars.com/api/?name=${encodeURIComponent(
+          tokenInfo.name || "U"
+        )}&background=4285F4&color=fff&size=128&bold=true`,
       calendarLinked: false,
     });
   } catch (error: any) {
@@ -67,7 +90,43 @@ app.post("/api/auth/google", async (req, res): Promise<any> => {
   }
 });
 
-// API Route: Extract Event Details from Image (Base64 or URL)
+// ─── API Route: Exchange Calendar OAuth Code ───────────────────
+
+app.post("/api/auth/google/calendar", async (req, res): Promise<any> => {
+  try {
+    const { code, redirectUri } = req.body;
+    if (!code) {
+      return res.status(400).json({ error: "code is required" });
+    }
+
+    const clientId = process.env.GOOGLE_CLIENT_ID;
+    const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
+
+    if (!clientId || !clientSecret) {
+      return res
+        .status(500)
+        .json({ error: "OAuth client credentials not configured on server." });
+    }
+
+    const tokenData = await exchangeCodeForToken(
+      code,
+      clientId,
+      clientSecret,
+      redirectUri || "postmessage"
+    );
+
+    res.json({
+      accessToken: tokenData.access_token,
+      expiresIn: tokenData.expires_in,
+    });
+  } catch (error: any) {
+    console.error("Calendar OAuth error:", error);
+    res.status(500).json({ error: "カレンダー認証中にエラーが発生しました。" });
+  }
+});
+
+// ─── API Route: Extract Event Details from Image ───────────────
+
 app.post("/api/extract", async (req, res): Promise<any> => {
   try {
     const { image, mimeType, imageUrl } = req.body;
@@ -79,11 +138,13 @@ app.post("/api/extract", async (req, res): Promise<any> => {
       try {
         const response = await fetch(imageUrl);
         if (!response.ok) {
-          throw new Error(`Failed to fetch image from URL. Status: ${response.status}`);
+          throw new Error(
+            `Failed to fetch image from URL. Status: ${response.status}`
+          );
         }
         const arrayBuffer = await response.arrayBuffer();
         base64Data = Buffer.from(arrayBuffer).toString("base64");
-        
+
         // Try to guess mime type from content-type header or URL extension
         const contentType = response.headers.get("content-type");
         if (contentType && contentType.startsWith("image/")) {
@@ -100,13 +161,13 @@ app.post("/api/extract", async (req, res): Promise<any> => {
       } catch (err: any) {
         console.error("Error fetching hotlinked image:", err);
         return res.status(400).json({
-          error: "画像の取得に失敗しました。URLが正しいか、またはホットリンク（外部からのアクセス）が許可されているか確認してください。",
-          details: err.message
+          error:
+            "画像の取得に失敗しました。URLが正しいか、またはホットリンク（外部からのアクセス）が許可されているか確認してください。",
+          details: err.message,
         });
       }
     } else if (image) {
-      // Direct base64 input
-      // Strip out base64 header if present
+      // Direct base64 input — strip out base64 header if present
       const match = image.match(/^data:(image\/\w+);base64,(.+)$/);
       if (match) {
         finalMimeType = match[1];
@@ -115,56 +176,62 @@ app.post("/api/extract", async (req, res): Promise<any> => {
         base64Data = image;
       }
     } else {
-      return res.status(400).json({ error: "画像データ、または画像URL（imageUrl）を指定してください。" });
-    }
-
-    if (!process.env.GEMINI_API_KEY) {
-      console.warn("GEMINI_API_KEY is not defined. Falling back to mock extraction.");
-      // Fallback response for dev when API key is missing (ensure graceful failure/mocking)
-      return res.json({
-        title: "デザインミーティング",
-        date: "2026-10-25",
-        time: "14:00 - 15:00",
-        amount: 5000,
-        issuer: "株式会社LifeSnap",
-        location: "オンライン会議",
-        notes: "次期プロジェクトのキックオフ。資料準備が必要。（※APIキー未設定によるテストデータ）",
-        hasEvent: true
+      return res.status(400).json({
+        error: "画像データ、または画像URL（imageUrl）を指定してください。",
       });
     }
 
+    if (!process.env.GEMINI_API_KEY) {
+      console.warn(
+        "GEMINI_API_KEY is not defined. Falling back to mock extraction."
+      );
+      // Fallback response for dev when API key is missing
+      const mockResult = {
+        route: "calendar_action" as const,
+        document_type: "school_notice",
+        task_type: "event",
+        title: "デザインミーティング",
+        due_date: "",
+        start_datetime: "2026-10-25T14:00",
+        end_datetime: "2026-10-25T15:00",
+        amount: 5000,
+        issuer: "株式会社LifeSnap",
+        location: "オンライン会議",
+        summary:
+          "次期プロジェクトのキックオフ。資料準備が必要。（※APIキー未設定によるテストデータ）",
+        confidence: 0.95,
+        risk_flags: [],
+        evidence: "",
+        calendar_event: {
+          title: "デザインミーティング",
+          start: "2026-10-25T14:00",
+          end: "2026-10-25T15:00",
+          description: "次期プロジェクトのキックオフ。資料準備が必要。",
+          location: "オンライン会議",
+        },
+      };
+      return res.json(validateGeminiExtraction(mockResult));
+    }
+
     console.log("Calling Gemini API for image analysis...");
-    
+
     const response = await ai.models.generateContent({
-      model: "gemini-3.5-flash",
+      model: "gemini-2.5-flash",
       contents: [
         {
           inlineData: {
             mimeType: finalMimeType,
             data: base64Data,
-          }
+          },
         },
         {
-          text: "このお知らせ・書類・画像から、カレンダー登録用の予定情報を抽出してください。項目が画像に記載されていない、または推測できない場合は、空欄（または金額は0）にしてください。日本語で分かりやすく抽出してください。カレンダーに登録すべき予定（イベント、タスク、予約、支払い期限、締め切りなど）が見つからない場合は、hasEventをfalseにしてください。"
-        }
+          text: GEMINI_EXTRACTION_PROMPT,
+        },
       ],
       config: {
         responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            title: { type: Type.STRING, description: "予定の件名。例：デザインミーティング、週末のキャンプ旅行、歯科検診など" },
-            date: { type: Type.STRING, description: "予定の日付（YYYY-MM-DD形式。不明な場合は本日の日付「2026-06-26」などを推測、または空欄）。例：2023-10-25" },
-            time: { type: Type.STRING, description: "予定の時間（HH:MM形式、またはHH:MM-HH:MM形式などの時間帯。不明な場合は空欄）。例：14:00 - 15:00, 09:00" },
-            amount: { type: Type.NUMBER, description: "金額（数値のみ。ない場合は0）。例：5000, 15000" },
-            issuer: { type: Type.STRING, description: "発行元。主催者や店舗名など。例：株式会社LifeSnap、アウトドア用品店" },
-            location: { type: Type.STRING, description: "場所。オンライン、住所、会議室名など。例：オンライン会議、奥多摩キャンプ場" },
-            notes: { type: Type.STRING, description: "メモ・詳細。注意点や持ち物、補足情報など。例：テントのレンタル費用込み。食材は別途買い出し必要。" },
-            hasEvent: { type: Type.BOOLEAN, description: "この画像からカレンダーに登録すべき予定（イベント、タスク、予約、支払い期限、締め切りなど）が検出されたかどうか" }
-          },
-          required: ["title", "date", "hasEvent"]
-        }
-      }
+        responseSchema: geminiResponseSchema,
+      },
     });
 
     const resultText = response.text;
@@ -174,19 +241,74 @@ app.post("/api/extract", async (req, res): Promise<any> => {
       throw new Error("Gemini returned empty response.");
     }
 
-    const parsedResult = JSON.parse(resultText);
-    res.json(parsedResult);
+    const parsedRaw = JSON.parse(resultText);
 
+    // Validate with Zod
+    const validated = validateGeminiExtraction(parsedRaw);
+
+    res.json(validated);
   } catch (error: any) {
     console.error("Error analyzing image with Gemini:", error);
     res.status(500).json({
       error: "画像の解析中にエラーが発生しました。",
-      details: error.message
+      details: error.message,
     });
   }
 });
 
-// Setup static files and Vite middleware
+// ─── API Route: Create Calendar Event ──────────────────────────
+
+app.post("/api/create-calendar-event", async (req, res): Promise<any> => {
+  try {
+    const { extraction, accessToken } = req.body;
+
+    if (!accessToken) {
+      return res.status(401).json({ error: "accessToken is required" });
+    }
+
+    if (!extraction) {
+      return res.status(400).json({ error: "extraction is required" });
+    }
+
+    // Validate extraction data
+    const validatedExtraction = GeminiExtractionSchema.parse(extraction);
+
+    if (validatedExtraction.route !== "calendar_action") {
+      return res.status(400).json({
+        error: `Cannot create event for route: ${validatedExtraction.route}`,
+      });
+    }
+
+    // Build Calendar API payload
+    const payload = buildCalendarEventPayload(validatedExtraction);
+
+    // Create event via Calendar API
+    const result = await createCalendarEvent(accessToken, payload);
+
+    console.log("Calendar event created:", result.eventId);
+
+    res.json({
+      eventId: result.eventId,
+      htmlLink: result.htmlLink,
+    });
+  } catch (error: any) {
+    console.error("Error creating calendar event:", error);
+
+    if (error.message?.includes("401")) {
+      return res.status(401).json({
+        error: "カレンダーのアクセストークンが無効です。再認証してください。",
+      });
+    }
+
+    res.status(500).json({
+      error: "カレンダーイベントの作成中にエラーが発生しました。",
+      details: error.message,
+    });
+  }
+});
+
+// ─── Setup Static Files & Vite Middleware ──────────────────────
+
 async function setupServer() {
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
@@ -197,7 +319,7 @@ async function setupServer() {
   } else {
     const distPath = path.join(process.cwd(), "dist");
     app.use(express.static(distPath));
-    app.get("*", (req, res) => {
+    app.get("*", (_req, res) => {
       res.sendFile(path.join(distPath, "index.html"));
     });
   }

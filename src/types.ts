@@ -1,13 +1,7 @@
-export interface EventDetails {
-  title: string;
-  date: string;
-  time: string;
-  amount: number;
-  issuer: string;
-  location: string;
-  notes: string;
-  hasEvent: boolean;
-}
+import type { GeminiExtraction } from "./shared/gemini-schema";
+
+// Re-export the shared type for frontend convenience
+export type { GeminiExtraction };
 
 export type ScreenType =
   | "LOGIN"
@@ -25,4 +19,10 @@ export interface UserProfile {
   email: string;
   avatar: string;
   calendarLinked: boolean;
+  calendarAccessToken?: string;
+}
+
+export interface CalendarEventResult {
+  eventId: string;
+  htmlLink: string;
 }

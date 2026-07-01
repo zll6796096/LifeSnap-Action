@@ -1,5 +1,6 @@
-import React, { useState, useEffect } from "react";
-import { ScreenType, EventDetails, UserProfile } from "./types";
+import React, { useState } from "react";
+import { ScreenType, UserProfile, CalendarEventResult } from "./types";
+import type { GeminiExtraction } from "./shared/gemini-schema";
 import LoginView from "./components/LoginView";
 import ScanView from "./components/ScanView";
 import ProcessingView from "./components/ProcessingView";
@@ -25,13 +26,23 @@ export default function App() {
   const [currentScreen, setCurrentScreen] = useState<ScreenType>(savedUser ? "SCAN" : "LOGIN");
   const [user, setUser] = useState<UserProfile | null>(savedUser);
   const [analyzingProgress, setAnalyzingProgress] = useState(0);
-  const [currentEvent, setCurrentEvent] = useState<EventDetails | null>(null);
+  const [currentExtraction, setCurrentExtraction] = useState<GeminiExtraction | null>(null);
+  const [calendarResult, setCalendarResult] = useState<CalendarEventResult | null>(null);
   const [errorDetails, setErrorDetails] = useState<string>("");
+  const [isCreatingEvent, setIsCreatingEvent] = useState(false);
 
   const handleLogin = (profile: UserProfile) => {
     setUser(profile);
     sessionStorage.setItem(SESSION_KEY, JSON.stringify(profile));
     setCurrentScreen("SCAN");
+  };
+
+  const handleCalendarLinked = (accessToken: string) => {
+    if (user) {
+      const updatedUser = { ...user, calendarLinked: true, calendarAccessToken: accessToken };
+      setUser(updatedUser);
+      sessionStorage.setItem(SESSION_KEY, JSON.stringify(updatedUser));
+    }
   };
 
   const handleLogout = () => {
@@ -41,7 +52,7 @@ export default function App() {
   };
 
   // Run steps simulation in sync with actual fetch
-  const runStepsSimulation = async (fetchPromise: Promise<EventDetails>) => {
+  const runStepsSimulation = async (fetchPromise: Promise<GeminiExtraction>) => {
     setCurrentScreen("PROCESSING");
     setAnalyzingProgress(1); // 読み取り中
 
@@ -54,14 +65,15 @@ export default function App() {
       const data = await fetchPromise;
 
       setAnalyzingProgress(3); // カードを作成中
-      
+
       // Brief pause for natural feeling before screen transition
       await new Promise((resolve) => setTimeout(resolve, 800));
 
-      if (data.hasEvent) {
-        setCurrentEvent(data);
+      if (data.route === "calendar_action" || data.route === "needs_review") {
+        setCurrentExtraction(data);
         setCurrentScreen("REVIEW");
       } else {
+        // no_action_detected
         setErrorDetails("この画像からはカレンダーに登録すべき予定が見つかりませんでした。");
         setCurrentScreen("ERROR");
       }
@@ -69,7 +81,7 @@ export default function App() {
       console.error("Analysis failed:", err);
       setAnalyzingProgress(3);
       await new Promise((resolve) => setTimeout(resolve, 800));
-      
+
       setErrorDetails(
         err.message || "画像の解析中にエラーが発生しました。もう一度お試しください。"
       );
@@ -81,7 +93,7 @@ export default function App() {
 
   // Analyze Base64 image
   const handleAnalyzeBase64 = async (base64: string, mimeType: string) => {
-    const fetchPromise = async (): Promise<EventDetails> => {
+    const fetchPromise = async (): Promise<GeminiExtraction> => {
       const response = await fetch("/api/extract", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -99,9 +111,50 @@ export default function App() {
     runStepsSimulation(fetchPromise());
   };
 
-  const handleSaveEvent = (updatedEvent: EventDetails) => {
-    setCurrentEvent(updatedEvent);
+  const handleSaveEvent = (updatedExtraction: GeminiExtraction) => {
+    setCurrentExtraction(updatedExtraction);
     setCurrentScreen("REVIEW");
+  };
+
+  // Create calendar event via API
+  const handleConfirmEvent = async () => {
+    if (!currentExtraction || !user?.calendarAccessToken) return;
+
+    setIsCreatingEvent(true);
+    try {
+      const response = await fetch("/api/create-calendar-event", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          extraction: currentExtraction,
+          accessToken: user.calendarAccessToken,
+        }),
+      });
+
+      if (!response.ok) {
+        const errData = await response.json().catch(() => ({}));
+
+        // If token expired, clear it and re-prompt
+        if (response.status === 401) {
+          const updatedUser = { ...user, calendarLinked: false, calendarAccessToken: undefined };
+          setUser(updatedUser);
+          sessionStorage.setItem(SESSION_KEY, JSON.stringify(updatedUser));
+          throw new Error("カレンダーの認証が期限切れです。再度認証してください。");
+        }
+
+        throw new Error(errData.error || "イベント作成に失敗しました。");
+      }
+
+      const result: CalendarEventResult = await response.json();
+      setCalendarResult(result);
+      setCurrentScreen("SUCCESS");
+    } catch (err: any) {
+      console.error("Event creation failed:", err);
+      setErrorDetails(err.message || "カレンダーイベントの作成中にエラーが発生しました。");
+      setCurrentScreen("ERROR");
+    } finally {
+      setIsCreatingEvent(false);
+    }
   };
 
   return (
@@ -110,7 +163,11 @@ export default function App() {
         <div className="flex-1 flex flex-col overflow-y-auto w-full">
           <AnimatePresence mode="wait">
             {currentScreen === "LOGIN" && (
-              <LoginView key="login" onLogin={handleLogin} />
+              <LoginView
+                key="login"
+                onLogin={handleLogin}
+                onCalendarLinked={handleCalendarLinked}
+              />
             )}
 
             {currentScreen === "SCAN" && (
@@ -126,20 +183,23 @@ export default function App() {
               <ProcessingView key="processing" analyzingProgress={analyzingProgress} />
             )}
 
-            {currentScreen === "REVIEW" && currentEvent && (
+            {currentScreen === "REVIEW" && currentExtraction && (
               <ReviewCard
                 key="review"
-                event={currentEvent}
-                onConfirm={() => setCurrentScreen("SUCCESS")}
+                extraction={currentExtraction}
+                onConfirm={handleConfirmEvent}
                 onEdit={() => setCurrentScreen("EDIT")}
                 onBack={() => setCurrentScreen("SCAN")}
+                isCreating={isCreatingEvent}
+                needsCalendarAuth={!user?.calendarAccessToken}
+                onCalendarLinked={handleCalendarLinked}
               />
             )}
 
-            {currentScreen === "EDIT" && currentEvent && (
+            {currentScreen === "EDIT" && currentExtraction && (
               <EditForm
                 key="edit"
-                event={currentEvent}
+                extraction={currentExtraction}
                 onSave={handleSaveEvent}
                 onCancel={() => setCurrentScreen("REVIEW")}
               />
@@ -148,8 +208,11 @@ export default function App() {
             {currentScreen === "SUCCESS" && (
               <SuccessView
                 key="success"
+                eventTitle={currentExtraction?.title || ""}
+                htmlLink={calendarResult?.htmlLink || ""}
                 onScanAgain={() => {
-                  setCurrentEvent(null);
+                  setCurrentExtraction(null);
+                  setCalendarResult(null);
                   setCurrentScreen("SCAN");
                 }}
               />

@@ -1,5 +1,5 @@
 import React from "react";
-import { UserProfile } from "../types";
+import type { UserProfile } from "../types";
 import { ArrowLeft, CheckCircle, ChevronRight, LogOut, Shield, Mail, Calendar } from "lucide-react";
 import { motion } from "motion/react";
 

@@ -1,15 +1,21 @@
 import React from "react";
-import { CheckCircle, Calendar, RefreshCw } from "lucide-react";
+import { CheckCircle, Calendar, RefreshCw, ExternalLink } from "lucide-react";
 import { motion } from "motion/react";
 
 interface SuccessViewProps {
+  eventTitle: string;
+  htmlLink: string;
   onScanAgain: () => void;
   key?: string;
 }
 
-export default function SuccessView({ onScanAgain }: SuccessViewProps) {
-  const handleOpenCalendar = () => {
-    window.open("https://calendar.google.com", "_blank", "noopener,noreferrer");
+export default function SuccessView({ eventTitle, htmlLink, onScanAgain }: SuccessViewProps) {
+  const handleOpenEvent = () => {
+    if (htmlLink) {
+      window.open(htmlLink, "_blank", "noopener,noreferrer");
+    } else {
+      window.open("https://calendar.google.com", "_blank", "noopener,noreferrer");
+    }
   };
 
   return (
@@ -35,8 +41,13 @@ export default function SuccessView({ onScanAgain }: SuccessViewProps) {
           <h1 className="font-headline-lg-mobile md:font-headline-lg text-primary tracking-tight font-semibold">
             予定を追加しました
           </h1>
+          {eventTitle && (
+            <p className="font-body-lg text-on-surface font-medium mt-2">
+              「{eventTitle}」
+            </p>
+          )}
           <p className="font-body-md text-secondary max-w-[240px] mx-auto leading-relaxed">
-            カレンダーへの登録が完了しました。
+            Googleカレンダーに登録されました。
           </p>
         </div>
 
@@ -44,11 +55,20 @@ export default function SuccessView({ onScanAgain }: SuccessViewProps) {
         <div className="w-full flex flex-col gap-3">
           {/* Primary Action */}
           <button
-            onClick={handleOpenCalendar}
+            onClick={handleOpenEvent}
             className="w-full py-4 px-5 bg-primary text-on-primary rounded-xl font-label-md hover:opacity-90 active:scale-[0.98] transition-all flex items-center justify-center gap-2 cursor-pointer shadow-sm"
           >
-            <Calendar className="w-5 h-5" />
-            カレンダーを開く
+            {htmlLink ? (
+              <>
+                <ExternalLink className="w-5 h-5" />
+                イベントを開く
+              </>
+            ) : (
+              <>
+                <Calendar className="w-5 h-5" />
+                カレンダーを開く
+              </>
+            )}
           </button>
 
           {/* Secondary Action */}

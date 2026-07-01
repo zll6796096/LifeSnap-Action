@@ -1,90 +1,112 @@
-import React from "react";
-import { EventDetails } from "../types";
-import { Calendar, Edit3, ArrowLeft, Building, MapPin, DollarSign, Clock, CalendarDays, Clipboard } from "lucide-react";
+import React, { useState } from "react";
+import type { GeminiExtraction } from "../shared/gemini-schema";
+import { Calendar, Edit3, ArrowLeft, Building, MapPin, DollarSign, Clock, CalendarDays, Clipboard, AlertTriangle, Loader2, Shield } from "lucide-react";
 import { motion } from "motion/react";
 
 interface ReviewCardProps {
-  event: EventDetails;
+  extraction: GeminiExtraction;
   onConfirm: () => void;
   onEdit: () => void;
   onBack: () => void;
+  isCreating: boolean;
+  needsCalendarAuth: boolean;
+  onCalendarLinked: (accessToken: string) => void;
   key?: string;
 }
 
-// Generate Google Calendar Link Helper
-export function makeGoogleCalendarUrl(event: EventDetails): string {
-  const base = "https://calendar.google.com/calendar/render?action=TEMPLATE";
-  const titleParam = encodeURIComponent(event.title);
-  const locParam = encodeURIComponent(event.location || "");
-  
-  // Format notes: add Issuer and Amount to notes if present
-  let fullNotes = event.notes || "";
-  if (event.issuer) {
-    fullNotes = `【発行元】 ${event.issuer}\n${fullNotes}`;
-  }
-  if (event.amount > 0) {
-    fullNotes = `【金額】 ¥${event.amount.toLocaleString()}\n${fullNotes}`;
-  }
-  const detailsParam = encodeURIComponent(fullNotes);
+export default function ReviewCard({
+  extraction,
+  onConfirm,
+  onEdit,
+  onBack,
+  isCreating,
+  needsCalendarAuth,
+  onCalendarLinked,
+}: ReviewCardProps) {
+  const [authError, setAuthError] = useState("");
 
-  let datesParam = "";
-  const cleanedDate = event.date ? event.date.replace(/-/g, "") : ""; // YYYYMMDD
-  
-  if (cleanedDate && event.time) {
-    // Clean times like "14:00 - 15:00" or "09:00"
-    const times = event.time.split("-").map(t => t.trim());
-    if (times.length === 2) {
-      // Start/End Time
-      const startT = times[0].replace(/:/g, "").slice(0, 4) + "00"; // HHMMSS
-      const endT = times[1].replace(/:/g, "").slice(0, 4) + "00"; // HHMMSS
-      datesParam = `${cleanedDate}T${startT}/${cleanedDate}T${endT}`;
-    } else if (times.length === 1 && times[0] && times[0].includes(":")) {
-      // Just single start time, default to 1 hour duration
-      const [sh, sm] = times[0].split(":");
-      const startH = parseInt(sh) || 9;
-      const startM = sm || "00";
-      const startT = `${String(startH).padStart(2, "0")}${startM}00`;
-      const endT = `${String(startH + 1).padStart(2, "0")}${startM}00`;
-      datesParam = `${cleanedDate}T${startT}/${cleanedDate}T${endT}`;
+  const handleConfirmClick = async () => {
+    if (needsCalendarAuth) {
+      // Need to get calendar access first
+      await requestCalendarAuth();
+      return;
     }
-  }
-
-  if (!datesParam && cleanedDate) {
-    // All day event: dates=YYYYMMDD/YYYYMMDD (Google Calendar requires end date to be day AFTER)
-    const parts = event.date.split("-");
-    if (parts.length === 3) {
-      try {
-        const d = new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2]));
-        if (!isNaN(d.getTime())) {
-          const startStr = d.toISOString().split("T")[0].replace(/-/g, "");
-          d.setDate(d.getDate() + 1);
-          const endStr = d.toISOString().split("T")[0].replace(/-/g, "");
-          datesParam = `${startStr}/${endStr}`;
-        }
-      } catch (e) {
-        datesParam = `${cleanedDate}/${cleanedDate}`;
-      }
-    } else {
-      datesParam = `${cleanedDate}/${cleanedDate}`;
-    }
-  }
-
-  // Fallback for current date if none parsed
-  if (!datesParam) {
-    const todayStr = new Date().toISOString().split("T")[0].replace(/-/g, "");
-    datesParam = `${todayStr}/${todayStr}`;
-  }
-
-  return `${base}&text=${titleParam}&dates=${datesParam}&details=${detailsParam}&location=${locParam}`;
-}
-
-export default function ReviewCard({ event, onConfirm, onEdit, onBack }: ReviewCardProps) {
-  const gcalUrl = makeGoogleCalendarUrl(event);
-
-  const handleConfirmClick = () => {
-    // Open Google Calendar template in a new window/tab safely
-    window.open(gcalUrl, "_blank", "noopener,noreferrer");
     onConfirm();
+  };
+
+  const requestCalendarAuth = async () => {
+    setAuthError("");
+
+    if (!window.google?.accounts?.oauth2) {
+      setAuthError("Google Identity Servicesが読み込まれていません。ページを再読み込みしてください。");
+      return;
+    }
+
+    try {
+      // Fetch client ID from config
+      const configRes = await fetch("/api/config");
+      const { googleClientId } = await configRes.json();
+
+      const codeClient = window.google.accounts.oauth2.initCodeClient({
+        client_id: googleClientId,
+        scope: "https://www.googleapis.com/auth/calendar.events",
+        ux_mode: "popup",
+        callback: async (codeResponse: any) => {
+          if (codeResponse.error) {
+            setAuthError("カレンダーへのアクセスが拒否されました。");
+            return;
+          }
+
+          try {
+            const tokenRes = await fetch("/api/auth/google/calendar", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ code: codeResponse.code }),
+            });
+
+            if (!tokenRes.ok) throw new Error("Token exchange failed");
+
+            const { accessToken } = await tokenRes.json();
+            onCalendarLinked(accessToken);
+            // After linking, proceed to create
+            // Small delay to ensure state is updated
+            setTimeout(() => onConfirm(), 100);
+          } catch (err: any) {
+            setAuthError("カレンダー認証に失敗しました。もう一度お試しください。");
+          }
+        },
+      });
+
+      codeClient.requestCode();
+    } catch (err: any) {
+      setAuthError("認証の初期化に失敗しました。");
+    }
+  };
+
+  // Display time from extraction
+  const displayTime = () => {
+    if (extraction.start_datetime && extraction.end_datetime) {
+      const startTime = extraction.start_datetime.includes("T")
+        ? extraction.start_datetime.split("T")[1]?.slice(0, 5)
+        : "";
+      const endTime = extraction.end_datetime.includes("T")
+        ? extraction.end_datetime.split("T")[1]?.slice(0, 5)
+        : "";
+      if (startTime && endTime) return `${startTime} - ${endTime}`;
+      if (startTime) return startTime;
+    }
+    if (extraction.start_datetime?.includes("T")) {
+      return extraction.start_datetime.split("T")[1]?.slice(0, 5) || "終日";
+    }
+    return "終日";
+  };
+
+  // Display date from extraction
+  const displayDate = () => {
+    if (extraction.start_datetime) {
+      return extraction.start_datetime.split("T")[0];
+    }
+    return extraction.due_date || "（未検出）";
   };
 
   return (
@@ -112,6 +134,34 @@ export default function ReviewCard({ event, onConfirm, onEdit, onBack }: ReviewC
       {/* Main Content */}
       <main className="flex-grow flex flex-col px-6 py-6 gap-6 items-center bg-surface-container-low">
         <div className="w-full max-w-sm flex flex-col gap-4">
+          {/* Needs Review Warning */}
+          {extraction.route === "needs_review" && (
+            <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 flex items-start gap-3">
+              <AlertTriangle className="w-5 h-5 text-amber-600 flex-shrink-0 mt-0.5" />
+              <div>
+                <p className="font-label-md text-amber-800 font-medium">確認が必要です</p>
+                <p className="font-label-sm text-amber-700 mt-1">
+                  日付・時刻が不明確なため、内容を確認・修正してから登録してください。
+                </p>
+              </div>
+            </div>
+          )}
+
+          {/* Confidence Badge */}
+          {extraction.confidence > 0 && (
+            <div className="flex items-center justify-center gap-2">
+              <Shield className="w-3.5 h-3.5 text-secondary" />
+              <span className="font-label-sm text-secondary">
+                確信度: {Math.round(extraction.confidence * 100)}%
+              </span>
+              {extraction.risk_flags && extraction.risk_flags.length > 0 && (
+                <span className="font-label-sm text-amber-600">
+                  ⚠ {extraction.risk_flags.join(", ")}
+                </span>
+              )}
+            </div>
+          )}
+
           <div className="text-center font-body-md text-secondary mb-2">
             追加前に内容を確認してください
           </div>
@@ -119,13 +169,13 @@ export default function ReviewCard({ event, onConfirm, onEdit, onBack }: ReviewC
           {/* Event Review Card */}
           <div className="bg-surface-container-lowest rounded-2xl border border-outline-variant p-6 flex flex-col gap-4 shadow-[0_4px_12px_rgba(60,57,53,0.04)]">
             <div className="flex flex-col gap-4">
-              {/* Piece Name (Title) */}
+              {/* Title */}
               <div className="flex flex-col border-b border-outline-variant/50 pb-2">
                 <span className="font-label-sm text-secondary flex items-center gap-1">
                   <CalendarDays className="w-3.5 h-3.5" /> 件名 (Title)
                 </span>
                 <span className="font-body-lg text-on-surface font-semibold mt-1">
-                  {event.title || "（未設定）"}
+                  {extraction.title || "（未設定）"}
                 </span>
               </div>
 
@@ -135,7 +185,7 @@ export default function ReviewCard({ event, onConfirm, onEdit, onBack }: ReviewC
                   <Calendar className="w-3.5 h-3.5" /> 日付 (Date)
                 </span>
                 <span className="font-body-lg text-on-surface mt-1">
-                  {event.date || "（未検出）"}
+                  {displayDate()}
                 </span>
               </div>
 
@@ -145,7 +195,7 @@ export default function ReviewCard({ event, onConfirm, onEdit, onBack }: ReviewC
                   <Clock className="w-3.5 h-3.5" /> 時間 (Time)
                 </span>
                 <span className="font-body-lg text-on-surface mt-1">
-                  {event.time || "終日"}
+                  {displayTime()}
                 </span>
               </div>
 
@@ -155,7 +205,9 @@ export default function ReviewCard({ event, onConfirm, onEdit, onBack }: ReviewC
                   <DollarSign className="w-3.5 h-3.5" /> 金額 (Amount)
                 </span>
                 <span className="font-body-lg text-on-surface mt-1">
-                  {event.amount > 0 ? `¥${event.amount.toLocaleString()}` : "—"}
+                  {extraction.amount && extraction.amount > 0
+                    ? `¥${extraction.amount.toLocaleString()}`
+                    : "—"}
                 </span>
               </div>
 
@@ -165,7 +217,7 @@ export default function ReviewCard({ event, onConfirm, onEdit, onBack }: ReviewC
                   <Building className="w-3.5 h-3.5" /> 発行元 (Issuer)
                 </span>
                 <span className="font-body-lg text-on-surface mt-1">
-                  {event.issuer || "—"}
+                  {extraction.issuer || "—"}
                 </span>
               </div>
 
@@ -175,34 +227,57 @@ export default function ReviewCard({ event, onConfirm, onEdit, onBack }: ReviewC
                   <MapPin className="w-3.5 h-3.5" /> 場所 (Location)
                 </span>
                 <span className="font-body-lg text-on-surface mt-1">
-                  {event.location || "—"}
+                  {extraction.location || "—"}
                 </span>
               </div>
 
-              {/* Notes */}
+              {/* Summary */}
               <div className="flex flex-col">
                 <span className="font-label-sm text-secondary flex items-center gap-1">
-                  <Clipboard className="w-3.5 h-3.5" /> メモ (Notes)
+                  <Clipboard className="w-3.5 h-3.5" /> 概要 (Summary)
                 </span>
                 <span className="font-body-md text-on-surface mt-1.5 whitespace-pre-line leading-relaxed">
-                  {event.notes || "—"}
+                  {extraction.summary || "—"}
                 </span>
               </div>
             </div>
           </div>
 
+          {/* Auth Error */}
+          {authError && (
+            <div className="bg-error-container rounded-xl p-3">
+              <p className="font-label-sm text-error text-center">{authError}</p>
+            </div>
+          )}
+
           {/* Action Buttons */}
           <div className="flex flex-col gap-2 mt-4 w-full">
             <button
               onClick={handleConfirmClick}
-              className="bg-primary text-on-primary font-label-md rounded-xl py-4 w-full flex justify-center items-center gap-2 hover:opacity-90 transition-opacity cursor-pointer shadow-sm"
+              disabled={isCreating}
+              className="bg-primary text-on-primary font-label-md rounded-xl py-4 w-full flex justify-center items-center gap-2 hover:opacity-90 transition-opacity cursor-pointer shadow-sm disabled:opacity-60 disabled:cursor-not-allowed"
             >
-              <Calendar className="w-5 h-5" />
-              カレンダーに追加
+              {isCreating ? (
+                <>
+                  <Loader2 className="w-5 h-5 animate-spin" />
+                  作成中...
+                </>
+              ) : needsCalendarAuth ? (
+                <>
+                  <Calendar className="w-5 h-5" />
+                  カレンダーを認証して追加
+                </>
+              ) : (
+                <>
+                  <Calendar className="w-5 h-5" />
+                  カレンダーに追加
+                </>
+              )}
             </button>
             <button
               onClick={onEdit}
-              className="bg-transparent border border-outline-variant text-on-surface font-label-md rounded-xl py-4 w-full flex justify-center items-center gap-2 hover:bg-surface-container transition-colors cursor-pointer"
+              disabled={isCreating}
+              className="bg-transparent border border-outline-variant text-on-surface font-label-md rounded-xl py-4 w-full flex justify-center items-center gap-2 hover:bg-surface-container transition-colors cursor-pointer disabled:opacity-60"
             >
               <Edit3 className="w-4 h-4" />
               修正する
@@ -211,7 +286,7 @@ export default function ReviewCard({ event, onConfirm, onEdit, onBack }: ReviewC
         </div>
       </main>
 
-      {/* Styled simple footer */}
+      {/* Footer */}
       <footer className="bg-surface border-t border-outline-variant/30 flex flex-col items-center gap-2 py-4 w-full mt-auto">
         <div className="flex gap-4 font-label-sm text-secondary">
           <span className="hover:text-primary transition-colors cursor-pointer">Privacy</span>

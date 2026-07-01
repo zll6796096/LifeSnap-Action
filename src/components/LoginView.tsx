@@ -12,6 +12,9 @@ declare global {
           renderButton: (element: HTMLElement, config: any) => void;
           prompt: () => void;
         };
+        oauth2: {
+          initCodeClient: (config: any) => { requestCode: () => void };
+        };
       };
     };
   }
@@ -19,10 +22,11 @@ declare global {
 
 interface LoginViewProps {
   onLogin: (user: UserProfile) => void;
+  onCalendarLinked: (accessToken: string) => void;
   key?: string;
 }
 
-export default function LoginView({ onLogin }: LoginViewProps) {
+export default function LoginView({ onLogin, onCalendarLinked }: LoginViewProps) {
   const googleBtnRef = useRef<HTMLDivElement>(null);
   const [clientId, setClientId] = useState<string>("");
   const [loading, setLoading] = useState(true);
@@ -62,7 +66,9 @@ export default function LoginView({ onLogin }: LoginViewProps) {
         }
 
         const userProfile: UserProfile = await res.json();
-        onLogin(userProfile);
+
+        // After sign-in, request Calendar access
+        requestCalendarAccess(userProfile);
       } catch (err: any) {
         console.error("Login error:", err);
         setError(err.message || "ログインに失敗しました。もう一度お試しください。");
@@ -94,6 +100,55 @@ export default function LoginView({ onLogin }: LoginViewProps) {
 
     initGIS();
   }, [clientId, onLogin]);
+
+  const requestCalendarAccess = (userProfile: UserProfile) => {
+    if (!window.google?.accounts?.oauth2) {
+      // GIS oauth2 not available, proceed without calendar
+      console.warn("OAuth2 not available, proceeding without calendar access");
+      onLogin(userProfile);
+      return;
+    }
+
+    const codeClient = window.google.accounts.oauth2.initCodeClient({
+      client_id: clientId,
+      scope: "https://www.googleapis.com/auth/calendar.events",
+      ux_mode: "popup",
+      callback: async (codeResponse: any) => {
+        if (codeResponse.error) {
+          console.warn("Calendar access denied:", codeResponse.error);
+          // Still log in, just without calendar
+          onLogin(userProfile);
+          return;
+        }
+
+        try {
+          // Exchange code for token on backend
+          const tokenRes = await fetch("/api/auth/google/calendar", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ code: codeResponse.code }),
+          });
+
+          if (!tokenRes.ok) {
+            throw new Error("Token exchange failed");
+          }
+
+          const { accessToken } = await tokenRes.json();
+
+          // Update user with calendar access
+          const linkedUser = { ...userProfile, calendarLinked: true, calendarAccessToken: accessToken };
+          onLogin(linkedUser);
+          onCalendarLinked(accessToken);
+        } catch (err: any) {
+          console.error("Calendar auth error:", err);
+          // Still log in without calendar
+          onLogin(userProfile);
+        }
+      },
+    });
+
+    codeClient.requestCode();
+  };
 
   return (
     <motion.div
@@ -148,7 +203,9 @@ export default function LoginView({ onLogin }: LoginViewProps) {
       {/* Disclaimer */}
       <div className="px-4">
         <p className="font-label-sm text-secondary text-center leading-relaxed">
-          予定作成のためにGoogleカレンダーを使用します
+          Googleカレンダーへの書き込み許可を求めます。
+          <br />
+          イベントはあなたの確認後にのみ作成されます。
         </p>
       </div>
     </motion.div>
