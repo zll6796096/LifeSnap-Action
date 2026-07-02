@@ -1,8 +1,20 @@
+# Node / Backend
 node_modules/
 build/
 dist/
 coverage/
-.DS_Store
 *.log
 .env*
 !.env.example
+
+# macOS
+.DS_Store
+
+# Xcode / iOS
+*.xcuserdata/
+xcuserdata/
+DerivedData/
+*.xcworkspace/xcshareddata/IDEWorkspaceChecks.plist
+*.ipa
+*.dSYM.zip
+*.dSYM
