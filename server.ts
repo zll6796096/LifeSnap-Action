@@ -43,6 +43,10 @@ const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash";
 
 // ─── Health Check ──────────────────────────────────────────────
 
+app.get("/health", (_req, res) => {
+  res.json({ status: "ok", timestamp: new Date().toISOString() });
+});
+
 app.get("/healthz", (_req, res) => {
   res.json({ status: "ok", timestamp: new Date().toISOString() });
 });
