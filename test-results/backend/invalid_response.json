@@ -1,0 +1,21 @@
+HTTP/2 500 
+x-powered-by: Express
+content-security-policy: default-src 'none'
+x-content-type-options: nosniff
+content-type: text/html; charset=utf-8
+x-cloud-trace-context: 408ad09b3132ba96c575f9626b05bcb8;o=1
+date: Thu, 02 Jul 2026 15:30:24 GMT
+server: Google Frontend
+content-length: 148
+alt-svc: h3=":443"; ma=2592000,h3-29=":443"; ma=2592000
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Error</title>
+</head>
+<body>
+<pre>Internal Server Error</pre>
+</body>
+</html>

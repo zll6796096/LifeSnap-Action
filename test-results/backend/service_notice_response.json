@@ -1,0 +1,11 @@
+HTTP/2 200 
+x-powered-by: Express
+content-type: application/json; charset=utf-8
+etag: W/"3cc-FIr27zVgaPIz+C1hs/hCZA2oMNo"
+x-cloud-trace-context: 6fad9281a97e58ca2a9084a058b99e70;o=1
+date: Thu, 02 Jul 2026 15:26:03 GMT
+server: Google Frontend
+content-length: 972
+alt-svc: h3=":443"; ma=2592000,h3-29=":443"; ma=2592000
+
+{"route":"calendar_action","document_type":"notice","task_type":"event","title":"エレベーター定期点検","due_date":"","start_datetime":"2026-10-25T14:00","end_datetime":"2026-10-25T16:00","amount":0,"issuer":"","location":"","summary":"2026年10月25日(日) 14:00から16:00まで、マンションのエレベーターが定期点検のため停止します。この間は階段を利用してください。","confidence":0.95,"risk_flags":[],"evidence":"点検日時：2026年10月25日 (日) 14:00～16:00\n対象：全居住者様\n点検中はエレベーターのご利用ができません。階段をご利用ください。","calendar_event":{"title":"エレベーター定期点検","start":"2026-10-25T14:00","end":"2026-10-25T16:00","description":"マンションのエレベーター定期点検のため、14:00から16:00の間はエレベーターが利用できません。お手数ですが、階段をご利用ください。","location":""}}

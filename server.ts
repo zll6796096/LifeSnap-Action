@@ -184,6 +184,26 @@ app.post("/api/extract", upload.single("image"), async (req, res): Promise<any> 
   }
 });
 
+// ─── Error Handling Middleware ─────────────────────────────────
+
+app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction): any => {
+  if (err instanceof multer.MulterError) {
+    if (err.code === "LIMIT_FILE_SIZE") {
+      return res.status(400).json({
+        error: "画像サイズが大きすぎます。10MB以下の画像をアップロードしてください。",
+      });
+    }
+    return res.status(400).json({ error: `アップロードエラー: ${err.message}` });
+  }
+
+  if (err.message && (err.message.includes("許可されていない画像形式") || err.message.includes("画像形式"))) {
+    return res.status(400).json({ error: err.message });
+  }
+
+  console.error("Unhandled error:", err);
+  res.status(500).json({ error: "サーバーエラーが発生しました。", details: err.message });
+});
+
 // ─── Start Server ──────────────────────────────────────────────
 
 app.listen(PORT, "0.0.0.0", () => {
