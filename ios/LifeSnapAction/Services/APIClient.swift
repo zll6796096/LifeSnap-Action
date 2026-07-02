@@ -77,7 +77,7 @@ final class APIClient {
 
     /// Checks if the backend is reachable.
     static func healthCheck() async -> Bool {
-        guard let url = URL(string: "\(baseURL)/healthz") else { return false }
+        guard let url = URL(string: "\(baseURL)/health") else { return false }
         do {
             let (_, response) = try await URLSession.shared.data(from: url)
             return (response as? HTTPURLResponse)?.statusCode == 200
