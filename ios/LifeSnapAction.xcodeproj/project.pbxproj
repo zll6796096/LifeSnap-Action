@@ -1,0 +1,395 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		01FD9E8B373A9B58D97C3499 /* CalendarTask.swift in Sources */ = {isa = PBXBuildFile; fileRef = 625FE051B813170BE3BC204E /* CalendarTask.swift */; };
+		0322E7F896DEF11246B2E966 /* APIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3CF3E0586B63804A836DBDBF /* APIClient.swift */; };
+		16035F2C4D2DDA58168B1884 /* CalendarService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7D667ADD9CD443EC4C02A1C4 /* CalendarService.swift */; };
+		2A99A136B0AF2A9F8628DB69 /* ReviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18DCB987DE2CEC4D58B52C1B /* ReviewView.swift */; };
+		5E509E4724B99E5104A945C5 /* NeedsReviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 11A47040BCF3C08BE21E7D0A /* NeedsReviewView.swift */; };
+		6042CB7D75E84FE0A7DB66FE /* CaptureView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FD694A0B2795E4F5C266CB64 /* CaptureView.swift */; };
+		6315E27B2D0B574F87127CD5 /* NoActionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 008EEB44DF793A978F9BBB85 /* NoActionView.swift */; };
+		87DB2D6A39EC78D70A48A6BD /* SuccessView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6016CB43C02D844914697A51 /* SuccessView.swift */; };
+		9BFD593AD4E1C26C656E38AF /* CalendarViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE2F2F60FAA7EA3B59571255 /* CalendarViewModel.swift */; };
+		B5E8C80C58D53611FD65D0F6 /* ImageCompressor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5C0357953E6E2A6A51B1DF9E /* ImageCompressor.swift */; };
+		BB402664DD36CD26853FE778 /* CaptureViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = FDD02922F34DAB27A55A5AB1 /* CaptureViewModel.swift */; };
+		C2930CA90FFDFDE85D0DB066 /* ExtractionViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9740D8067833DA3E9BBD0391 /* ExtractionViewModel.swift */; };
+		CFC3F2A7009DB2F771D2769D /* ProcessingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 12470F406B69A541A143FA1E /* ProcessingView.swift */; };
+		F2A70288A321C35E605BE5D6 /* ExtractionResult.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9CF4A99D01B0D5ACF738C1B7 /* ExtractionResult.swift */; };
+		F9D813459BF88EF4F8B0EC7A /* LifeSnapActionApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 49AC672D4A86AAC5B7ED24A4 /* LifeSnapActionApp.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		008EEB44DF793A978F9BBB85 /* NoActionView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NoActionView.swift; sourceTree = "<group>"; };
+		11A47040BCF3C08BE21E7D0A /* NeedsReviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NeedsReviewView.swift; sourceTree = "<group>"; };
+		12470F406B69A541A143FA1E /* ProcessingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProcessingView.swift; sourceTree = "<group>"; };
+		18DCB987DE2CEC4D58B52C1B /* ReviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReviewView.swift; sourceTree = "<group>"; };
+		3CF3E0586B63804A836DBDBF /* APIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIClient.swift; sourceTree = "<group>"; };
+		49AC672D4A86AAC5B7ED24A4 /* LifeSnapActionApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LifeSnapActionApp.swift; sourceTree = "<group>"; };
+		5C0357953E6E2A6A51B1DF9E /* ImageCompressor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImageCompressor.swift; sourceTree = "<group>"; };
+		6016CB43C02D844914697A51 /* SuccessView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SuccessView.swift; sourceTree = "<group>"; };
+		625FE051B813170BE3BC204E /* CalendarTask.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CalendarTask.swift; sourceTree = "<group>"; };
+		7D667ADD9CD443EC4C02A1C4 /* CalendarService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CalendarService.swift; sourceTree = "<group>"; };
+		9740D8067833DA3E9BBD0391 /* ExtractionViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExtractionViewModel.swift; sourceTree = "<group>"; };
+		9CF4A99D01B0D5ACF738C1B7 /* ExtractionResult.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExtractionResult.swift; sourceTree = "<group>"; };
+		B727FF1E246FB59105BA9F1F /* LifeSnapAction.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = LifeSnapAction.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		BE2F2F60FAA7EA3B59571255 /* CalendarViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CalendarViewModel.swift; sourceTree = "<group>"; };
+		FD694A0B2795E4F5C266CB64 /* CaptureView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptureView.swift; sourceTree = "<group>"; };
+		FDD02922F34DAB27A55A5AB1 /* CaptureViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptureViewModel.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXGroup section */
+		0EA5DFF01BF56C2855B1F43D /* ViewModels */ = {
+			isa = PBXGroup;
+			children = (
+				BE2F2F60FAA7EA3B59571255 /* CalendarViewModel.swift */,
+				FDD02922F34DAB27A55A5AB1 /* CaptureViewModel.swift */,
+				9740D8067833DA3E9BBD0391 /* ExtractionViewModel.swift */,
+			);
+			path = ViewModels;
+			sourceTree = "<group>";
+		};
+		2327441F73BFC19910D71DC4 /* Models */ = {
+			isa = PBXGroup;
+			children = (
+				625FE051B813170BE3BC204E /* CalendarTask.swift */,
+				9CF4A99D01B0D5ACF738C1B7 /* ExtractionResult.swift */,
+			);
+			path = Models;
+			sourceTree = "<group>";
+		};
+		3EE2C8BDA72B23294AE1C1E7 /* Services */ = {
+			isa = PBXGroup;
+			children = (
+				3CF3E0586B63804A836DBDBF /* APIClient.swift */,
+				7D667ADD9CD443EC4C02A1C4 /* CalendarService.swift */,
+			);
+			path = Services;
+			sourceTree = "<group>";
+		};
+		4AC61DCA7A67EAB94AC45898 /* LifeSnapAction */ = {
+			isa = PBXGroup;
+			children = (
+				5E5CED99E38215D72CB39856 /* App */,
+				2327441F73BFC19910D71DC4 /* Models */,
+				3EE2C8BDA72B23294AE1C1E7 /* Services */,
+				888E1E959BBC3B62DBCA208E /* Utilities */,
+				0EA5DFF01BF56C2855B1F43D /* ViewModels */,
+				DD4F1A10CB6C3F0843578842 /* Views */,
+			);
+			path = LifeSnapAction;
+			sourceTree = "<group>";
+		};
+		5E5CED99E38215D72CB39856 /* App */ = {
+			isa = PBXGroup;
+			children = (
+				49AC672D4A86AAC5B7ED24A4 /* LifeSnapActionApp.swift */,
+			);
+			path = App;
+			sourceTree = "<group>";
+		};
+		888E1E959BBC3B62DBCA208E /* Utilities */ = {
+			isa = PBXGroup;
+			children = (
+				5C0357953E6E2A6A51B1DF9E /* ImageCompressor.swift */,
+			);
+			path = Utilities;
+			sourceTree = "<group>";
+		};
+		A6A5D8E99E4577ACBF34CAD5 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				B727FF1E246FB59105BA9F1F /* LifeSnapAction.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		C0ADE09EFD829767D22051E4 = {
+			isa = PBXGroup;
+			children = (
+				4AC61DCA7A67EAB94AC45898 /* LifeSnapAction */,
+				A6A5D8E99E4577ACBF34CAD5 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		DD4F1A10CB6C3F0843578842 /* Views */ = {
+			isa = PBXGroup;
+			children = (
+				FD694A0B2795E4F5C266CB64 /* CaptureView.swift */,
+				11A47040BCF3C08BE21E7D0A /* NeedsReviewView.swift */,
+				008EEB44DF793A978F9BBB85 /* NoActionView.swift */,
+				12470F406B69A541A143FA1E /* ProcessingView.swift */,
+				18DCB987DE2CEC4D58B52C1B /* ReviewView.swift */,
+				6016CB43C02D844914697A51 /* SuccessView.swift */,
+			);
+			path = Views;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		8341698B324E1FFBFF1B99DD /* LifeSnapAction */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 1C8A6C81702233A84B12D589 /* Build configuration list for PBXNativeTarget "LifeSnapAction" */;
+			buildPhases = (
+				469A9739F64B090A5C28BC02 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = LifeSnapAction;
+			packageProductDependencies = (
+			);
+			productName = LifeSnapAction;
+			productReference = B727FF1E246FB59105BA9F1F /* LifeSnapAction.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		8E0105D34370ADF8C19B2C9C /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+					8341698B324E1FFBFF1B99DD = {
+						DevelopmentTeam = "";
+					};
+				};
+			};
+			buildConfigurationList = 9FCA5C982CECD5E1C324337B /* Build configuration list for PBXProject "LifeSnapAction" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = C0ADE09EFD829767D22051E4;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = A6A5D8E99E4577ACBF34CAD5 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				8341698B324E1FFBFF1B99DD /* LifeSnapAction */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXSourcesBuildPhase section */
+		469A9739F64B090A5C28BC02 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				0322E7F896DEF11246B2E966 /* APIClient.swift in Sources */,
+				16035F2C4D2DDA58168B1884 /* CalendarService.swift in Sources */,
+				01FD9E8B373A9B58D97C3499 /* CalendarTask.swift in Sources */,
+				9BFD593AD4E1C26C656E38AF /* CalendarViewModel.swift in Sources */,
+				6042CB7D75E84FE0A7DB66FE /* CaptureView.swift in Sources */,
+				BB402664DD36CD26853FE778 /* CaptureViewModel.swift in Sources */,
+				F2A70288A321C35E605BE5D6 /* ExtractionResult.swift in Sources */,
+				C2930CA90FFDFDE85D0DB066 /* ExtractionViewModel.swift in Sources */,
+				B5E8C80C58D53611FD65D0F6 /* ImageCompressor.swift in Sources */,
+				F9D813459BF88EF4F8B0EC7A /* LifeSnapActionApp.swift in Sources */,
+				5E509E4724B99E5104A945C5 /* NeedsReviewView.swift in Sources */,
+				6315E27B2D0B574F87127CD5 /* NoActionView.swift in Sources */,
+				CFC3F2A7009DB2F771D2769D /* ProcessingView.swift in Sources */,
+				2A99A136B0AF2A9F8628DB69 /* ReviewView.swift in Sources */,
+				87DB2D6A39EC78D70A48A6BD /* SuccessView.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		6C73F13C34E244FFE4AE14EC /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		7E327BB1A2002FD7996EC302 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASHER_IS_IPHONE_TARGET = YES;
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				DEVELOPMENT_TEAM = "";
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = LifeSnapAction/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.zll.lifesnapaction.dev;
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 5.9;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		E3F90503EBF46EDB3E231269 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		E6F2410692B465EC5F3EAE8E /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASHER_IS_IPHONE_TARGET = YES;
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				DEVELOPMENT_TEAM = "";
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = LifeSnapAction/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.zll.lifesnapaction.dev;
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 5.9;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		1C8A6C81702233A84B12D589 /* Build configuration list for PBXNativeTarget "LifeSnapAction" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				7E327BB1A2002FD7996EC302 /* Debug */,
+				E6F2410692B465EC5F3EAE8E /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		9FCA5C982CECD5E1C324337B /* Build configuration list for PBXProject "LifeSnapAction" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				E3F90503EBF46EDB3E231269 /* Debug */,
+				6C73F13C34E244FFE4AE14EC /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = 8E0105D34370ADF8C19B2C9C /* Project object */;
+}

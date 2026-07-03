@@ -10,11 +10,14 @@ SwiftUI app that turns paper notices into iOS calendar events.
 
 ## Setup
 
-1. Open `ios/LifeSnapAction.xcodeproj` in Xcode (or create a new project and add these source files).
-2. Set the Bundle Identifier to `com.lifesnap.action`.
-3. Set the deployment target to iOS 16.0.
-4. Add the source files under `LifeSnapAction/` to the project.
-5. Ensure `Info.plist` privacy keys are configured (camera, photos, calendar).
+1. Open `ios/LifeSnapAction.xcodeproj` directly in Xcode.
+2. Ensure you configure your Team/Signing settings under the **LifeSnapAction** target settings to deploy to a physical device.
+
+### Project Generation (Optional)
+
+The project is managed using **XcodeGen**. If you make changes to files or target configurations and want to regenerate the project file:
+1. Install XcodeGen: `brew install xcodegen`
+2. Run `xcodegen` in the `ios/` folder. This will regenerate `LifeSnapAction.xcodeproj` using `project.yml`.
 
 ## API Configuration
 
