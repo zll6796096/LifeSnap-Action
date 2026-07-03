@@ -1,0 +1,11 @@
+HTTP/2 400 
+x-powered-by: Express
+content-type: application/json; charset=utf-8
+etag: W/"70-XQoAG3oa/j/D//SVQzhwX8F7KdI"
+x-cloud-trace-context: 868a9953c29c81c691eec324706c6979
+date: Fri, 03 Jul 2026 02:20:59 GMT
+server: Google Frontend
+content-length: 112
+alt-svc: h3=":443"; ma=2592000,h3-29=":443"; ma=2592000
+
+{"error":"画像サイズが大きすぎます。10MB以下の画像をアップロードしてください。"}

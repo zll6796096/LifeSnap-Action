@@ -1,21 +1,11 @@
-HTTP/2 500 
+HTTP/2 400 
 x-powered-by: Express
-content-security-policy: default-src 'none'
-x-content-type-options: nosniff
-content-type: text/html; charset=utf-8
-x-cloud-trace-context: 408ad09b3132ba96c575f9626b05bcb8;o=1
-date: Thu, 02 Jul 2026 15:30:24 GMT
+content-type: application/json; charset=utf-8
+etag: W/"77-53CgFe5/SQN5R1Yb3c50V4vNh0s"
+x-cloud-trace-context: eee7908657bcdfe36abba3419088f6d8;o=1
+date: Fri, 03 Jul 2026 02:20:52 GMT
 server: Google Frontend
-content-length: 148
+content-length: 119
 alt-svc: h3=":443"; ma=2592000,h3-29=":443"; ma=2592000
 
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<title>Error</title>
-</head>
-<body>
-<pre>Internal Server Error</pre>
-</body>
-</html>
+{"error":"許可されていない画像形式です。JPEG、PNG、WebP画像のみアップロード可能です。"}
