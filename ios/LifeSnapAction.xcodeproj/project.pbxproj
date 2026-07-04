@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		01FD9E8B373A9B58D97C3499 /* CalendarTask.swift in Sources */ = {isa = PBXBuildFile; fileRef = 625FE051B813170BE3BC204E /* CalendarTask.swift */; };
 		0322E7F896DEF11246B2E966 /* APIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3CF3E0586B63804A836DBDBF /* APIClient.swift */; };
+		0736A54DB94C4F16A3E2C771 /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 87DE3D97EB92536D908EE007 /* LaunchScreen.storyboard */; };
 		16035F2C4D2DDA58168B1884 /* CalendarService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7D667ADD9CD443EC4C02A1C4 /* CalendarService.swift */; };
 		2A99A136B0AF2A9F8628DB69 /* ReviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18DCB987DE2CEC4D58B52C1B /* ReviewView.swift */; };
 		5E509E4724B99E5104A945C5 /* NeedsReviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 11A47040BCF3C08BE21E7D0A /* NeedsReviewView.swift */; };
@@ -18,6 +19,7 @@
 		9BFD593AD4E1C26C656E38AF /* CalendarViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE2F2F60FAA7EA3B59571255 /* CalendarViewModel.swift */; };
 		B5E8C80C58D53611FD65D0F6 /* ImageCompressor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5C0357953E6E2A6A51B1DF9E /* ImageCompressor.swift */; };
 		BB402664DD36CD26853FE778 /* CaptureViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = FDD02922F34DAB27A55A5AB1 /* CaptureViewModel.swift */; };
+		BF29CF2E36FB7ED8552A241E /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = E828618D0C3822FFBB0AE3EE /* Assets.xcassets */; };
 		C2930CA90FFDFDE85D0DB066 /* ExtractionViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9740D8067833DA3E9BBD0391 /* ExtractionViewModel.swift */; };
 		CFC3F2A7009DB2F771D2769D /* ProcessingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 12470F406B69A541A143FA1E /* ProcessingView.swift */; };
 		F2A70288A321C35E605BE5D6 /* ExtractionResult.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9CF4A99D01B0D5ACF738C1B7 /* ExtractionResult.swift */; };
@@ -35,15 +37,26 @@
 		6016CB43C02D844914697A51 /* SuccessView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SuccessView.swift; sourceTree = "<group>"; };
 		625FE051B813170BE3BC204E /* CalendarTask.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CalendarTask.swift; sourceTree = "<group>"; };
 		7D667ADD9CD443EC4C02A1C4 /* CalendarService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CalendarService.swift; sourceTree = "<group>"; };
+		87DE3D97EB92536D908EE007 /* LaunchScreen.storyboard */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; path = LaunchScreen.storyboard; sourceTree = "<group>"; };
 		9740D8067833DA3E9BBD0391 /* ExtractionViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExtractionViewModel.swift; sourceTree = "<group>"; };
 		9CF4A99D01B0D5ACF738C1B7 /* ExtractionResult.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExtractionResult.swift; sourceTree = "<group>"; };
 		B727FF1E246FB59105BA9F1F /* LifeSnapAction.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = LifeSnapAction.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		BE2F2F60FAA7EA3B59571255 /* CalendarViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CalendarViewModel.swift; sourceTree = "<group>"; };
+		E828618D0C3822FFBB0AE3EE /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		FD694A0B2795E4F5C266CB64 /* CaptureView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptureView.swift; sourceTree = "<group>"; };
 		FDD02922F34DAB27A55A5AB1 /* CaptureViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptureViewModel.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
+		092518A6B0F57B2A683DCA6D /* Resources */ = {
+			isa = PBXGroup;
+			children = (
+				E828618D0C3822FFBB0AE3EE /* Assets.xcassets */,
+				87DE3D97EB92536D908EE007 /* LaunchScreen.storyboard */,
+			);
+			path = Resources;
+			sourceTree = "<group>";
+		};
 		0EA5DFF01BF56C2855B1F43D /* ViewModels */ = {
 			isa = PBXGroup;
 			children = (
@@ -77,6 +90,7 @@
 			children = (
 				5E5CED99E38215D72CB39856 /* App */,
 				2327441F73BFC19910D71DC4 /* Models */,
+				092518A6B0F57B2A683DCA6D /* Resources */,
 				3EE2C8BDA72B23294AE1C1E7 /* Services */,
 				888E1E959BBC3B62DBCA208E /* Utilities */,
 				0EA5DFF01BF56C2855B1F43D /* ViewModels */,
@@ -138,6 +152,7 @@
 			buildConfigurationList = 1C8A6C81702233A84B12D589 /* Build configuration list for PBXNativeTarget "LifeSnapAction" */;
 			buildPhases = (
 				469A9739F64B090A5C28BC02 /* Sources */,
+				F62AA11AF34E4652D60EF4EA /* Resources */,
 			);
 			buildRules = (
 			);
@@ -182,6 +197,18 @@
 			);
 		};
 /* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		F62AA11AF34E4652D60EF4EA /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				BF29CF2E36FB7ED8552A241E /* Assets.xcassets in Resources */,
+				0736A54DB94C4F16A3E2C771 /* LaunchScreen.storyboard in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		469A9739F64B090A5C28BC02 /* Sources */ = {
