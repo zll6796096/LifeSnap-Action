@@ -18,7 +18,7 @@ enum ImageCompressor {
         let scaled = downscale(image, maxDimension: maxDimension)
 
         // Step 2: Binary search for optimal JPEG quality
-        var quality: CGFloat = 0.8
+        let quality: CGFloat = 0.8
         var data = scaled.jpegData(compressionQuality: quality)
 
         // If already small enough, return
