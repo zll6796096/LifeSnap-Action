@@ -5,7 +5,7 @@ targets:
   LifeSnapAction:
     type: application
     platform: iOS
-    deploymentTarget: "16.0"
+    deploymentTarget: "17.0"
     sources:
       - path: LifeSnapAction
         excludes:
@@ -15,6 +15,6 @@ targets:
       INFOPLIST_FILE: LifeSnapAction/Info.plist
       GENERATE_INFOPLIST_FILE: "NO"
       ASHER_IS_IPHONE_TARGET: "YES"
-      IPHONEOS_DEPLOYMENT_TARGET: "16.0"
+      IPHONEOS_DEPLOYMENT_TARGET: "17.0"
       SWIFT_VERSION: "5.9"
       DEVELOPMENT_TEAM: "" # Leave empty for local building

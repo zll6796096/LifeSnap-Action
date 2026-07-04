@@ -5,8 +5,11 @@ SwiftUI app that turns paper notices into iOS calendar events.
 ## Requirements
 
 - Xcode 15.0+
-- iOS 16.0+ deployment target
+- iOS 17.0+ deployment target
 - Physical device for camera testing
+- iPhone 15 is supported
+
+The app uses Swift Observation APIs such as `@Observable` and `@Bindable`, which require iOS 17.0 or newer. Keep the deployment target at iOS 17.0+ unless the app is later migrated away from Swift Observation.
 
 ## Setup
 
