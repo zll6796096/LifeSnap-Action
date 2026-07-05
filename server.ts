@@ -8,20 +8,56 @@ import {
   validateGeminiExtraction,
 } from "./src/shared/gemini-schema";
 
-dotenv.config();
+dotenv.config({ quiet: true });
 
 const app = express();
 const PORT = parseInt(process.env.PORT || "8080", 10);
+const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+const ALLOWED_IMAGE_MIME_TYPES = new Set(["image/jpeg", "image/png", "image/webp", "image/jpg"]);
+const isProduction = process.env.NODE_ENV === "production";
+const mockModeEnabled = process.env.MOCK_MODE === "true";
+
+if (isProduction && mockModeEnabled) {
+  throw new Error("MOCK_MODE must not be enabled when NODE_ENV=production.");
+}
+
+const PRIVACY_POLICY_HTML = `<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LifeSnap Action Privacy Policy</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Hiragino Sans", sans-serif; line-height: 1.65; margin: 0; padding: 32px 20px; color: #15151f; background: #fff; }
+    main { max-width: 760px; margin: 0 auto; }
+    h1, h2 { line-height: 1.25; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>LifeSnap Action Privacy Policy</h1>
+    <p>LifeSnap Action helps users extract calendar-action candidates from selected document images.</p>
+    <h2>Image Processing</h2>
+    <p>Selected images are sent to the LifeSnap backend and the Gemini API only for calendar-action extraction. LifeSnap does not intentionally store original images.</p>
+    <h2>Calendar Access</h2>
+    <p>Calendar access is used only to add events that the user confirms. LifeSnap does not upload or read the user's existing calendar contents.</p>
+    <h2>Logging</h2>
+    <p>Production logs are designed not to include image bytes, base64 payloads, full OCR/extracted text, full personal data, addresses, amounts, or request bodies.</p>
+    <h2>Contact</h2>
+    <p>For privacy questions, contact the app owner through the App Store support channel.</p>
+    <p>Last updated: 2026-07-04</p>
+  </main>
+</body>
+</html>`;
 
 // JSON body parser for base64 fallback
 app.use(express.json({ limit: "20mb" }));
 
 // Multer for multipart/form-data image uploads (10 MB limit)
 const upload = multer({
-  limits: { fileSize: 10 * 1024 * 1024 },
+  limits: { fileSize: MAX_IMAGE_BYTES },
   fileFilter: (_req, file, cb) => {
-    const allowed = ["image/jpeg", "image/png", "image/webp", "image/jpg"];
-    if (allowed.includes(file.mimetype.toLowerCase())) {
+    if (isAllowedImageMimeType(file.mimetype)) {
       cb(null, true);
     } else {
       cb(new Error("許可されていない画像形式です。JPEG、PNG、WebP画像のみアップロード可能です。"));
@@ -29,17 +65,37 @@ const upload = multer({
   },
 });
 
-// Initialize GoogleGenAI client
-const ai = new GoogleGenAI({
-  apiKey: process.env.GEMINI_API_KEY,
-  httpOptions: {
-    headers: {
-      "User-Agent": "aistudio-build",
-    },
-  },
-});
-
 const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash";
+
+function isAllowedImageMimeType(mimeType: string): boolean {
+  return ALLOWED_IMAGE_MIME_TYPES.has(mimeType.toLowerCase());
+}
+
+function safeErrorMetadata(error: unknown): Record<string, string | number | undefined> {
+  const record = typeof error === "object" && error !== null ? (error as Record<string, unknown>) : {};
+  const name = typeof record.name === "string" ? record.name : "Error";
+  const code =
+    typeof record.code === "string" || typeof record.code === "number" ? record.code : undefined;
+  const status =
+    typeof record.status === "number"
+      ? record.status
+      : typeof record.statusCode === "number"
+        ? record.statusCode
+        : undefined;
+
+  return { name, code, status };
+}
+
+function createGeminiClient(apiKey: string): GoogleGenAI {
+  return new GoogleGenAI({
+    apiKey,
+    httpOptions: {
+      headers: {
+        "User-Agent": "lifesnap-action/1.0",
+      },
+    },
+  });
+}
 
 // ─── Health Check ──────────────────────────────────────────────
 
@@ -49,6 +105,14 @@ app.get("/health", (_req, res) => {
 
 app.get("/healthz", (_req, res) => {
   res.json({ status: "ok", timestamp: new Date().toISOString() });
+});
+
+app.get("/healthz/", (_req, res) => {
+  res.json({ status: "ok", timestamp: new Date().toISOString() });
+});
+
+app.get("/privacy", (_req, res) => {
+  res.type("html").send(PRIVACY_POLICY_HTML);
 });
 
 // ─── API Route: Extract Event Details from Image ───────────────
@@ -66,6 +130,13 @@ app.post("/api/extract", upload.single("image"), async (req, res): Promise<any> 
     // Path 2: Base64 JSON body (fallback — backward compatibility)
     else if (req.body.image) {
       const { image, mimeType } = req.body;
+
+      if (typeof image !== "string" || (mimeType !== undefined && typeof mimeType !== "string")) {
+        return res.status(400).json({
+          error: "画像データの形式が正しくありません。",
+        });
+      }
+
       finalMimeType = mimeType || "image/jpeg";
 
       const match = image.match(/^data:(image\/\w+);base64,(.+)$/);
@@ -77,8 +148,7 @@ app.post("/api/extract", upload.single("image"), async (req, res): Promise<any> 
       }
 
       // MIME validation for JSON path
-      const allowedMimes = ["image/jpeg", "image/png", "image/webp", "image/jpg"];
-      if (!allowedMimes.includes(finalMimeType.toLowerCase())) {
+      if (!isAllowedImageMimeType(finalMimeType)) {
         return res.status(400).json({
           error: "許可されていない画像形式です。JPEG、PNG、WebP画像のみアップロード可能です。",
         });
@@ -86,7 +156,7 @@ app.post("/api/extract", upload.single("image"), async (req, res): Promise<any> 
 
       // Size validation for JSON path (approx 10 MB)
       const approximateSizeBytes = (base64Data.length * 3) / 4;
-      if (approximateSizeBytes > 10 * 1024 * 1024) {
+      if (approximateSizeBytes > MAX_IMAGE_BYTES) {
         return res.status(400).json({
           error: "画像サイズが大きすぎます。10MB以下の画像をアップロードしてください。",
         });
@@ -97,17 +167,9 @@ app.post("/api/extract", upload.single("image"), async (req, res): Promise<any> 
       });
     }
 
-    // Guard: GEMINI_API_KEY required in production
-    if (!process.env.GEMINI_API_KEY) {
-      if (process.env.NODE_ENV === "production" || process.env.MOCK_MODE !== "true") {
-        return res.status(503).json({
-          error: "Service not configured: GEMINI_API_KEY is missing.",
-        });
-      }
-
-      console.warn(
-        "GEMINI_API_KEY is not defined. Falling back to mock extraction (MOCK_MODE=true in dev)."
-      );
+    // Mock extraction is development-only. Production must use Gemini with a backend-held key.
+    if (mockModeEnabled) {
+      console.warn("Using mock extraction. MOCK_MODE is development-only and disabled in production.");
       const mockResult = {
         route: "calendar_action" as const,
         document_type: "school_notice",
@@ -135,7 +197,15 @@ app.post("/api/extract", upload.single("image"), async (req, res): Promise<any> 
       return res.json(validateGeminiExtraction(mockResult));
     }
 
+    const geminiApiKey = process.env.GEMINI_API_KEY;
+    if (!geminiApiKey) {
+      return res.status(503).json({
+        error: "Service not configured: GEMINI_API_KEY is missing.",
+      });
+    }
+
     console.log(`Calling Gemini API (${GEMINI_MODEL}) for image analysis...`);
+    const ai = createGeminiClient(geminiApiKey);
 
     const response = await ai.models.generateContent({
       model: GEMINI_MODEL,
@@ -157,7 +227,6 @@ app.post("/api/extract", upload.single("image"), async (req, res): Promise<any> 
     });
 
     const resultText = response.text;
-    console.log("Gemini API Raw Response:", resultText);
 
     if (!resultText) {
       throw new Error("Gemini returned empty response.");
@@ -168,7 +237,7 @@ app.post("/api/extract", upload.single("image"), async (req, res): Promise<any> 
 
     res.json(validated);
   } catch (error: any) {
-    console.error("Error analyzing image with Gemini:", error);
+    console.error("Error analyzing image with Gemini:", safeErrorMetadata(error));
 
     // Multer file size error
     if (error.code === "LIMIT_FILE_SIZE") {
@@ -179,7 +248,6 @@ app.post("/api/extract", upload.single("image"), async (req, res): Promise<any> 
 
     res.status(500).json({
       error: "画像の解析中にエラーが発生しました。",
-      details: error.message,
     });
   }
 });
@@ -200,8 +268,8 @@ app.use((err: any, _req: express.Request, res: express.Response, _next: express.
     return res.status(400).json({ error: err.message });
   }
 
-  console.error("Unhandled error:", err);
-  res.status(500).json({ error: "サーバーエラーが発生しました。", details: err.message });
+  console.error("Unhandled error:", safeErrorMetadata(err));
+  res.status(500).json({ error: "サーバーエラーが発生しました。" });
 });
 
 // ─── Start Server ──────────────────────────────────────────────

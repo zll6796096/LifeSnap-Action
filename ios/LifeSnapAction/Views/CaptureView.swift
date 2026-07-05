@@ -93,6 +93,9 @@ struct CaptureView: View {
                 }
                 .padding(.horizontal, 24)
 
+                privacyDisclosure
+                    .padding(.horizontal, 28)
+
                 Spacer()
                     .frame(height: 40)
             }
@@ -111,6 +114,24 @@ struct CaptureView: View {
                     onImageSelected(image)
                 }
             }
+        }
+    }
+
+    private var privacyDisclosure: some View {
+        VStack(spacing: 8) {
+            Text("選択した画像は、予定抽出のためにLifeSnapバックエンドとGemini APIへ送信されます。LifeSnapは元画像を意図的に保存しません。")
+                .font(.caption)
+                .foregroundColor(.white.opacity(0.58))
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Link(destination: URL(string: "https://lifesnap-action-788259830737.asia-northeast1.run.app/privacy")!) {
+                Text("プライバシーポリシー")
+                    .font(.caption.weight(.medium))
+                    .foregroundColor(Color(hex: "48C6EF"))
+                    .underline()
+            }
+            .accessibilityLabel("プライバシーポリシー")
         }
     }
 }
