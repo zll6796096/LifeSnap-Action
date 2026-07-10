@@ -11,62 +11,59 @@ struct LifeSnapActionApp: App {
     }
 }
 
-// MARK: - App Flow State
-
-enum AppScreen {
-    case capture
-    case processing
-    case review(CalendarTask)
-    case needsReview(CalendarTask)
-    case noAction
-    case success(CalendarTask)
-}
-
 // MARK: - Content View (Navigation Root)
 
 struct ContentView: View {
-    @State private var currentScreen: AppScreen = .capture
-    @State private var captureVM = CaptureViewModel()
-    @State private var extractionVM = ExtractionViewModel()
-    @State private var calendarVM = CalendarViewModel()
+    @State private var coordinator = AppFlowCoordinator()
 
     var body: some View {
         Group {
-            switch currentScreen {
+            switch coordinator.currentScreen {
             case .capture:
-                CaptureView(viewModel: captureVM) { image in
-                    captureVM.setImage(image)
-                    currentScreen = .processing
-                    Task {
-                        await extractionVM.extract(image: image)
-                        handleExtractionResult()
+                CaptureView(viewModel: coordinator.captureVM) { image in
+                    coordinator.imageSelected(image)
+                }
+
+            case .consent(let purpose):
+                if let image = coordinator.captureVM.selectedImage {
+                    UploadConsentView(
+                        image: image,
+                        purpose: purpose,
+                        onAgree: {
+                            Task {
+                                await coordinator.startConsentedExtraction()
+                            }
+                        },
+                        onCancel: {
+                            coordinator.cancelConsent()
+                        }
+                    )
+                } else {
+                    CaptureView(viewModel: coordinator.captureVM) { image in
+                        coordinator.imageSelected(image)
+                    }
+                    .onAppear {
+                        coordinator.resetToCapture()
                     }
                 }
 
             case .processing:
                 ProcessingView(
-                    error: extractionVM.error,
-                    onCancel: { resetToCapture() },
+                    error: coordinator.extractionVM.error,
+                    onCancel: { coordinator.cancelProcessing() },
                     onRetry: {
-                        if let image = captureVM.selectedImage {
-                            extractionVM.reset()
-                            currentScreen = .processing
-                            Task {
-                                await extractionVM.extract(image: image)
-                                handleExtractionResult()
-                            }
-                        }
+                        coordinator.requestRetryConsent()
                     }
                 )
 
             case .review(let task):
                 ReviewView(
                     task: task,
-                    calendarVM: calendarVM,
+                    calendarVM: coordinator.calendarVM,
                     onConfirm: {
-                        currentScreen = .success(task)
+                        coordinator.currentScreen = .success(task)
                     },
-                    onBack: { resetToCapture() }
+                    onBack: { coordinator.resetToCapture() }
                 )
 
             case .needsReview(let task):
@@ -74,18 +71,18 @@ struct ContentView: View {
                     task: task,
                     onConfirm: { editedTask in
                         editedTask.route = .calendarAction
-                        currentScreen = .review(editedTask)
+                        coordinator.currentScreen = .review(editedTask)
                     },
-                    onBack: { resetToCapture() }
+                    onBack: { coordinator.resetToCapture() }
                 )
 
             case .noAction:
-                NoActionView(onScanAgain: { resetToCapture() })
+                NoActionView(onScanAgain: { coordinator.resetToCapture() })
 
             case .success(let task):
                 SuccessView(
                     task: task,
-                    onScanAgain: { resetToCapture() }
+                    onScanAgain: { coordinator.resetToCapture() }
                 )
             }
         }
@@ -95,37 +92,14 @@ struct ContentView: View {
     // MARK: - Navigation Helpers
 
     private var screenKey: String {
-        switch currentScreen {
+        switch coordinator.currentScreen {
         case .capture: return "capture"
+        case .consent: return "consent"
         case .processing: return "processing"
         case .review: return "review"
         case .needsReview: return "needsReview"
         case .noAction: return "noAction"
         case .success: return "success"
-        }
-    }
-
-    private func resetToCapture() {
-        captureVM.reset()
-        extractionVM.reset()
-        calendarVM.reset()
-        currentScreen = .capture
-    }
-
-    private func handleExtractionResult() {
-        guard let extraction = extractionVM.extraction else { return }
-
-        switch extraction.route {
-        case .calendarAction:
-            let task = CalendarTask(from: extraction)
-            currentScreen = .review(task)
-
-        case .needsReview:
-            let task = CalendarTask(from: extraction)
-            currentScreen = .needsReview(task)
-
-        case .noActionDetected:
-            currentScreen = .noAction
         }
     }
 }

@@ -10,9 +10,15 @@ final class APIClient {
         if let url = ProcessInfo.processInfo.environment["API_BASE_URL"] {
             return url
         }
-        // TODO: Replace with your actual Cloud Run URL
-        return "https://lifesnap-action-788259830737.asia-northeast1.run.app"
+        return "https://lifesnap-action-sxielk4wua-an.a.run.app"
     }()
+
+    static var privacyPolicyURL: URL {
+        guard let url = URL(string: "\(baseURL)/privacy") else {
+            preconditionFailure("Invalid privacy policy URL")
+        }
+        return url
+    }
 
     /// Request timeout in seconds
     private static let timeoutInterval: TimeInterval = 30
@@ -84,6 +90,18 @@ final class APIClient {
         } catch {
             return false
         }
+    }
+}
+
+// MARK: - Extraction Client Injection
+
+protocol ImageExtractionClient {
+    func extractEvent(from imageData: Data) async throws -> ExtractionResponse
+}
+
+struct BackendImageExtractionClient: ImageExtractionClient {
+    func extractEvent(from imageData: Data) async throws -> ExtractionResponse {
+        try await APIClient.extractEvent(from: imageData)
     }
 }
 

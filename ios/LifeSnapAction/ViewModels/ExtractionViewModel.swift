@@ -8,6 +8,11 @@ final class ExtractionViewModel {
     var isLoading = false
     var extraction: ExtractionResponse?
     var error: String?
+    private let apiClient: ImageExtractionClient
+
+    init(apiClient: ImageExtractionClient = BackendImageExtractionClient()) {
+        self.apiClient = apiClient
+    }
 
     /// Send image to backend for Gemini extraction.
     func extract(image: UIImage) async {
@@ -25,7 +30,7 @@ final class ExtractionViewModel {
         }
 
         do {
-            let result = try await APIClient.extractEvent(from: imageData)
+            let result = try await apiClient.extractEvent(from: imageData)
             await MainActor.run {
                 self.extraction = result
                 self.isLoading = false

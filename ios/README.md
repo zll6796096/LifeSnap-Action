@@ -7,7 +7,7 @@ SwiftUI app that turns paper notices into iOS calendar events.
 - Xcode 15.0+
 - iOS 17.0+ deployment target
 - Physical device for camera testing
-- iPhone 15 is supported
+- iPhone is the App Store device family; simulator tests also run on iPad compatibility mode.
 
 The app uses Swift Observation APIs such as `@Observable` and `@Bindable`, which require iOS 17.0 or newer. Keep the deployment target at iOS 17.0+ unless the app is later migrated away from Swift Observation.
 
@@ -24,13 +24,7 @@ The project is managed using **XcodeGen**. If you make changes to files or targe
 
 ## API Configuration
 
-The app points to the Cloud Run backend by default. To change the API URL:
-
-Edit `Services/APIClient.swift` and update `baseURL`:
-
-```swift
-static let baseURL = "https://your-service.run.app"
-```
+The app points to the live Cloud Run backend by default through `Services/APIClient.swift`.
 
 For local development, set the `API_BASE_URL` environment variable in the Xcode scheme:
 - Product → Scheme → Edit Scheme → Run → Arguments → Environment Variables
@@ -41,10 +35,11 @@ For local development, set the `API_BASE_URL` environment variable in the Xcode 
 ```
 App/            → @main entry point, screen navigation
 Models/         → ExtractionResult (Codable), CalendarTask (@Observable)
-Views/          → 6 SwiftUI views (Capture, Processing, Review, NeedsReview, NoAction, Success)
-ViewModels/     → Capture, Extraction, Calendar view models
+Views/          → Capture, upload consent, Processing, Review, NeedsReview, NoAction, Success
+ViewModels/     → AppFlowCoordinator, Capture, Extraction, Calendar view models
 Services/       → APIClient (URLSession), CalendarService (EventKit)
 Utilities/      → ImageCompressor (JPEG ≤ 2 MB)
+Tests/          → XCTest coverage for consent gate and retry behavior
 ```
 
 ## Screens
@@ -52,8 +47,13 @@ Utilities/      → ImageCompressor (JPEG ≤ 2 MB)
 | Screen | Purpose |
 |---|---|
 | CaptureView | Camera + photo picker |
+| UploadConsentView | Per-image AI data sharing consent before upload |
 | ProcessingView | Loading animation during AI extraction |
 | ReviewView | Editable task card with calendar confirm |
 | NeedsReviewView | Ambiguous extraction — force manual edit |
 | NoActionView | Neutral "no event found" |
 | SuccessView | Event added confirmation |
+
+`/api/extract` is called only from the explicit agree action on `UploadConsentView`.
+Cancel clears the pending in-memory image and returns to capture without uploading.
+Retry returns to consent first and requires `同意して再解析`.

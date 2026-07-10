@@ -5,6 +5,8 @@
     <!-- Required app bundle metadata -->
     <key>CFBundleDevelopmentRegion</key>
     <string>en</string>
+    <key>CFBundleDisplayName</key>
+    <string>LifeSnap</string>
     <key>CFBundleExecutable</key>
     <string>$(EXECUTABLE_NAME)</string>
     <key>CFBundleIdentifier</key>
@@ -16,9 +18,9 @@
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>1.0</string>
+    <string>$(MARKETING_VERSION)</string>
     <key>CFBundleVersion</key>
-    <string>1</string>
+    <string>$(CURRENT_PROJECT_VERSION)</string>
     <key>UILaunchStoryboardName</key>
     <string>LaunchScreen</string>
 
@@ -36,18 +38,18 @@
 
     <!-- Camera usage -->
     <key>NSCameraUsageDescription</key>
-    <string>書類を撮影してカレンダーイベントを作成するために使用します。</string>
+    <string>撮影した書類画像から予定候補を抽出し、確認後にカレンダーへ追加するために使用します。</string>
 
     <!-- Photo library usage -->
     <key>NSPhotoLibraryUsageDescription</key>
-    <string>写真ライブラリから書類画像を選択するために使用します。</string>
+    <string>選択した書類画像から予定候補を抽出し、確認後にカレンダーへ追加するために使用します。</string>
 
     <!-- Calendar write-only (iOS 17+) -->
     <key>NSCalendarsWriteOnlyAccessUsageDescription</key>
-    <string>抽出された予定をカレンダーに追加するために使用します。</string>
+    <string>ユーザーが確認した予定をシステムカレンダーに追加するために使用します。</string>
 
     <!-- Calendar full access fallback (iOS 16) -->
     <key>NSCalendarsUsageDescription</key>
-    <string>抽出された予定をカレンダーに追加するために使用します。</string>
+    <string>ユーザーが確認した予定をシステムカレンダーに追加するために使用します。</string>
 </dict>
 </plist>

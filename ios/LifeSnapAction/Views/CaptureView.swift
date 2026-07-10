@@ -93,6 +93,9 @@ struct CaptureView: View {
                 }
                 .padding(.horizontal, 24)
 
+                privacyDisclosure
+                    .padding(.horizontal, 28)
+
                 Spacer()
                     .frame(height: 40)
             }
@@ -109,8 +112,27 @@ struct CaptureView: View {
                 await viewModel.loadImage(from: newItem)
                 if let image = viewModel.selectedImage {
                     onImageSelected(image)
+                    selectedItem = nil
                 }
             }
+        }
+    }
+
+    private var privacyDisclosure: some View {
+        VStack(spacing: 8) {
+            Text("画像を送信する前に、送信先とデータ利用に関する確認画面を毎回表示します。")
+                .font(.caption)
+                .foregroundColor(.white.opacity(0.58))
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Link(destination: APIClient.privacyPolicyURL) {
+                Text("プライバシーポリシー")
+                    .font(.caption.weight(.medium))
+                    .foregroundColor(Color(hex: "48C6EF"))
+                    .underline()
+            }
+            .accessibilityLabel("プライバシーポリシー")
         }
     }
 }
