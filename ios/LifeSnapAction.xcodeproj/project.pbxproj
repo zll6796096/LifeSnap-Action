@@ -10,6 +10,7 @@
 		01FD9E8B373A9B58D97C3499 /* CalendarTask.swift in Sources */ = {isa = PBXBuildFile; fileRef = 625FE051B813170BE3BC204E /* CalendarTask.swift */; };
 		0322E7F896DEF11246B2E966 /* APIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3CF3E0586B63804A836DBDBF /* APIClient.swift */; };
 		0736A54DB94C4F16A3E2C771 /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 87DE3D97EB92536D908EE007 /* LaunchScreen.storyboard */; };
+		094C534C21632C1971FD086B /* AppFlowCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C79B44BA7F670B707143F104 /* AppFlowCoordinatorTests.swift */; };
 		16035F2C4D2DDA58168B1884 /* CalendarService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7D667ADD9CD443EC4C02A1C4 /* CalendarService.swift */; };
 		2A99A136B0AF2A9F8628DB69 /* ReviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18DCB987DE2CEC4D58B52C1B /* ReviewView.swift */; };
 		5E509E4724B99E5104A945C5 /* NeedsReviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 11A47040BCF3C08BE21E7D0A /* NeedsReviewView.swift */; };
@@ -22,9 +23,21 @@
 		BF29CF2E36FB7ED8552A241E /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = E828618D0C3822FFBB0AE3EE /* Assets.xcassets */; };
 		C2930CA90FFDFDE85D0DB066 /* ExtractionViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9740D8067833DA3E9BBD0391 /* ExtractionViewModel.swift */; };
 		CFC3F2A7009DB2F771D2769D /* ProcessingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 12470F406B69A541A143FA1E /* ProcessingView.swift */; };
+		E23748DAA02205A24C4738A2 /* AppFlowCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 61852894C181EAED1A76FA2C /* AppFlowCoordinator.swift */; };
+		EE61B249CBF05C2FBD5FF1A2 /* UploadConsentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E97F2240B0C86AE33B47E475 /* UploadConsentView.swift */; };
 		F2A70288A321C35E605BE5D6 /* ExtractionResult.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9CF4A99D01B0D5ACF738C1B7 /* ExtractionResult.swift */; };
 		F9D813459BF88EF4F8B0EC7A /* LifeSnapActionApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 49AC672D4A86AAC5B7ED24A4 /* LifeSnapActionApp.swift */; };
 /* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		24EBD47C9B1C9EFDDC46BA04 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 8E0105D34370ADF8C19B2C9C /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 8341698B324E1FFBFF1B99DD;
+			remoteInfo = LifeSnapAction;
+		};
+/* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
 		008EEB44DF793A978F9BBB85 /* NoActionView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NoActionView.swift; sourceTree = "<group>"; };
@@ -35,14 +48,18 @@
 		49AC672D4A86AAC5B7ED24A4 /* LifeSnapActionApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LifeSnapActionApp.swift; sourceTree = "<group>"; };
 		5C0357953E6E2A6A51B1DF9E /* ImageCompressor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImageCompressor.swift; sourceTree = "<group>"; };
 		6016CB43C02D844914697A51 /* SuccessView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SuccessView.swift; sourceTree = "<group>"; };
+		61852894C181EAED1A76FA2C /* AppFlowCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppFlowCoordinator.swift; sourceTree = "<group>"; };
 		625FE051B813170BE3BC204E /* CalendarTask.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CalendarTask.swift; sourceTree = "<group>"; };
 		7D667ADD9CD443EC4C02A1C4 /* CalendarService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CalendarService.swift; sourceTree = "<group>"; };
 		87DE3D97EB92536D908EE007 /* LaunchScreen.storyboard */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; path = LaunchScreen.storyboard; sourceTree = "<group>"; };
+		91B65B9F84630907CB2299CE /* LifeSnapActionTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = LifeSnapActionTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		9740D8067833DA3E9BBD0391 /* ExtractionViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExtractionViewModel.swift; sourceTree = "<group>"; };
 		9CF4A99D01B0D5ACF738C1B7 /* ExtractionResult.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExtractionResult.swift; sourceTree = "<group>"; };
 		B727FF1E246FB59105BA9F1F /* LifeSnapAction.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = LifeSnapAction.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		BE2F2F60FAA7EA3B59571255 /* CalendarViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CalendarViewModel.swift; sourceTree = "<group>"; };
+		C79B44BA7F670B707143F104 /* AppFlowCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppFlowCoordinatorTests.swift; sourceTree = "<group>"; };
 		E828618D0C3822FFBB0AE3EE /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		E97F2240B0C86AE33B47E475 /* UploadConsentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UploadConsentView.swift; sourceTree = "<group>"; };
 		FD694A0B2795E4F5C266CB64 /* CaptureView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptureView.swift; sourceTree = "<group>"; };
 		FDD02922F34DAB27A55A5AB1 /* CaptureViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptureViewModel.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -60,6 +77,7 @@
 		0EA5DFF01BF56C2855B1F43D /* ViewModels */ = {
 			isa = PBXGroup;
 			children = (
+				61852894C181EAED1A76FA2C /* AppFlowCoordinator.swift */,
 				BE2F2F60FAA7EA3B59571255 /* CalendarViewModel.swift */,
 				FDD02922F34DAB27A55A5AB1 /* CaptureViewModel.swift */,
 				9740D8067833DA3E9BBD0391 /* ExtractionViewModel.swift */,
@@ -115,10 +133,19 @@
 			path = Utilities;
 			sourceTree = "<group>";
 		};
+		9A61E74632EF5E52D7AF0011 /* LifeSnapActionTests */ = {
+			isa = PBXGroup;
+			children = (
+				C79B44BA7F670B707143F104 /* AppFlowCoordinatorTests.swift */,
+			);
+			path = LifeSnapActionTests;
+			sourceTree = "<group>";
+		};
 		A6A5D8E99E4577ACBF34CAD5 /* Products */ = {
 			isa = PBXGroup;
 			children = (
 				B727FF1E246FB59105BA9F1F /* LifeSnapAction.app */,
+				91B65B9F84630907CB2299CE /* LifeSnapActionTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -127,6 +154,7 @@
 			isa = PBXGroup;
 			children = (
 				4AC61DCA7A67EAB94AC45898 /* LifeSnapAction */,
+				9A61E74632EF5E52D7AF0011 /* LifeSnapActionTests */,
 				A6A5D8E99E4577ACBF34CAD5 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -140,6 +168,7 @@
 				12470F406B69A541A143FA1E /* ProcessingView.swift */,
 				18DCB987DE2CEC4D58B52C1B /* ReviewView.swift */,
 				6016CB43C02D844914697A51 /* SuccessView.swift */,
+				E97F2240B0C86AE33B47E475 /* UploadConsentView.swift */,
 			);
 			path = Views;
 			sourceTree = "<group>";
@@ -165,6 +194,24 @@
 			productReference = B727FF1E246FB59105BA9F1F /* LifeSnapAction.app */;
 			productType = "com.apple.product-type.application";
 		};
+		9FEADD4DEBAF0A28FBB9218D /* LifeSnapActionTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = C79D6324E374CD8C4B43019E /* Build configuration list for PBXNativeTarget "LifeSnapActionTests" */;
+			buildPhases = (
+				C9F37C5C5C12F9D09F59AD42 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				77E36F5C6FF5EF6B1736379D /* PBXTargetDependency */,
+			);
+			name = LifeSnapActionTests;
+			packageProductDependencies = (
+			);
+			productName = LifeSnapActionTests;
+			productReference = 91B65B9F84630907CB2299CE /* LifeSnapActionTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -175,6 +222,9 @@
 				LastUpgradeCheck = 1430;
 				TargetAttributes = {
 					8341698B324E1FFBFF1B99DD = {
+						DevelopmentTeam = "";
+					};
+					9FEADD4DEBAF0A28FBB9218D = {
 						DevelopmentTeam = "";
 					};
 				};
@@ -194,6 +244,7 @@
 			projectRoot = "";
 			targets = (
 				8341698B324E1FFBFF1B99DD /* LifeSnapAction */,
+				9FEADD4DEBAF0A28FBB9218D /* LifeSnapActionTests */,
 			);
 		};
 /* End PBXProject section */
@@ -216,6 +267,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				0322E7F896DEF11246B2E966 /* APIClient.swift in Sources */,
+				E23748DAA02205A24C4738A2 /* AppFlowCoordinator.swift in Sources */,
 				16035F2C4D2DDA58168B1884 /* CalendarService.swift in Sources */,
 				01FD9E8B373A9B58D97C3499 /* CalendarTask.swift in Sources */,
 				9BFD593AD4E1C26C656E38AF /* CalendarViewModel.swift in Sources */,
@@ -230,12 +282,49 @@
 				CFC3F2A7009DB2F771D2769D /* ProcessingView.swift in Sources */,
 				2A99A136B0AF2A9F8628DB69 /* ReviewView.swift in Sources */,
 				87DB2D6A39EC78D70A48A6BD /* SuccessView.swift in Sources */,
+				EE61B249CBF05C2FBD5FF1A2 /* UploadConsentView.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		C9F37C5C5C12F9D09F59AD42 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				094C534C21632C1971FD086B /* AppFlowCoordinatorTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXSourcesBuildPhase section */
 
+/* Begin PBXTargetDependency section */
+		77E36F5C6FF5EF6B1736379D /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 8341698B324E1FFBFF1B99DD /* LifeSnapAction */;
+			targetProxy = 24EBD47C9B1C9EFDDC46BA04 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
 /* Begin XCBuildConfiguration section */
+		369F2D85783D167D883B1602 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				DEVELOPMENT_TEAM = "";
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.zll.lifesnapaction.tests;
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 5.9;
+				TARGETED_DEVICE_FAMILY = 1;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/LifeSnapAction.app/LifeSnapAction";
+			};
+			name = Release;
+		};
 		6C73F13C34E244FFE4AE14EC /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -297,6 +386,7 @@
 				ASHER_IS_IPHONE_TARGET = YES;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
+				CURRENT_PROJECT_VERSION = 3;
 				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = LifeSnapAction/Info.plist;
@@ -305,10 +395,11 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.zll.lifesnapaction.dev;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.zll.lifesnapaction;
 				SDKROOT = iphoneos;
 				SWIFT_VERSION = 5.9;
-				TARGETED_DEVICE_FAMILY = "1,2";
+				TARGETED_DEVICE_FAMILY = 1;
 			};
 			name = Debug;
 		};
@@ -380,6 +471,7 @@
 				ASHER_IS_IPHONE_TARGET = YES;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
+				CURRENT_PROJECT_VERSION = 3;
 				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = LifeSnapAction/Info.plist;
@@ -388,12 +480,33 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.zll.lifesnapaction.dev;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.zll.lifesnapaction;
 				SDKROOT = iphoneos;
 				SWIFT_VERSION = 5.9;
-				TARGETED_DEVICE_FAMILY = "1,2";
+				TARGETED_DEVICE_FAMILY = 1;
 			};
 			name = Release;
+		};
+		F42DCBAC4229A147BA4CE702 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				DEVELOPMENT_TEAM = "";
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.zll.lifesnapaction.tests;
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 5.9;
+				TARGETED_DEVICE_FAMILY = 1;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/LifeSnapAction.app/LifeSnapAction";
+			};
+			name = Debug;
 		};
 /* End XCBuildConfiguration section */
 
@@ -412,6 +525,15 @@
 			buildConfigurations = (
 				E3F90503EBF46EDB3E231269 /* Debug */,
 				6C73F13C34E244FFE4AE14EC /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		C79D6324E374CD8C4B43019E /* Build configuration list for PBXNativeTarget "LifeSnapActionTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				F42DCBAC4229A147BA4CE702 /* Debug */,
+				369F2D85783D167D883B1602 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;

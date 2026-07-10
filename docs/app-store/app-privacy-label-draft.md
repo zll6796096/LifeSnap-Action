@@ -1,48 +1,57 @@
 # App Privacy Label Draft
 
-This is a draft for App Store Connect. Confirm against the final production behavior before submission.
+This is a conservative draft for App Store Connect. It is based on the implemented production data flow and should be reviewed before final App Store submission.
 
 ## Tracking
 
 - Tracking: No
 - Third-party advertising: No
+- Data broker sharing: No
 
-## Data Linked to the User
+## Data Types
 
-- None expected. The app has no account system and does not intentionally attach uploads to a user identity.
+### User Content: Photos or Videos
 
-## Data Not Linked to the User
-
-### User Content
-
-- Photos or videos: selected document images are transmitted to the LifeSnap backend and Gemini API for app functionality.
+- Collected/transmitted: Yes, when the user explicitly agrees before each upload.
 - Purpose: App Functionality.
-- Stored by LifeSnap: No intentional original-image storage.
 - Used for tracking: No.
+- LifeSnap persistence: No. LifeSnap does not persist uploaded images in a database, object store, or file storage.
+- Third-party processing: Yes. The image is sent through the LifeSnap backend to Google Gemini by Google LLC for AI extraction.
+- Conservative linked status: Treat as potentially linked to the user. The app has no account system, but the document itself may contain names, addresses, appointment details, or other identifying information.
 
-### Other User Content
+### User Content: Other User Content
 
-- Extracted document content may include event title, date/time, location, memo, issuer, or amount while processing a request.
+- Collected/transmitted: Yes, during request-time AI extraction. The content may include document text and extracted title, date, time, location, issuer, amount, or summary.
 - Purpose: App Functionality.
-- Stored by LifeSnap: No intentional storage.
 - Used for tracking: No.
+- LifeSnap persistence: No persistent LifeSnap storage.
+- Third-party processing: Yes, by Google Gemini Paid Service.
+- Conservative linked status: Treat as potentially linked because the document content may identify a person.
 
 ### Diagnostics
 
-- Backend operational logs may include route/status/error metadata.
-- Production logs must not include image bytes, base64 payloads, full OCR/extracted text, full extracted personal data, addresses, amounts, or request bodies.
+- Collected by LifeSnap application logs: Operational metadata only, such as request ID, MIME type, byte size, latency, model name, route category, HTTP status, and safe error code.
+- Not logged by LifeSnap: Image bytes, base64 payloads, request bodies, raw Gemini output, OCR text, titles, names, addresses, amounts, summaries, or full document content.
+- Purpose: App Functionality and crash/performance diagnosis.
+- Used for tracking: No.
+- Linked status: Not intended to be linked to the user by LifeSnap.
 
-## Data Not Collected
+## Data Not Used
 
-- Contact information
-- Precise location
-- Contacts
-- Browsing history
-- Search history
-- Identifiers from the iOS app
-- Purchases
-- Payment information
+- Contact information: Not requested by the app.
+- Precise location: Not requested by the app.
+- Contacts: Not requested by the app.
+- Browsing history: Not collected.
+- Search history: Not collected.
+- Purchases/payment information: Not collected.
+- Tracking identifiers: Not used.
 
 ## Calendar Data
 
-The app requests Calendar permission to add user-confirmed events to the local system calendar. Existing calendar contents are not uploaded to the LifeSnap backend.
+The app requests Calendar permission only to add user-confirmed events to the local iOS system calendar. Existing calendar contents are not uploaded to LifeSnap.
+
+## Why Not Select "Data Not Collected"
+
+Apple's "Data Not Collected" exception may apply only when data is processed on-device or transmitted solely for immediate request fulfillment and discarded in a way that satisfies Apple's definition. LifeSnap itself does not persist the uploaded image, but the request is sent to Google Gemini Paid Service, and Google may process limited logs for safety, security, abuse prevention, and legal obligations for a limited period.
+
+Because a third party may process limited logs after the real-time request, the conservative App Store Connect answer should not be `Data Not Collected`. Use the User Content categories above unless Apple Support or legal review confirms the real-time processing exception applies.

@@ -56,5 +56,5 @@ struct CalendarEventData: Codable {
 
 struct APIErrorResponse: Codable {
     let error: String
-    let details: String?
+    let code: String?
 }

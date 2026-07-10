@@ -36,4 +36,10 @@ final class CaptureViewModel {
     func setImage(_ image: UIImage) {
         selectedImage = image
     }
+
+    /// Release the in-memory image after cancellation or successful upload processing.
+    func clearPendingImage() {
+        selectedImage = nil
+        selectedPhotoItem = nil
+    }
 }

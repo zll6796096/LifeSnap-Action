@@ -112,6 +112,7 @@ struct CaptureView: View {
                 await viewModel.loadImage(from: newItem)
                 if let image = viewModel.selectedImage {
                     onImageSelected(image)
+                    selectedItem = nil
                 }
             }
         }
@@ -119,13 +120,13 @@ struct CaptureView: View {
 
     private var privacyDisclosure: some View {
         VStack(spacing: 8) {
-            Text("選択した画像は、予定抽出のためにLifeSnapバックエンドとGemini APIへ送信されます。LifeSnapは元画像を意図的に保存しません。")
+            Text("画像を送信する前に、送信先とデータ利用に関する確認画面を毎回表示します。")
                 .font(.caption)
                 .foregroundColor(.white.opacity(0.58))
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
 
-            Link(destination: URL(string: "https://lifesnap-action-788259830737.asia-northeast1.run.app/privacy")!) {
+            Link(destination: APIClient.privacyPolicyURL) {
                 Text("プライバシーポリシー")
                     .font(.caption.weight(.medium))
                     .foregroundColor(Color(hex: "48C6EF"))

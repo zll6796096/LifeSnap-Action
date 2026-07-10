@@ -11,10 +11,37 @@ targets:
         excludes:
           - Info.plist
     settings:
-      PRODUCT_BUNDLE_IDENTIFIER: com.zll.lifesnapaction.dev
+      PRODUCT_BUNDLE_IDENTIFIER: com.zll.lifesnapaction
       INFOPLIST_FILE: LifeSnapAction/Info.plist
       GENERATE_INFOPLIST_FILE: "NO"
+      TARGETED_DEVICE_FAMILY: "1"
+      MARKETING_VERSION: "1.0"
+      CURRENT_PROJECT_VERSION: "3"
       ASHER_IS_IPHONE_TARGET: "YES"
       IPHONEOS_DEPLOYMENT_TARGET: "17.0"
       SWIFT_VERSION: "5.9"
       DEVELOPMENT_TEAM: "" # Leave empty for local building
+  LifeSnapActionTests:
+    type: bundle.unit-test
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: LifeSnapActionTests
+    dependencies:
+      - target: LifeSnapAction
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: com.zll.lifesnapaction.tests
+      GENERATE_INFOPLIST_FILE: "YES"
+      TARGETED_DEVICE_FAMILY: "1"
+      IPHONEOS_DEPLOYMENT_TARGET: "17.0"
+      SWIFT_VERSION: "5.9"
+      DEVELOPMENT_TEAM: ""
+schemes:
+  LifeSnapAction:
+    build:
+      targets:
+        LifeSnapAction: all
+        LifeSnapActionTests: [test]
+    test:
+      targets:
+        - LifeSnapActionTests

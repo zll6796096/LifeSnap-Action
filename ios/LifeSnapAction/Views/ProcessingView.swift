@@ -112,7 +112,7 @@ struct ProcessingView: View {
             } label: {
                 HStack(spacing: 8) {
                     Image(systemName: "arrow.clockwise")
-                    Text("もう一度試す")
+                    Text("再解析の同意へ")
                 }
                 .font(.headline)
                 .padding(.horizontal, 32)

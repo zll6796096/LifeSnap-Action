@@ -8,7 +8,7 @@ Snap a photo of a school notice, invoice, or appointment letter → AI extracts 
 
 ```
 ┌─────────────┐      POST /api/extract      ┌──────────────┐
-│  iOS App    │ ──── multipart image ──────▶ │ Cloud Run    │
+│  iOS App    │ ─ explicit-consent upload ─▶ │ Cloud Run    │
 │  (SwiftUI)  │ ◀─── JSON extraction ────── │ Express API  │
 │             │                              │              │
 │  EventKit ──┼──▶ iOS System Calendar       │ Gemini API ──┼──▶ Google AI
@@ -19,7 +19,8 @@ Snap a photo of a school notice, invoice, or appointment letter → AI extracts 
 
 | Endpoint | Method | Description |
 |---|---|---|
-| `/healthz` | GET | Health check |
+| `/health` | GET | Health check |
+| `/healthz` | GET | Compatibility health check |
 | `/privacy` | GET | Public privacy policy for App Store review and in-app link |
 | `/api/extract` | POST | Extract event data from image |
 
@@ -27,7 +28,9 @@ Snap a photo of a school notice, invoice, or appointment letter → AI extracts 
 
 Accepts `multipart/form-data` with an `image` field (JPEG, PNG, or WebP, max 10 MB).
 
-Also accepts JSON body with `{ image: "<base64>", mimeType: "image/jpeg" }` for backward compatibility.
+The production iOS app shows a dedicated consent screen before every upload. The
+backend intentionally accepts only multipart image uploads, to keep the image
+ingress surface narrow.
 
 **Response:**
 ```json
@@ -96,6 +99,11 @@ persistent upload, `cached_content`, or stateful Interactions storage.
 
 The iOS app is in the `ios/` directory. See [ios/README.md](ios/README.md) for setup instructions.
 
+Before each image upload, including retries, the iOS flow shows a preview and
+data-sharing notice. `/api/extract` is called only after the user taps
+`同意してAI解析を開始` or `同意して再解析`. If the user cancels, the pending image is
+cleared and no API request or calendar write occurs.
+
 ## Environment Variables
 
 | Variable | Required | Default | Description |
@@ -108,8 +116,14 @@ The iOS app is in the `ios/` directory. See [ios/README.md](ios/README.md) for s
 ## Privacy and Logging
 
 Selected images are sent to the LifeSnap backend and Gemini API only for
-calendar-action extraction. LifeSnap does not intentionally store original
-images.
+calendar-action extraction after explicit per-upload consent. LifeSnap does not
+persist uploaded images, base64 payloads, raw Gemini responses, OCR text,
+extracted titles, names, addresses, amounts, summaries, or document archives.
+
+Production Gemini requests must use a Paid Service API key whose Google Cloud
+project has active billing. Google does not use Paid Service inputs and outputs
+to improve Google products, but may process limited logs for safety, security,
+abuse prevention, and legal obligations for a limited period.
 
 Production logs must not include image bytes, base64 payloads, OCR/full extracted
 text, full personal data, addresses, amounts, or request bodies. Keep any future
