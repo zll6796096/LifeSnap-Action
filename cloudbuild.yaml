@@ -34,7 +34,7 @@ steps:
       - -ceu
       - >-
         docker build --pull
-        --tag="$_AR_HOSTNAME/$PROJECT_ID/$_AR_REPOSITORY/$_IMAGE_NAME:$COMMIT_SHA"
+        --tag="$_AR_HOSTNAME/$PROJECT_ID/$_LIFESNAP_AR_REPOSITORY/$_IMAGE_NAME:$COMMIT_SHA"
         .
 
   - id: docker-push
@@ -44,7 +44,7 @@ steps:
       - -ceu
       - >-
         docker push
-        "$_AR_HOSTNAME/$PROJECT_ID/$_AR_REPOSITORY/$_IMAGE_NAME:$COMMIT_SHA"
+        "$_AR_HOSTNAME/$PROJECT_ID/$_LIFESNAP_AR_REPOSITORY/$_IMAGE_NAME:$COMMIT_SHA"
 
   - id: capture-rollback
     name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
@@ -89,7 +89,7 @@ steps:
           --project="$PROJECT_ID" \
           --region="$_DEPLOY_REGION" \
           --platform=managed \
-          --image="$_AR_HOSTNAME/$PROJECT_ID/$_AR_REPOSITORY/$_IMAGE_NAME:$COMMIT_SHA" \
+          --image="$_AR_HOSTNAME/$PROJECT_ID/$_LIFESNAP_AR_REPOSITORY/$_IMAGE_NAME:$COMMIT_SHA" \
           --no-traffic \
           --tag=candidate \
           --update-labels="source-commit=${COMMIT_SHA},managed-by=cloud-build,product=lifesnap-action,environment=production" \
@@ -321,7 +321,7 @@ steps:
 
 substitutions:
   _AR_HOSTNAME: asia-northeast1-docker.pkg.dev
-  _AR_REPOSITORY: apps
+  _LIFESNAP_AR_REPOSITORY: apps
   _IMAGE_NAME: lifesnap-action
   _SERVICE_NAME: lifesnap-action
   _DEPLOY_REGION: asia-northeast1

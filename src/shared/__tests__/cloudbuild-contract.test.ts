@@ -33,7 +33,10 @@ describe("Cloud Build release contract", () => {
 
     expect(config).toContain("apps-cloud-build@zhang23-23.iam.gserviceaccount.com");
     expect(config).toContain("logging: CLOUD_LOGGING_ONLY");
-    expect(config).toContain("$_AR_REPOSITORY/$_IMAGE_NAME:$COMMIT_SHA");
+    expect(config).toContain(
+      "$_LIFESNAP_AR_REPOSITORY/$_IMAGE_NAME:$COMMIT_SHA",
+    );
+    expect(config).toContain("_LIFESNAP_AR_REPOSITORY: apps");
     expect(config).toContain("test-assets/service_notice.png");
     expect(config).toContain("source-commit=${COMMIT_SHA}");
     expect(config).toContain("managed-by=cloud-build");
