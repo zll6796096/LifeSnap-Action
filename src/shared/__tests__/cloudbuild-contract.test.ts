@@ -42,6 +42,9 @@ describe("Cloud Build release contract", () => {
     expect(config).toContain("managed-by=cloud-build");
     expect(config).toContain("product=lifesnap-action");
     expect(config).toContain("environment=production");
+    expect(config).toContain(
+      "--remove-labels=commit-sha,gcb-build-id,gcb-trigger-id,gcb-trigger-region",
+    );
   });
 
   it("preserves the existing runtime identity and secret injection", async () => {

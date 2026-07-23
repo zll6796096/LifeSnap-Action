@@ -93,6 +93,7 @@ steps:
           --no-traffic \
           --tag=candidate \
           --update-labels="source-commit=${COMMIT_SHA},managed-by=cloud-build,product=lifesnap-action,environment=production" \
+          --remove-labels=commit-sha,gcb-build-id,gcb-trigger-id,gcb-trigger-region \
           --quiet
 
   - id: resolve-candidate
