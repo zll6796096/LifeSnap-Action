@@ -46,6 +46,31 @@ steps:
         docker push
         "$_AR_HOSTNAME/$PROJECT_ID/$_LIFESNAP_AR_REPOSITORY/$_IMAGE_NAME:$COMMIT_SHA"
 
+  - id: resolve-image-digest
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    entrypoint: bash
+    args:
+      - -ceu
+      - |
+        image_tag="$_AR_HOSTNAME/$PROJECT_ID/$_LIFESNAP_AR_REPOSITORY/$_IMAGE_NAME:$COMMIT_SHA"
+        gcloud artifacts docker images describe "$${image_tag}" \
+          --project="$PROJECT_ID" \
+          --format=json > /workspace/lifesnap-image.json
+        python3 - "$${image_tag}" <<'PY'
+        import json
+        import sys
+        from pathlib import Path
+
+        image_tag = sys.argv[1]
+        image = json.loads(Path("/workspace/lifesnap-image.json").read_text())
+        summary = image.get("image_summary", {})
+        digest = summary.get("fully_qualified_digest")
+        if not digest or "@sha256:" not in digest:
+            raise SystemExit(f"Immutable digest is missing for {image_tag}")
+        Path("/workspace/lifesnap-image-digest.txt").write_text(digest + "\n")
+        print(f"image_digest={digest}")
+        PY
+
   - id: capture-rollback
     name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
     entrypoint: bash
@@ -78,6 +103,32 @@ steps:
         )
         print(f"rollback_revision={rollback}")
         PY
+        rollback_revision="$$(tr -d '\n' \
+          < /workspace/lifesnap-rollback-revision.txt)"
+        gcloud run revisions describe "$${rollback_revision}" \
+          --project="$PROJECT_ID" \
+          --region="$_DEPLOY_REGION" \
+          --format=json > /workspace/lifesnap-rollback-revision.json
+        python3 - <<'PY'
+        import json
+        from pathlib import Path
+
+        revision = json.loads(
+            Path("/workspace/lifesnap-rollback-revision.json").read_text()
+        )
+        image = revision["status"].get("imageDigest")
+        source_commit = revision["metadata"].get("labels", {}).get(
+            "source-commit"
+        )
+        if not image or "@sha256:" not in image:
+            raise SystemExit("Rollback revision image digest is missing")
+        if not source_commit or len(source_commit) != 40:
+            raise SystemExit("Rollback revision source commit is missing")
+        Path("/workspace/lifesnap-rollback-image.txt").write_text(image + "\n")
+        Path("/workspace/lifesnap-rollback-source-commit.txt").write_text(
+            source_commit + "\n"
+        )
+        PY
 
   - id: deploy-candidate
     name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
@@ -85,14 +136,17 @@ steps:
     args:
       - -ceu
       - |
+        image_digest="$$(tr -d '\n' \
+          < /workspace/lifesnap-image-digest.txt)"
+        candidate_tag="candidate-${SHORT_SHA}"
         gcloud run services update "$_SERVICE_NAME" \
           --project="$PROJECT_ID" \
           --region="$_DEPLOY_REGION" \
           --platform=managed \
-          --image="$_AR_HOSTNAME/$PROJECT_ID/$_LIFESNAP_AR_REPOSITORY/$_IMAGE_NAME:$COMMIT_SHA" \
+          --image="$${image_digest}" \
           --no-traffic \
-          --tag=candidate \
-          --update-labels="source-commit=${COMMIT_SHA},managed-by=cloud-build,product=lifesnap-action,environment=production" \
+          --tag="$${candidate_tag}" \
+          --update-labels="source-commit=${COMMIT_SHA},managed-by=cloud-build,product=lifesnap-action,environment=production,release-build=${BUILD_ID}" \
           --remove-labels=commit-sha,gcb-build-id,gcb-trigger-id,gcb-trigger-region \
           --quiet
 
@@ -106,13 +160,12 @@ steps:
           --project="$PROJECT_ID" \
           --region="$_DEPLOY_REGION" \
           --format=json > /workspace/lifesnap-service-candidate.json
-        python3 - <<'PY'
+        python3 - "candidate-${SHORT_SHA}" <<'PY'
         import json
+        import sys
         from pathlib import Path
 
-        before = json.loads(
-            Path("/workspace/lifesnap-service-before.json").read_text()
-        )
+        candidate_tag = sys.argv[1]
         candidate = json.loads(
             Path("/workspace/lifesnap-service-candidate.json").read_text()
         )
@@ -123,7 +176,7 @@ steps:
         tagged = [
             item
             for item in candidate["status"]["traffic"]
-            if item.get("tag") == "candidate"
+            if item.get("tag") == candidate_tag
         ]
         if len(tagged) != 1:
             raise SystemExit("Expected exactly one candidate traffic tag")
@@ -159,16 +212,21 @@ steps:
       - |
         candidate_revision="$$(tr -d '\n' \
           < /workspace/lifesnap-candidate-revision.txt)"
+        expected_image_digest="$$(tr -d '\n' \
+          < /workspace/lifesnap-image-digest.txt)"
         gcloud run revisions describe "$${candidate_revision}" \
           --project="$PROJECT_ID" \
           --region="$_DEPLOY_REGION" \
           --format=json > /workspace/lifesnap-candidate-revision.json
-        python3 - "${COMMIT_SHA}" <<'PY'
+        python3 - \
+          "${COMMIT_SHA}" \
+          "${BUILD_ID}" \
+          "$${expected_image_digest}" <<'PY'
         import json
         import sys
         from pathlib import Path
 
-        commit_sha = sys.argv[1]
+        commit_sha, build_id, expected_image_digest = sys.argv[1:]
         revision = json.loads(
             Path("/workspace/lifesnap-candidate-revision.json").read_text()
         )
@@ -178,6 +236,7 @@ steps:
             "managed-by": "cloud-build",
             "product": "lifesnap-action",
             "environment": "production",
+            "release-build": build_id,
         }
         for key, value in expected.items():
             if labels.get(key) != value:
@@ -196,8 +255,8 @@ steps:
         )
         if not secret_ref.get("name"):
             raise SystemExit("Gemini key is not injected from Secret Manager")
-        if not revision["status"].get("imageDigest"):
-            raise SystemExit("Candidate image digest is missing")
+        if revision["status"].get("imageDigest") != expected_image_digest:
+            raise SystemExit("Candidate revision digest does not match pushed image")
         print("candidate_runtime=PASS")
         PY
 
@@ -248,77 +307,21 @@ steps:
         print(f"candidate_smoke=PASS route={extract['route']}")
         PY
 
-  - id: promote-candidate
+  - id: promote-verify-or-rollback
     name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
     entrypoint: bash
     args:
       - -ceu
-      - |
-        candidate_revision="$$(tr -d '\n' \
-          < /workspace/lifesnap-candidate-revision.txt)"
-        gcloud run services update-traffic "$_SERVICE_NAME" \
-          --project="$PROJECT_ID" \
-          --region="$_DEPLOY_REGION" \
-          --platform=managed \
-          --to-revisions="$${candidate_revision}=100" \
-          --quiet
-
-  - id: verify-promotion
-    name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
-    entrypoint: bash
-    args:
-      - -ceu
-      - |
-        candidate_revision="$$(tr -d '\n' \
-          < /workspace/lifesnap-candidate-revision.txt)"
-        gcloud run services describe "$_SERVICE_NAME" \
-          --project="$PROJECT_ID" \
-          --region="$_DEPLOY_REGION" \
-          --format=json > /workspace/lifesnap-service-final.json
-        python3 - "${COMMIT_SHA}" "$${candidate_revision}" <<'PY'
-        import json
-        import sys
-        from pathlib import Path
-
-        commit_sha, candidate_revision = sys.argv[1:]
-        service = json.loads(
-            Path("/workspace/lifesnap-service-final.json").read_text()
-        )
-        labels = service["metadata"].get("labels", {})
-        expected = {
-            "source-commit": commit_sha,
-            "managed-by": "cloud-build",
-            "product": "lifesnap-action",
-            "environment": "production",
-        }
-        for key, value in expected.items():
-            if labels.get(key) != value:
-                raise SystemExit(f"Service label mismatch: {key}")
-
-        traffic = service["status"]["traffic"]
-        if sum(item.get("percent", 0) for item in traffic) != 100:
-            raise SystemExit("Production traffic does not total 100%")
-        promoted = [
-            item
-            for item in traffic
-            if item.get("revisionName") == candidate_revision
-            and item.get("percent", 0) == 100
-        ]
-        if len(promoted) != 1:
-            raise SystemExit("Verified candidate did not receive 100% traffic")
-
-        revision = json.loads(
-            Path("/workspace/lifesnap-candidate-revision.json").read_text()
-        )
-        rollback = Path(
-            "/workspace/lifesnap-rollback-revision.txt"
-        ).read_text().strip()
-        print(f"source_commit={commit_sha}")
-        print(f"production_revision={candidate_revision}")
-        print(f"image_digest={revision['status']['imageDigest']}")
-        print(f"rollback_revision={rollback}")
-        print(f"service_url={service['status']['url']}")
-        PY
+      - ./scripts/promote-and-verify.sh
+    env:
+      - BUILD_ID=$BUILD_ID
+      - COMMIT_SHA=$COMMIT_SHA
+      - DEPLOY_REGION=$_DEPLOY_REGION
+      - PROJECT_ID=$PROJECT_ID
+      - RELEASE_WORKSPACE=/workspace
+      - REPOSITORY_URL=https://github.com/zll6796096/LifeSnap-Action.git
+      - SERVICE_NAME=$_SERVICE_NAME
+      - SHORT_SHA=$SHORT_SHA
 
 substitutions:
   _AR_HOSTNAME: asia-northeast1-docker.pkg.dev
