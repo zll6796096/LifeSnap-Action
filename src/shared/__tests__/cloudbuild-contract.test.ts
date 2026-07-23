@@ -37,15 +37,19 @@ type ServiceState = {
   };
   spec: {
     template: {
-      metadata: { name: string };
+      metadata: {
+        labels: Record<string, string>;
+        name: string;
+      };
       spec: {
         containers: Array<{ image: string }>;
         serviceAccountName: string;
       };
     };
     traffic: Array<{
+      latestRevision?: boolean;
       percent?: number;
-      revisionName: string;
+      revisionName?: string;
       tag?: string;
     }>;
   };
@@ -54,8 +58,9 @@ type ServiceState = {
     latestCreatedRevisionName: string;
     latestReadyRevisionName: string;
     traffic: Array<{
+      latestRevision?: boolean;
       percent?: number;
-      revisionName: string;
+      revisionName?: string;
       tag?: string;
       url?: string;
     }>;
@@ -166,9 +171,11 @@ describe("Cloud Build release contract", () => {
     expect(script).toContain("cleanup_failed_release");
     expect(script).not.toContain("--request PATCH");
     expect(script).not.toContain("updateMask=");
+    expect(script).not.toContain("gcloud run services update");
     expect(script).not.toContain("run services update-traffic");
-    expect(deployFunction).not.toContain("--update-labels");
-    expect(deployFunction).not.toContain("source-commit");
+    expect(deployFunction).toContain("prepare_candidate_payload");
+    expect(deployFunction).toContain("conditional_replace");
+    expect(script).toContain('"resourceVersion": resource_version');
     expect(installTraps).toBeGreaterThan(-1);
     expect(deploy).toBeGreaterThan(installTraps);
     expect(candidateRuntime).toBeGreaterThan(deploy);
@@ -210,6 +217,48 @@ describe("Cloud Build release contract", () => {
     );
   });
 
+  it("stamps the candidate revision without changing old service provenance or traffic", async () => {
+    const fixture = await createReleaseFixture();
+    const result = runReleaseScript(fixture);
+
+    expect(result.status, result.stderr).toBe(0);
+
+    const candidateSnapshot = JSON.parse(
+      await readFile(fixture.candidateSnapshot, "utf8"),
+    ) as {
+      image: string;
+      revisionLabels: Record<string, string>;
+      serviceLabels: Record<string, string>;
+      traffic: ServiceState["spec"]["traffic"];
+    };
+    const calls = await readFile(fixture.curlLog, "utf8");
+    const revisionChecks = calls
+      .split("\n")
+      .filter((line) => line.startsWith("revision-describe "));
+
+    expect(candidateSnapshot.serviceLabels).toEqual(fixture.initialLabels);
+    expect(candidateSnapshot.revisionLabels).toMatchObject({
+      environment: "production",
+      "managed-by": "cloud-build",
+      product: "lifesnap-action",
+      "release-build": fixture.buildId,
+      "source-commit": fixture.commitSha,
+    });
+    expect(candidateSnapshot.image).toBe(fixture.imageDigest);
+    expect(candidateSnapshot.traffic).toEqual([
+      {
+        percent: 100,
+        revisionName: fixture.rollbackRevision,
+      },
+      {
+        latestRevision: true,
+        percent: 0,
+        tag: fixture.candidateTag,
+      },
+    ]);
+    expect(revisionChecks).toHaveLength(2);
+  });
+
   it("rejects a stale resourceVersion without clobbering the newer owner", async () => {
     const fixture = await createReleaseFixture({
       injectStalePromotion: true,
@@ -239,13 +288,16 @@ describe("Cloud Build release contract", () => {
     const result = runReleaseScript(fixture);
     const state = await readServiceState(fixture);
     const calls = await readFile(fixture.curlLog, "utf8");
-    const appliedPatches = calls
+    const appliedReplacements = calls
       .split("\n")
       .filter((line) => line.includes("PUT") && line.includes("result=applied"));
 
     expect(result.status).not.toBe(0);
     expect(calls).toContain("candidate-validation=failed");
-    expect(appliedPatches).toHaveLength(1);
+    expect(appliedReplacements).toHaveLength(2);
+    expect(calls).toContain(
+      `PUT candidate source=${fixture.commitSha} service_source=${fixture.initialLabels["source-commit"]} resourceVersion=rv-1 result=applied`,
+    );
     expect(state.metadata.labels).toEqual(fixture.initialLabels);
     expect(state.spec.traffic).toEqual([
       {
@@ -253,6 +305,10 @@ describe("Cloud Build release contract", () => {
         revisionName: fixture.rollbackRevision,
       },
     ]);
+    expect(state.spec.template.metadata.labels).toMatchObject({
+      "release-build": fixture.buildId,
+      "source-commit": fixture.commitSha,
+    });
   });
 
   it("rejects and restores candidate deployment provenance mutation", async () => {
@@ -312,10 +368,12 @@ type ReleaseFixture = {
   binDirectory: string;
   buildId: string;
   candidateRevision: string;
+  candidateSnapshot: string;
   candidateTag: string;
   commitSha: string;
   curlLog: string;
   env: NodeJS.ProcessEnv;
+  imageDigest: string;
   initialLabels: Record<string, string>;
   rollbackRevision: string;
   serviceState: string;
@@ -343,6 +401,7 @@ async function createReleaseFixture(
   const rollbackRevision = "lifesnap-action-00098-safe";
   const candidateTag = "candidate-aaaaaaa-build123";
   const serviceState = join(root, "service-state.json");
+  const candidateSnapshot = join(root, "candidate-snapshot.json");
   const curlLog = join(root, "curl.log");
   const staleInjectionFlag = join(root, "stale-injected");
   const imageDigest =
@@ -369,7 +428,10 @@ async function createReleaseFixture(
     },
     spec: {
       template: {
-        metadata: { name: rollbackRevision },
+        metadata: {
+          labels: initialLabels,
+          name: rollbackRevision,
+        },
         spec: {
           containers: [{ image: "rollback-image@sha256:safe" }],
           serviceAccountName:
@@ -431,38 +493,22 @@ const value = (prefix) => {
 };
 if (text === "auth print-access-token") {
   process.stdout.write("fake-access-token\\n");
-} else if (text.includes("run services update ")) {
-  const state = readState();
-  state.metadata.resourceVersion = "rv-2";
-  if (process.env.MUTATE_CANDIDATE_PROVENANCE === "1") {
-    state.metadata.labels = {
-      ...state.metadata.labels,
-      "release-build": process.env.BUILD_ID,
-      "source-commit": process.env.COMMIT_SHA,
-    };
-  }
-  state.spec.template.metadata.name = process.env.CANDIDATE_REVISION;
-  state.spec.template.spec.containers[0].image = process.env.IMAGE_DIGEST;
-  state.spec.traffic = state.spec.traffic
-    .filter((target) => target.tag !== process.env.CANDIDATE_TAG)
-    .concat({
-      revisionName: process.env.CANDIDATE_REVISION,
-      percent: 0,
-      tag: process.env.CANDIDATE_TAG,
-    });
-  state.status.latestCreatedRevisionName = process.env.CANDIDATE_REVISION;
-  state.status.traffic = state.spec.traffic.map((target) => ({
-    ...target,
-    ...(target.tag ? { url: "https://candidate.example" } : {}),
-  }));
-  writeState(state);
-  process.stdout.write(
-    "candidate_image=" + value("--image") + "\\n",
-  );
 } else if (text.includes("run revisions describe ")) {
+  const state = readState();
+  fs.appendFileSync(
+    process.env.CURL_LOG,
+    "revision-describe source=" +
+      state.spec.template.metadata.labels["source-commit"] +
+      " build=" +
+      state.spec.template.metadata.labels["release-build"] +
+      " image=" +
+      state.spec.template.spec.containers[0].image +
+      "\\n",
+  );
   process.stdout.write(JSON.stringify({
     metadata: {
       name: process.env.CANDIDATE_REVISION,
+      labels: state.spec.template.metadata.labels,
     },
     spec: {
       containers: [{
@@ -479,7 +525,7 @@ if (text === "auth print-access-token") {
       serviceAccountName: "runtime-service-account@test-project.iam.gserviceaccount.com",
     },
     status: {
-      imageDigest: process.env.IMAGE_DIGEST,
+      imageDigest: state.spec.template.spec.containers[0].image,
     },
   }) + "\\n");
 } else {
@@ -534,6 +580,18 @@ if (url === serviceUrl && method === "GET") {
   const state = readState();
   const payload = JSON.parse(fs.readFileSync(dataFile, "utf8"));
   const source = payload.metadata.labels?.["source-commit"] || "none";
+  const candidateTarget = payload.spec.traffic.find(
+    (target) =>
+      target.tag === process.env.CANDIDATE_TAG &&
+      target.latestRevision === true &&
+      target.percent === 0,
+  );
+  const revisionLabels = payload.spec.template.metadata.labels || {};
+  const isCandidateCreation =
+    source !== process.env.COMMIT_SHA &&
+    revisionLabels["source-commit"] === process.env.COMMIT_SHA &&
+    revisionLabels["release-build"] === process.env.BUILD_ID &&
+    Boolean(candidateTarget);
   const isPromotion = source === process.env.COMMIT_SHA;
   if (
     isPromotion &&
@@ -566,6 +624,53 @@ if (url === serviceUrl && method === "GET") {
     );
     respond('{"error":{"code":409,"status":"ABORTED"}}\\n');
     process.exit(22);
+  }
+  if (isCandidateCreation) {
+    fs.writeFileSync(
+      process.env.CANDIDATE_SNAPSHOT,
+      JSON.stringify({
+        image: payload.spec.template.spec.containers[0].image,
+        revisionLabels,
+        serviceLabels: payload.metadata.labels,
+        traffic: payload.spec.traffic,
+      }) + "\\n",
+    );
+    state.metadata.labels =
+      process.env.MUTATE_CANDIDATE_PROVENANCE === "1"
+        ? {
+            ...payload.metadata.labels,
+            "release-build": process.env.BUILD_ID,
+            "source-commit": process.env.COMMIT_SHA,
+          }
+        : payload.metadata.labels;
+    state.metadata.annotations = payload.metadata.annotations;
+    state.spec = payload.spec;
+    state.spec.template.metadata.name = process.env.CANDIDATE_REVISION;
+    state.metadata.resourceVersion = bumpResourceVersion(
+      state.metadata.resourceVersion,
+    );
+    state.status.latestCreatedRevisionName = process.env.CANDIDATE_REVISION;
+    state.status.latestReadyRevisionName = process.env.CANDIDATE_REVISION;
+    state.status.traffic = state.spec.traffic.map((target) => {
+      if (target.latestRevision) {
+        return {
+          percent: target.percent,
+          revisionName: process.env.CANDIDATE_REVISION,
+          tag: target.tag,
+          url: "https://candidate.example",
+        };
+      }
+      return target;
+    });
+    writeState(state);
+    log(
+      "PUT candidate source=" + revisionLabels["source-commit"] +
+      " service_source=" + source +
+      " resourceVersion=" + payload.metadata.resourceVersion +
+      " result=applied",
+    );
+    respond(JSON.stringify(state) + "\\n");
+    process.exit(0);
   }
   state.metadata.labels = payload.metadata.labels;
   state.metadata.annotations = payload.metadata.annotations;
@@ -649,6 +754,7 @@ if (url === serviceUrl && method === "GET") {
     binDirectory,
     buildId,
     candidateRevision,
+    candidateSnapshot,
     candidateTag,
     commitSha,
     curlLog,
@@ -656,6 +762,7 @@ if (url === serviceUrl && method === "GET") {
       ...process.env,
       BUILD_ID: buildId,
       CANDIDATE_REVISION: candidateRevision,
+      CANDIDATE_SNAPSHOT: candidateSnapshot,
       CANDIDATE_TAG: candidateTag,
       COMMIT_SHA: commitSha,
       CURL_LOG: curlLog,
@@ -678,6 +785,7 @@ if (url === serviceUrl && method === "GET") {
       TERM_AFTER_PROMOTION: options.termAfterPromotion ? "1" : "0",
       TERM_WITH_NEWER_OWNER: options.termWithNewerOwner ? "1" : "0",
     },
+    imageDigest,
     initialLabels,
     rollbackRevision,
     serviceState,

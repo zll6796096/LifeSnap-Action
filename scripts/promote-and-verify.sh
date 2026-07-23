@@ -208,26 +208,124 @@ PY
   )
 }
 
+prepare_candidate_payload() {
+  local payload="$1"
+  python3 - \
+    "${initial_service_json}" \
+    "${payload}" \
+    "${BUILD_ID}" \
+    "${COMMIT_SHA}" \
+    "${candidate_tag}" \
+    "${image_digest}" <<'PY'
+import copy
+import json
+import sys
+from pathlib import Path
+
+(
+    initial_path,
+    payload_path,
+    build_id,
+    commit_sha,
+    candidate_tag,
+    image_digest,
+) = sys.argv[1:]
+current = json.loads(Path(initial_path).read_text())
+metadata = current.get("metadata", {})
+resource_version = metadata.get("resourceVersion")
+if not resource_version:
+    raise SystemExit("Candidate service resourceVersion is missing")
+spec = copy.deepcopy(current.get("spec", {}))
+template = spec.get("template", {})
+template_metadata = template.get("metadata", {})
+template_labels = dict(template_metadata.get("labels", {}))
+for key in (
+    "commit-sha",
+    "gcb-build-id",
+    "gcb-trigger-id",
+    "gcb-trigger-region",
+):
+    template_labels.pop(key, None)
+template_labels.update(
+    {
+        "source-commit": commit_sha,
+        "managed-by": "cloud-build",
+        "product": "lifesnap-action",
+        "environment": "production",
+        "release-build": build_id,
+    }
+)
+template["metadata"] = {
+    "labels": template_labels,
+    "annotations": template_metadata.get("annotations", {}),
+}
+containers = template.get("spec", {}).get("containers", [])
+if len(containers) != 1:
+    raise SystemExit("Expected one service container for candidate")
+containers[0]["image"] = image_digest
+traffic = copy.deepcopy(current.get("spec", {}).get("traffic", []))
+if any(item.get("tag") == candidate_tag for item in traffic):
+    raise SystemExit("Unique candidate tag already exists")
+traffic.append(
+    {
+        "latestRevision": True,
+        "percent": 0,
+        "tag": candidate_tag,
+    }
+)
+spec["template"] = template
+spec["traffic"] = traffic
+payload = {
+    "apiVersion": current["apiVersion"],
+    "kind": current["kind"],
+    "metadata": {
+        "name": metadata["name"],
+        "namespace": metadata["namespace"],
+        "labels": metadata.get("labels", {}),
+        "annotations": metadata.get("annotations", {}),
+        "resourceVersion": resource_version,
+    },
+    "spec": spec,
+}
+Path(payload_path).write_text(json.dumps(payload) + "\n")
+PY
+}
+
+conditional_replace_candidate() {
+  local payload="$1"
+  local response_json="$2"
+
+  curl --fail --silent --show-error \
+    --request PUT \
+    --header "Authorization: Bearer ${access_token}" \
+    --header "Content-Type: application/json" \
+    --data-binary "@${payload}" \
+    --output "${response_json}" \
+    "${service_api}"
+}
+
 deploy_candidate() {
+  local payload="${release_workspace}/lifesnap-candidate-payload.json"
+  local response="${release_workspace}/lifesnap-candidate-response.json"
+
+  prepare_candidate_payload "${payload}"
   candidate_mutation_started=1
-  gcloud run services update "${SERVICE_NAME}" \
-    --project="${PROJECT_ID}" \
-    --region="${DEPLOY_REGION}" \
-    --platform=managed \
-    --image="${image_digest}" \
-    --no-traffic \
-    --tag="${candidate_tag}" \
-    --quiet
+  conditional_replace_candidate "${payload}" "${response}"
 }
 
 resolve_candidate() {
-  api_get_service "${candidate_service_json}"
-  read -r candidate_revision candidate_url < <(
-    python3 - \
-      "${candidate_service_json}" \
-      "${initial_service_json}" \
-      "${candidate_tag}" \
-      "${rollback_revision}" <<'PY'
+  local attempt
+  local resolution=""
+  local resolution_code=0
+
+  for ((attempt = 1; attempt <= 90; attempt += 1)); do
+    api_get_service "${candidate_service_json}"
+    if resolution="$(
+      python3 - \
+        "${candidate_service_json}" \
+        "${initial_service_json}" \
+        "${candidate_tag}" \
+        "${rollback_revision}" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -242,13 +340,17 @@ if (
     raise SystemExit("Candidate deployment changed service provenance labels")
 current_version = current.get("metadata", {}).get("resourceVersion")
 initial_version = initial.get("metadata", {}).get("resourceVersion")
-if not current_version or current_version == initial_version:
-    raise SystemExit("Candidate deployment did not create a new service version")
+if not current_version:
+    raise SystemExit("Candidate service resourceVersion is missing")
+if current_version == initial_version:
+    raise SystemExit(10)
 candidate = [
     item
     for item in current.get("status", {}).get("traffic", [])
     if item.get("tag") == candidate_tag
 ]
+if not candidate:
+    raise SystemExit(10)
 if (
     len(candidate) != 1
     or not candidate[0].get("revisionName")
@@ -257,6 +359,21 @@ if (
 ):
     raise SystemExit("Unique zero-traffic candidate target is missing")
 traffic = current.get("spec", {}).get("traffic", [])
+candidate_spec = [
+    item
+    for item in traffic
+    if item.get("tag") == candidate_tag
+]
+if (
+    len(candidate_spec) != 1
+    or candidate_spec[0].get("percent", 0) != 0
+    or not (
+        candidate_spec[0].get("latestRevision") is True
+        or candidate_spec[0].get("revisionName")
+        == candidate[0].get("revisionName")
+    )
+):
+    raise SystemExit("Candidate spec target does not resolve to the new revision")
 production = [
     item
     for item in traffic
@@ -271,9 +388,33 @@ without_candidate = [
 ]
 if without_candidate != initial.get("spec", {}).get("traffic", []):
     raise SystemExit("Another service traffic mutation overlaps this candidate")
+conditions = current.get("status", {}).get("conditions", [])
+ready = [
+    item
+    for item in conditions
+    if item.get("type") == "Ready"
+]
+if any(item.get("status") == "False" for item in ready):
+    raise SystemExit("Candidate service reconciliation failed")
+if not any(item.get("status") == "True" for item in ready):
+    raise SystemExit(10)
 print(candidate[0]["revisionName"], candidate[0]["url"])
 PY
-  )
+    )"; then
+      read -r candidate_revision candidate_url <<< "${resolution}"
+      break
+    else
+      resolution_code=$?
+      if [[ "${resolution_code}" -ne 10 ]]; then
+        return "${resolution_code}"
+      fi
+    fi
+    sleep 2
+  done
+  if [[ -z "${candidate_revision}" || -z "${candidate_url}" ]]; then
+    printf 'candidate_resolution=timeout\n' >&2
+    return 1
+  fi
   printf '%s\n' "${candidate_revision}" \
     > "${release_workspace}/lifesnap-candidate-revision.txt"
   printf '%s\n' "${candidate_url}" \
@@ -289,15 +430,42 @@ verify_candidate_runtime() {
   python3 - \
     "${revision_json}" \
     "${image_digest}" \
-    "${runtime_service_account}" <<'PY'
+    "${runtime_service_account}" \
+    "${BUILD_ID}" \
+    "${COMMIT_SHA}" <<'PY'
 import json
 import sys
 from pathlib import Path
 
-path, expected_image_digest, expected_service_account = sys.argv[1:]
+(
+    path,
+    expected_image_digest,
+    expected_service_account,
+    build_id,
+    commit_sha,
+) = sys.argv[1:]
 revision = json.loads(Path(path).read_text())
 if revision.get("status", {}).get("imageDigest") != expected_image_digest:
     raise SystemExit("Candidate revision digest does not match pushed image")
+labels = revision.get("metadata", {}).get("labels", {})
+expected_labels = {
+    "source-commit": commit_sha,
+    "release-build": build_id,
+    "managed-by": "cloud-build",
+    "product": "lifesnap-action",
+    "environment": "production",
+}
+for key, value in expected_labels.items():
+    if labels.get(key) != value:
+        raise SystemExit(f"Candidate revision label mismatch: {key}")
+for key in (
+    "commit-sha",
+    "gcb-build-id",
+    "gcb-trigger-id",
+    "gcb-trigger-region",
+):
+    if key in labels:
+        raise SystemExit(f"Legacy candidate revision label remains: {key}")
 if revision.get("spec", {}).get("serviceAccountName") != expected_service_account:
     raise SystemExit("Candidate runtime service account changed")
 containers = revision.get("spec", {}).get("containers", [])
@@ -392,10 +560,24 @@ candidate = [
 ]
 if (
     len(candidate) != 1
-    or candidate[0].get("revisionName") != candidate_revision
     or candidate[0].get("percent", 0) != 0
+    or not (
+        candidate[0].get("latestRevision") is True
+        or candidate[0].get("revisionName") == candidate_revision
+    )
 ):
     raise SystemExit("Candidate target changed before promotion")
+status_candidate = [
+    item
+    for item in current.get("status", {}).get("traffic", [])
+    if item.get("tag") == candidate_tag
+]
+if (
+    len(status_candidate) != 1
+    or status_candidate[0].get("revisionName") != candidate_revision
+    or status_candidate[0].get("percent", 0) != 0
+):
+    raise SystemExit("Candidate status target changed before promotion")
 production = [
     item
     for item in traffic
@@ -467,12 +649,13 @@ assert_promoted_service() {
     "${service_json}" \
     "${BUILD_ID}" \
     "${COMMIT_SHA}" \
-    "${candidate_revision}" <<'PY'
+    "${candidate_revision}" \
+    "${image_digest}" <<'PY'
 import json
 import sys
 from pathlib import Path
 
-path, build_id, commit_sha, candidate_revision = sys.argv[1:]
+path, build_id, commit_sha, candidate_revision, image_digest = sys.argv[1:]
 service = json.loads(Path(path).read_text())
 labels = service.get("metadata", {}).get("labels", {})
 expected = {
@@ -493,6 +676,17 @@ for key in (
 ):
     if key in labels:
         raise SystemExit(f"Legacy provenance label remains: {key}")
+template = service.get("spec", {}).get("template", {})
+template_labels = template.get("metadata", {}).get("labels", {})
+for key, value in expected.items():
+    if template_labels.get(key) != value:
+        raise SystemExit(f"Promoted template label mismatch: {key}")
+containers = template.get("spec", {}).get("containers", [])
+if (
+    len(containers) != 1
+    or containers[0].get("image") != image_digest
+):
+    raise SystemExit("Promoted template digest does not match pushed image")
 traffic = service.get("spec", {}).get("traffic", [])
 if traffic != [
     {
@@ -781,6 +975,7 @@ verify_production_endpoints "${service_url}"
 assert_current_main
 api_get_service "${final_service_json}"
 assert_promoted_service "${final_service_json}" >/dev/null
+verify_candidate_runtime
 
 trap - ERR INT TERM EXIT
 printf 'promotion_result=PASS\n'
