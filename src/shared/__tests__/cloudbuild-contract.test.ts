@@ -63,6 +63,10 @@ describe("Cloud Build release contract", () => {
     expect(config.options.logging).toBe("CLOUD_LOGGING_ONLY");
     expect(config.substitutions._LIFESNAP_AR_REPOSITORY).toBe("apps");
 
+    const dockerPush = config.steps.find(({ id }) => id === "docker-push");
+    const digestResolver = config.steps.find(
+      ({ id }) => id === "resolve-image-digest",
+    );
     const deploy = config.steps.find(({ id }) => id === "deploy-candidate");
     const candidateRuntime = config.steps.find(
       ({ id }) => id === "verify-candidate-runtime",
@@ -72,6 +76,15 @@ describe("Cloud Build release contract", () => {
     );
     expect(deploy?.args?.join("\n")).toContain(
       'candidate_tag="candidate-${SHORT_SHA}"',
+    );
+    expect(dockerPush?.args?.join("\n")).toContain(
+      "tee /workspace/lifesnap-docker-push.log",
+    );
+    expect(digestResolver?.args?.join("\n")).toContain(
+      "/workspace/lifesnap-docker-push.log",
+    );
+    expect(digestResolver?.args?.join("\n")).not.toContain(
+      "gcloud artifacts docker images describe",
     );
     expect(deploy?.args?.join("\n")).toContain(
       '--image="$${image_digest}"',

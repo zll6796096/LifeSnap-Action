@@ -42,9 +42,11 @@ steps:
     entrypoint: bash
     args:
       - -ceu
-      - >-
-        docker push
-        "$_AR_HOSTNAME/$PROJECT_ID/$_LIFESNAP_AR_REPOSITORY/$_IMAGE_NAME:$COMMIT_SHA"
+      - |
+        set -o pipefail
+        docker push \
+          "$_AR_HOSTNAME/$PROJECT_ID/$_LIFESNAP_AR_REPOSITORY/$_IMAGE_NAME:$COMMIT_SHA" \
+          2>&1 | tee /workspace/lifesnap-docker-push.log
 
   - id: resolve-image-digest
     name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
@@ -52,23 +54,27 @@ steps:
     args:
       - -ceu
       - |
-        image_tag="$_AR_HOSTNAME/$PROJECT_ID/$_LIFESNAP_AR_REPOSITORY/$_IMAGE_NAME:$COMMIT_SHA"
-        gcloud artifacts docker images describe "$${image_tag}" \
-          --project="$PROJECT_ID" \
-          --format=json > /workspace/lifesnap-image.json
-        python3 - "$${image_tag}" <<'PY'
-        import json
+        image_repository="$_AR_HOSTNAME/$PROJECT_ID/$_LIFESNAP_AR_REPOSITORY/$_IMAGE_NAME"
+        python3 - "$${image_repository}" <<'PY'
+        import re
         import sys
         from pathlib import Path
 
-        image_tag = sys.argv[1]
-        image = json.loads(Path("/workspace/lifesnap-image.json").read_text())
-        summary = image.get("image_summary", {})
-        digest = summary.get("fully_qualified_digest")
-        if not digest or "@sha256:" not in digest:
-            raise SystemExit(f"Immutable digest is missing for {image_tag}")
-        Path("/workspace/lifesnap-image-digest.txt").write_text(digest + "\n")
-        print(f"image_digest={digest}")
+        image_repository = sys.argv[1]
+        push_log = Path("/workspace/lifesnap-docker-push.log").read_text()
+        matches = re.findall(
+            r"digest:\s+(sha256:[0-9a-f]{64})\s+size:",
+            push_log,
+        )
+        if len(matches) != 1:
+            raise SystemExit(
+                f"Expected one pushed image digest, found {len(matches)}"
+            )
+        immutable_image = f"{image_repository}@{matches[0]}"
+        Path("/workspace/lifesnap-image-digest.txt").write_text(
+            immutable_image + "\n"
+        )
+        print(f"image_digest={immutable_image}")
         PY
 
   - id: capture-rollback
