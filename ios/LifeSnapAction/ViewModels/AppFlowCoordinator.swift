@@ -9,9 +9,9 @@ enum ConsentPurpose: Equatable {
     var primaryButtonTitle: String {
         switch self {
         case .firstUpload:
-            return "同意してAI解析を開始"
+            return "同意して続ける"
         case .retryUpload:
-            return "同意して再解析"
+            return "同意してもう一度試す"
         }
     }
 }
@@ -33,6 +33,7 @@ final class AppFlowCoordinator {
     var captureVM: CaptureViewModel
     var extractionVM: ExtractionViewModel
     var calendarVM: CalendarViewModel
+    var reviewImage: UIImage?
 
     init(
         captureVM: CaptureViewModel = CaptureViewModel(),
@@ -45,6 +46,7 @@ final class AppFlowCoordinator {
     }
 
     func imageSelected(_ image: UIImage) {
+        reviewImage = nil
         captureVM.setImage(image)
         extractionVM.reset()
         currentScreen = .consent(.firstUpload)
@@ -76,31 +78,40 @@ final class AppFlowCoordinator {
 
         currentScreen = .processing
         await extractionVM.extract(image: image)
-        handleExtractionResult()
+        handleExtractionResult(submittedImage: image)
     }
 
     func resetToCapture() {
+        reviewImage = nil
         captureVM.reset()
         extractionVM.reset()
         calendarVM.reset()
         currentScreen = .capture
     }
 
-    private func handleExtractionResult() {
+    func showSuccess(for task: CalendarTask) {
+        reviewImage = nil
+        currentScreen = .success(task)
+    }
+
+    private func handleExtractionResult(submittedImage: UIImage) {
         guard let extraction = extractionVM.extraction else { return }
 
         captureVM.clearPendingImage()
 
         switch extraction.route {
         case .calendarAction:
+            reviewImage = submittedImage
             let task = CalendarTask(from: extraction)
             currentScreen = .review(task)
 
         case .needsReview:
+            reviewImage = submittedImage
             let task = CalendarTask(from: extraction)
             currentScreen = .needsReview(task)
 
         case .noActionDetected:
+            reviewImage = nil
             currentScreen = .noAction
         }
     }
