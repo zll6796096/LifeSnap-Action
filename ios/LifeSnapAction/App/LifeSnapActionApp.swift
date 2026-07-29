@@ -14,6 +14,7 @@ struct LifeSnapActionApp: App {
 // MARK: - Content View (Navigation Root)
 
 struct ContentView: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var coordinator = AppFlowCoordinator()
 
     var body: some View {
@@ -58,16 +59,18 @@ struct ContentView: View {
 
             case .review(let task):
                 ReviewView(
+                    sourceImage: coordinator.reviewImage,
                     task: task,
                     calendarVM: coordinator.calendarVM,
                     onConfirm: {
-                        coordinator.currentScreen = .success(task)
+                        coordinator.showSuccess(for: task)
                     },
                     onBack: { coordinator.resetToCapture() }
                 )
 
             case .needsReview(let task):
                 NeedsReviewView(
+                    sourceImage: coordinator.reviewImage,
                     task: task,
                     onConfirm: { editedTask in
                         editedTask.route = .calendarAction
@@ -86,7 +89,10 @@ struct ContentView: View {
                 )
             }
         }
-        .animation(.easeInOut(duration: 0.3), value: screenKey)
+        .animation(
+            reduceMotion ? nil : .easeInOut(duration: 0.25),
+            value: screenKey
+        )
     }
 
     // MARK: - Navigation Helpers
