@@ -11,6 +11,7 @@
 		0322E7F896DEF11246B2E966 /* APIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3CF3E0586B63804A836DBDBF /* APIClient.swift */; };
 		0736A54DB94C4F16A3E2C771 /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 87DE3D97EB92536D908EE007 /* LaunchScreen.storyboard */; };
 		094C534C21632C1971FD086B /* AppFlowCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C79B44BA7F670B707143F104 /* AppFlowCoordinatorTests.swift */; };
+		B1C2D3E4F5061728394A5B6C /* DesignSystem.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60718293A4B5C /* DesignSystem.swift */; };
 		16035F2C4D2DDA58168B1884 /* CalendarService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7D667ADD9CD443EC4C02A1C4 /* CalendarService.swift */; };
 		2A99A136B0AF2A9F8628DB69 /* ReviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18DCB987DE2CEC4D58B52C1B /* ReviewView.swift */; };
 		5E509E4724B99E5104A945C5 /* NeedsReviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 11A47040BCF3C08BE21E7D0A /* NeedsReviewView.swift */; };
@@ -44,6 +45,7 @@
 		11A47040BCF3C08BE21E7D0A /* NeedsReviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NeedsReviewView.swift; sourceTree = "<group>"; };
 		12470F406B69A541A143FA1E /* ProcessingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProcessingView.swift; sourceTree = "<group>"; };
 		18DCB987DE2CEC4D58B52C1B /* ReviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReviewView.swift; sourceTree = "<group>"; };
+		A1B2C3D4E5F60718293A4B5C /* DesignSystem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignSystem.swift; sourceTree = "<group>"; };
 		3CF3E0586B63804A836DBDBF /* APIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIClient.swift; sourceTree = "<group>"; };
 		49AC672D4A86AAC5B7ED24A4 /* LifeSnapActionApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LifeSnapActionApp.swift; sourceTree = "<group>"; };
 		5C0357953E6E2A6A51B1DF9E /* ImageCompressor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImageCompressor.swift; sourceTree = "<group>"; };
@@ -163,6 +165,7 @@
 			isa = PBXGroup;
 			children = (
 				FD694A0B2795E4F5C266CB64 /* CaptureView.swift */,
+				A1B2C3D4E5F60718293A4B5C /* DesignSystem.swift */,
 				11A47040BCF3C08BE21E7D0A /* NeedsReviewView.swift */,
 				008EEB44DF793A978F9BBB85 /* NoActionView.swift */,
 				12470F406B69A541A143FA1E /* ProcessingView.swift */,
@@ -273,6 +276,7 @@
 				9BFD593AD4E1C26C656E38AF /* CalendarViewModel.swift in Sources */,
 				6042CB7D75E84FE0A7DB66FE /* CaptureView.swift in Sources */,
 				BB402664DD36CD26853FE778 /* CaptureViewModel.swift in Sources */,
+				B1C2D3E4F5061728394A5B6C /* DesignSystem.swift in Sources */,
 				F2A70288A321C35E605BE5D6 /* ExtractionResult.swift in Sources */,
 				C2930CA90FFDFDE85D0DB066 /* ExtractionViewModel.swift in Sources */,
 				B5E8C80C58D53611FD65D0F6 /* ImageCompressor.swift in Sources */,
