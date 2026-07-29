@@ -92,6 +92,32 @@ final class AppFlowCoordinatorTests: XCTestCase {
         }
     }
 
+    func testVerificationReviewScenarioUsesProvidedImage() {
+        let image = makeImage()
+
+        let coordinator = AppFlowCoordinator(
+            verificationScenario: .review,
+            verificationImage: image
+        )
+
+        XCTAssertNotNil(coordinator.reviewImage)
+        guard case .review = coordinator.currentScreen else {
+            return XCTFail("Expected review verification screen")
+        }
+    }
+
+    func testVerificationNoActionScenarioDoesNotRetainImage() {
+        let coordinator = AppFlowCoordinator(
+            verificationScenario: .noAction,
+            verificationImage: makeImage()
+        )
+
+        XCTAssertNil(coordinator.reviewImage)
+        guard case .noAction = coordinator.currentScreen else {
+            return XCTFail("Expected no-action verification screen")
+        }
+    }
+
     func testRetryRequiresConsentBeforeUploadingAgain() async {
         let client = MockExtractionClient(result: .failure(MockError.failed))
         let coordinator = makeCoordinator(client: client)

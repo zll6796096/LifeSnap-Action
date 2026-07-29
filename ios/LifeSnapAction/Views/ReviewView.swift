@@ -9,7 +9,9 @@ struct ReviewView: View {
     let onConfirm: () -> Void
     let onBack: () -> Void
 
-    @State private var isEditing = false
+    @State private var isEditing = ProcessInfo.processInfo.environment[
+        "LIFESNAP_UI_EDITING"
+    ] == "true"
     @State private var showConfirmDialog = false
 
     var body: some View {

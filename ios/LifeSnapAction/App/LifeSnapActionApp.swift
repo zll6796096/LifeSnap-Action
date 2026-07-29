@@ -7,6 +7,7 @@ struct LifeSnapActionApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView()
+                .environment(\.locale, Locale(identifier: "ja_JP"))
         }
     }
 }
@@ -15,7 +16,7 @@ struct LifeSnapActionApp: App {
 
 struct ContentView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var coordinator = AppFlowCoordinator()
+    @State private var coordinator = ContentView.makeCoordinator()
 
     var body: some View {
         Group {
@@ -107,5 +108,23 @@ struct ContentView: View {
         case .noAction: return "noAction"
         case .success: return "success"
         }
+    }
+
+    @MainActor
+    private static func makeCoordinator() -> AppFlowCoordinator {
+        #if DEBUG
+        let environment = ProcessInfo.processInfo.environment
+        let scenario = environment["LIFESNAP_UI_SCENARIO"]
+            .flatMap(VerificationScenario.init(rawValue:))
+        let image = environment["LIFESNAP_UI_IMAGE_PATH"]
+            .flatMap(UIImage.init(contentsOfFile:))
+
+        return AppFlowCoordinator(
+            verificationScenario: scenario,
+            verificationImage: image
+        )
+        #else
+        return AppFlowCoordinator()
+        #endif
     }
 }

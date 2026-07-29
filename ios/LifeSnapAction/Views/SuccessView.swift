@@ -20,7 +20,7 @@ struct SuccessView: View {
                             .accessibilityHidden(true)
 
                         Text("カレンダーに追加しました")
-                            .font(.largeTitle.bold())
+                            .font(.title2.bold())
                             .foregroundStyle(.primary)
                             .fixedSize(horizontal: false, vertical: true)
 

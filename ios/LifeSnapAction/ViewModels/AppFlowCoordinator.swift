@@ -26,6 +26,15 @@ enum AppScreen {
     case success(CalendarTask)
 }
 
+enum VerificationScenario: String {
+    case consent
+    case processing
+    case review
+    case needsReview
+    case noAction
+    case success
+}
+
 @MainActor
 @Observable
 final class AppFlowCoordinator {
@@ -38,11 +47,20 @@ final class AppFlowCoordinator {
     init(
         captureVM: CaptureViewModel = CaptureViewModel(),
         extractionVM: ExtractionViewModel = ExtractionViewModel(),
-        calendarVM: CalendarViewModel = CalendarViewModel()
+        calendarVM: CalendarViewModel = CalendarViewModel(),
+        verificationScenario: VerificationScenario? = nil,
+        verificationImage: UIImage? = nil
     ) {
         self.captureVM = captureVM
         self.extractionVM = extractionVM
         self.calendarVM = calendarVM
+
+        if let verificationScenario {
+            configureVerificationScenario(
+                verificationScenario,
+                image: verificationImage
+            )
+        }
     }
 
     func imageSelected(_ image: UIImage) {
@@ -114,5 +132,66 @@ final class AppFlowCoordinator {
             reviewImage = nil
             currentScreen = .noAction
         }
+    }
+
+    private func configureVerificationScenario(
+        _ scenario: VerificationScenario,
+        image: UIImage?
+    ) {
+        switch scenario {
+        case .consent:
+            if let image {
+                captureVM.setImage(image)
+                currentScreen = .consent(.firstUpload)
+            }
+
+        case .processing:
+            currentScreen = .processing
+
+        case .review:
+            reviewImage = image
+            currentScreen = .review(makeVerificationTask(route: .calendarAction))
+
+        case .needsReview:
+            reviewImage = image
+            currentScreen = .needsReview(makeVerificationTask(route: .needsReview))
+
+        case .noAction:
+            reviewImage = nil
+            currentScreen = .noAction
+
+        case .success:
+            reviewImage = nil
+            currentScreen = .success(makeVerificationTask(route: .calendarAction))
+        }
+    }
+
+    private func makeVerificationTask(route: Route) -> CalendarTask {
+        let response = ExtractionResponse(
+            route: route,
+            documentType: "notice",
+            taskType: "event",
+            title: "エレベーター点検",
+            dueDate: nil,
+            startDatetime: "2026-10-25T14:00:00+09:00",
+            endDatetime: "2026-10-25T16:00:00+09:00",
+            amount: nil,
+            issuer: "管理会社",
+            location: nil,
+            summary: "点検中はエレベーターを利用できません。",
+            confidence: 0.91,
+            riskFlags: route == .needsReview ? ["date_ambiguous"] : [],
+            evidence: nil,
+            calendarEvent: route == .calendarAction
+                ? CalendarEventData(
+                    title: "エレベーター点検",
+                    start: "2026-10-25T14:00:00+09:00",
+                    end: "2026-10-25T16:00:00+09:00",
+                    description: "点検中はエレベーターを利用できません。",
+                    location: nil
+                )
+                : nil
+        )
+        return CalendarTask(from: response)
     }
 }
