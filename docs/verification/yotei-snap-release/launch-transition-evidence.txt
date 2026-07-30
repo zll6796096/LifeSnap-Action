@@ -1,8 +1,14 @@
 よていスナップ launch-transition evidence
-generated_jst=2026-07-30T22:46:31+0900
-generated_utc=2026-07-30T13:46:31Z
+build_artifact_created_jst=2026-07-30T22:38:27+0900
+light_recording_window_jst=2026-07-30T22:41:57+0900_to_2026-07-30T22:42:12+0900
+dark_recording_window_jst=2026-07-30T22:42:18+0900_to_2026-07-30T22:42:30+0900
+evidence_assembled_jst=2026-07-30T22:46:31+0900
+evidence_assembled_utc=2026-07-30T13:46:31Z
 source_branch=codex/lifesnap-apple-native-ui
-source_commit=6e7f930ed453cffe498726219347fd44dc7dfe7b
+head_at_capture=71fa37e076d7c1f05223c07c22cf8fb91371fc84
+working_tree_at_capture=adaptive semantic LaunchScreen fix present as uncommitted content on top of head_at_capture
+captured_source_content_later_committed_as=6e7f930ed453cffe498726219347fd44dc7dfe7b
+captured_source_content_committed_jst=2026-07-30T22:48:48+0900
 scope=local normally signed Release simulator acceptance only
 
 [build]
@@ -26,6 +32,24 @@ bundle_version=4
 bundle_display_name=よていスナップ
 ui_launch_storyboard_name=LaunchScreen
 signing_identity_or_certificate_details=OMITTED
+
+[post_commit_source_equivalence]
+verified_jst=2026-07-30T23:26:27+0900
+verified_utc=2026-07-30T14:26:27Z
+command=xcodebuild -project ios/LifeSnapAction.xcodeproj -scheme LifeSnapAction -configuration Release -sdk iphonesimulator -destination generic/platform=iOS Simulator -derivedDataPath CLEAN_DERIVED_DATA_PATH build -quiet
+result=PASS exit=0
+strict_codesign_verification=PASS
+captured_incremental_executable_sha256=1ee246719c49abfa509862a11caf87eddc2dc8908ba273e7bce6b21d1e5f8614
+independent_clean_executable_sha256=7ced3cbb6c9a51c29ea6e169276d044092dff95bfca3a08bc82ce287a9ca8911
+executable_byte_match=NO
+info_plist_byte_match=YES sha256=9fae6cc53b3587a02a5e613c7234e192514160a48aee037520924ac2b082fc30
+compiled_launch_storyboard_byte_match=YES
+compiled_launch_storyboard_info_sha256=b199dcf708018ac3a29a28f048f68a6d7b19fb47e6e452cb9a0cf79e1cc6f5c0
+compiled_launch_storyboard_controller_nib_sha256=7ea9c62e4246e9ba556a98fd1a7b061ae84082c12d7425ad183bd00ca34e7ed3
+compiled_launch_storyboard_view_nib_sha256=906fb5a33392e6d010e8e9102cf6de40f53c37f52a585e1c76b8384d456659d9
+committed_launch_source_matches_working_tree=YES commit=6e7f930ed453cffe498726219347fd44dc7dfe7b sha256=a127b2d40a700f4ad6dd6faa74797eb3e99a7b199e6ebd3deca714b427ecdb37
+identity_fields_match=YES com.zll.lifesnapaction version=1.1 build=4 display_name=よていスナップ launch_storyboard=LaunchScreen
+equivalence_limit=clean Mach-O bytes differ; final-source equivalence is limited to unchanged launch source, byte-identical compiled storyboard and Info.plist, matching identity, and successful normal-signed build verification
 
 [light_clean_first_launch]
 simulator_name=YoteiSnap-AdaptiveLight-iPhone15-20260730223844
