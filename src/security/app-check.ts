@@ -31,16 +31,21 @@ export class AppCheckRequestError extends Error {
   }
 }
 
-export const INVALID_CODES = new Set([
+const INVALID_CODES = new Set([
   "app-check/invalid-argument",
   "app-check/app-check-token-expired",
 ]);
 
-export const NETWORK_CODES = new Set([
+const NETWORK_CODES = new Set([
   "ECONNRESET",
   "ENETUNREACH",
   "ENOTFOUND",
   "ETIMEDOUT",
+]);
+
+const FIREBASE_ADMIN_13_JWKS_FETCH_PREFIX = "Error fetching Json Web Keys:";
+const FIREBASE_ADMIN_13_SERVICE_FAILURE_MESSAGES = new Set([
+  "`alreadyConsumed` must be a boolean value.",
 ]);
 
 function isObject(value: unknown): value is Record<PropertyKey, unknown> {
@@ -64,7 +69,16 @@ function errorCode(error: unknown): string | undefined {
   return typeof code === "string" ? code : undefined;
 }
 
-export function hasNetworkCause(error: unknown): boolean {
+function errorMessage(error: unknown): string | undefined {
+  if (!isObject(error)) {
+    return undefined;
+  }
+
+  const message = readProperty(error, "message");
+  return typeof message === "string" ? message : undefined;
+}
+
+function hasNetworkCause(error: unknown): boolean {
   let current = error;
   const visited = new Set<object>();
 
@@ -88,6 +102,35 @@ export function hasNetworkCause(error: unknown): boolean {
   return false;
 }
 
+function isFirebaseAdmin13ServiceFailure(error: unknown, code: string): boolean {
+  if (code !== "app-check/invalid-argument") {
+    return false;
+  }
+
+  const message = errorMessage(error);
+  return (
+    message?.startsWith(FIREBASE_ADMIN_13_JWKS_FETCH_PREFIX) === true ||
+    (message !== undefined &&
+      FIREBASE_ADMIN_13_SERVICE_FAILURE_MESSAGES.has(message))
+  );
+}
+
+function classifyDependencyError(error: unknown): AppCheckRequestError {
+  if (hasNetworkCause(error)) {
+    return new AppCheckRequestError(503, "SECURITY_SERVICE_UNAVAILABLE");
+  }
+
+  const code = errorCode(error);
+  if (code !== undefined && isFirebaseAdmin13ServiceFailure(error, code)) {
+    return new AppCheckRequestError(503, "SECURITY_SERVICE_UNAVAILABLE");
+  }
+  if (code !== undefined && INVALID_CODES.has(code)) {
+    return new AppCheckRequestError(401, "APP_CHECK_INVALID");
+  }
+
+  return new AppCheckRequestError(503, "SECURITY_SERVICE_UNAVAILABLE");
+}
+
 export class ConsumedAppCheckVerifier {
   constructor(
     private readonly verifyToken: VerifyToken,
@@ -99,30 +142,20 @@ export class ConsumedAppCheckVerifier {
       throw new AppCheckRequestError(401, "APP_CHECK_REQUIRED");
     }
 
+    let claims: AppCheckClaims;
     try {
-      const claims = await this.verifyToken(token, { consume: true });
-
-      if (claims.appId !== this.allowedAppId) {
-        throw new AppCheckRequestError(403, "APP_ID_FORBIDDEN");
-      }
-      if (claims.alreadyConsumed === true) {
-        throw new AppCheckRequestError(401, "APP_CHECK_REPLAYED");
-      }
-
-      return { appId: claims.appId };
+      claims = await this.verifyToken(token, { consume: true });
     } catch (error) {
-      if (error instanceof AppCheckRequestError) {
-        throw error;
-      }
-      if (hasNetworkCause(error)) {
-        throw new AppCheckRequestError(503, "SECURITY_SERVICE_UNAVAILABLE");
-      }
-      const code = errorCode(error);
-      if (code !== undefined && INVALID_CODES.has(code)) {
-        throw new AppCheckRequestError(401, "APP_CHECK_INVALID");
-      }
-
-      throw new AppCheckRequestError(503, "SECURITY_SERVICE_UNAVAILABLE");
+      throw classifyDependencyError(error);
     }
+
+    if (claims.appId !== this.allowedAppId) {
+      throw new AppCheckRequestError(403, "APP_ID_FORBIDDEN");
+    }
+    if (claims.alreadyConsumed === true) {
+      throw new AppCheckRequestError(401, "APP_CHECK_REPLAYED");
+    }
+
+    return { appId: claims.appId };
   }
 }
