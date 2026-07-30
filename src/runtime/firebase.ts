@@ -63,36 +63,194 @@ function readProperty(
   }
 }
 
-function asFirebaseApp(value: unknown): App {
+function stableError(code: string): Error {
+  return new Error(code);
+}
+
+function snapshotProperty(
+  value: Record<PropertyKey, unknown>,
+  key: PropertyKey,
+  errorCode: string,
+): unknown {
+  try {
+    const descriptor = Reflect.getOwnPropertyDescriptor(value, key);
+    if (descriptor !== undefined) {
+      if (!("value" in descriptor)) {
+        throw stableError(errorCode);
+      }
+      return descriptor.value;
+    }
+    return Reflect.get(value, key);
+  } catch {
+    throw stableError(errorCode);
+  }
+}
+
+function snapshotCallable(
+  value: Record<PropertyKey, unknown>,
+  key: PropertyKey,
+  errorCode: string,
+): (...args: unknown[]) => unknown {
+  const candidate = snapshotProperty(value, key, errorCode);
+  if (typeof candidate !== "function") {
+    throw stableError(errorCode);
+  }
+  return candidate as (...args: unknown[]) => unknown;
+}
+
+function callDependency(
+  method: (...args: unknown[]) => unknown,
+  receiver: object,
+  args: unknown[],
+  errorCode: string,
+): unknown {
+  try {
+    return Reflect.apply(method, receiver, args);
+  } catch {
+    throw stableError(errorCode);
+  }
+}
+
+type FirebaseFactorySnapshot = Readonly<{
+  receiver: object;
+  applicationDefault: (...args: unknown[]) => unknown;
+  getApps: (...args: unknown[]) => unknown;
+  initializeApp: (...args: unknown[]) => unknown;
+  getAppCheck: (...args: unknown[]) => unknown;
+  getFirestore: (...args: unknown[]) => unknown;
+}>;
+
+function snapshotFactory(factory: FirebaseFactory): FirebaseFactorySnapshot {
+  if (!isRecord(factory)) {
+    throw stableError("FIREBASE_FACTORY_INVALID");
+  }
+  return Object.freeze({
+    receiver: factory,
+    applicationDefault: snapshotCallable(
+      factory,
+      "applicationDefault",
+      "FIREBASE_FACTORY_INVALID",
+    ),
+    getApps: snapshotCallable(
+      factory,
+      "getApps",
+      "FIREBASE_FACTORY_INVALID",
+    ),
+    initializeApp: snapshotCallable(
+      factory,
+      "initializeApp",
+      "FIREBASE_FACTORY_INVALID",
+    ),
+    getAppCheck: snapshotCallable(
+      factory,
+      "getAppCheck",
+      "FIREBASE_FACTORY_INVALID",
+    ),
+    getFirestore: snapshotCallable(
+      factory,
+      "getFirestore",
+      "FIREBASE_FACTORY_INVALID",
+    ),
+  });
+}
+
+type FirebaseAppSnapshot = Readonly<{
+  app: App;
+  name: string;
+  projectId: unknown;
+  credential: unknown;
+  optionKeys: readonly PropertyKey[];
+}>;
+
+function snapshotFirebaseApp(
+  value: unknown,
+  errorCode: string,
+): FirebaseAppSnapshot {
   if (!isRecord(value)) {
-    throw new Error("FIREBASE_APP_INVALID");
+    throw stableError(errorCode);
   }
-  const name = readProperty(value, "name");
-  const options = readProperty(value, "options");
-  const projectId =
-    isRecord(options) ? readProperty(options, "projectId") : undefined;
+
+  const name = snapshotProperty(value, "name", errorCode);
+  const options = snapshotProperty(value, "options", errorCode);
+  if (typeof name !== "string" || !isRecord(options)) {
+    throw stableError(errorCode);
+  }
+
+  let optionKeys: PropertyKey[];
+  let optionsPrototype: object | null;
+  try {
+    optionKeys = Reflect.ownKeys(options);
+    optionsPrototype = Reflect.getPrototypeOf(options);
+  } catch {
+    throw stableError(errorCode);
+  }
   if (
-    name !== FIREBASE_APP_NAME ||
-    projectId !== FIREBASE_PROJECT_ID
+    optionsPrototype !== Object.prototype &&
+    optionsPrototype !== null
   ) {
-    throw new Error("FIREBASE_APP_IDENTITY_INVALID");
+    throw stableError(errorCode);
   }
-  return value as unknown as App;
+
+  const projectId = snapshotProperty(options, "projectId", errorCode);
+  const credential = snapshotProperty(
+    options,
+    "credential",
+    errorCode,
+  );
+  return Object.freeze({
+    app: value as unknown as App,
+    name,
+    projectId,
+    credential,
+    optionKeys: Object.freeze([...optionKeys]),
+  });
+}
+
+function validateRuntimeAppIdentity(
+  snapshot: FirebaseAppSnapshot,
+  adcCredential: unknown,
+): App {
+  const allowedOptionKeys = new Set<PropertyKey>([
+    "credential",
+    "projectId",
+  ]);
+  if (
+    snapshot.name !== FIREBASE_APP_NAME ||
+    snapshot.projectId !== FIREBASE_PROJECT_ID ||
+    snapshot.credential !== adcCredential ||
+    snapshot.optionKeys.length !== allowedOptionKeys.size ||
+    snapshot.optionKeys.some((key) => !allowedOptionKeys.has(key))
+  ) {
+    throw stableError("FIREBASE_APP_IDENTITY_INVALID");
+  }
+  return snapshot.app;
 }
 
 function asFirestore(value: unknown): Firestore {
   if (!isRecord(value)) {
     throw new Error("FIRESTORE_CLIENT_INVALID");
   }
-  const collection = readProperty(value, "collection");
-  const runTransaction = readProperty(value, "runTransaction");
+  let collection: unknown;
+  let runTransaction: unknown;
+  try {
+    collection = Reflect.get(value, "collection");
+    runTransaction = Reflect.get(value, "runTransaction");
+  } catch {
+    throw stableError("FIRESTORE_CLIENT_INVALID");
+  }
   if (
     typeof collection !== "function" ||
     typeof runTransaction !== "function"
   ) {
     throw new Error("FIRESTORE_CLIENT_INVALID");
   }
-  return value as unknown as Firestore;
+  const receiver = value;
+  return Object.freeze({
+    collection: (...args: unknown[]) =>
+      Reflect.apply(collection, receiver, args),
+    runTransaction: (...args: unknown[]) =>
+      Reflect.apply(runTransaction, receiver, args),
+  }) as unknown as Firestore;
 }
 
 function appCheckVerifier(value: unknown, allowedAppId: string) {
@@ -163,50 +321,87 @@ export function buildRuntimeSecurity(
     );
   }
 
-  const apps = factory.getApps();
-  if (!Array.isArray(apps)) {
-    throw new Error("FIREBASE_APPS_INVALID");
+  const firebase = snapshotFactory(factory);
+  const credential = callDependency(
+    firebase.applicationDefault,
+    firebase.receiver,
+    [],
+    "FIREBASE_ADC_INVALID",
+  );
+  if (!isRecord(credential)) {
+    throw stableError("FIREBASE_ADC_INVALID");
   }
-  for (const candidate of apps) {
-    if (
-      !isRecord(candidate) ||
-      typeof readProperty(candidate, "name") !== "string" ||
-      !isRecord(readProperty(candidate, "options"))
-    ) {
-      throw new Error("FIREBASE_APPS_INVALID");
-    }
-  }
-  const existing = apps.find(
-    (candidate) =>
-      isRecord(candidate) &&
-      readProperty(candidate, "name") === FIREBASE_APP_NAME,
+  snapshotCallable(
+    credential,
+    "getAccessToken",
+    "FIREBASE_ADC_INVALID",
   );
 
-  let firebaseApp: App;
-  if (existing === undefined) {
-    const credential = factory.applicationDefault();
-    if (
-      !isRecord(credential) ||
-      typeof readProperty(credential, "getAccessToken") !== "function"
-    ) {
-      throw new Error("FIREBASE_ADC_INVALID");
+  const appsValue = callDependency(
+    firebase.getApps,
+    firebase.receiver,
+    [],
+    "FIREBASE_APPS_INVALID",
+  );
+  let appSnapshots: FirebaseAppSnapshot[];
+  try {
+    if (!Array.isArray(appsValue)) {
+      throw stableError("FIREBASE_APPS_INVALID");
     }
-    firebaseApp = asFirebaseApp(
-      factory.initializeApp(
+    appSnapshots = appsValue.map((candidate) =>
+      snapshotFirebaseApp(candidate, "FIREBASE_APPS_INVALID"),
+    );
+  } catch {
+    throw stableError("FIREBASE_APPS_INVALID");
+  }
+  const matchingApps = appSnapshots.filter(
+    (candidate) => candidate.name === FIREBASE_APP_NAME,
+  );
+  if (matchingApps.length > 1) {
+    throw stableError("FIREBASE_APP_IDENTITY_INVALID");
+  }
+
+  let firebaseApp: App;
+  if (matchingApps.length === 0) {
+    const initializedApp = callDependency(
+      firebase.initializeApp,
+      firebase.receiver,
+      [
         { credential, projectId },
         FIREBASE_APP_NAME,
+      ],
+      "FIREBASE_APP_INVALID",
+    );
+    firebaseApp = validateRuntimeAppIdentity(
+      snapshotFirebaseApp(
+        initializedApp,
+        "FIREBASE_APP_INVALID",
       ),
+      credential,
     );
   } else {
-    firebaseApp = asFirebaseApp(existing);
+    firebaseApp = validateRuntimeAppIdentity(
+      matchingApps[0],
+      credential,
+    );
   }
 
   const verifier = appCheckVerifier(
-    factory.getAppCheck(firebaseApp),
+    callDependency(
+      firebase.getAppCheck,
+      firebase.receiver,
+      [firebaseApp],
+      "APP_CHECK_CLIENT_INVALID",
+    ),
     appId,
   );
   const firestore = asFirestore(
-    factory.getFirestore(firebaseApp, databaseId),
+    callDependency(
+      firebase.getFirestore,
+      firebase.receiver,
+      [firebaseApp, databaseId],
+      "FIRESTORE_CLIENT_INVALID",
+    ),
   );
 
   return Object.freeze({
