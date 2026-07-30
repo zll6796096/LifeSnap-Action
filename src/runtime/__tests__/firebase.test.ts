@@ -42,6 +42,18 @@ function fakeFirebaseFactory() {
       credential,
       projectId: "zhang23-23",
     },
+    INTERNAL: {
+      getToken: vi.fn(async () => ({
+        accessToken: "adc-test-token",
+        expirationTime: Date.now() + 3_600_000,
+      })),
+    },
+    getOrInitService: vi.fn(
+      (
+        _name: string,
+        initializer: (candidate: unknown) => unknown,
+      ) => initializer(app),
+    ),
   };
   const verifyToken = vi.fn(async () => ({
     appId: "1:1234567890:ios:security-test",
@@ -182,13 +194,28 @@ describe("production Firebase runtime", () => {
       }),
       expect.anything(),
     );
-    expect(fake.factory.getAppCheck).toHaveBeenCalledWith(fake.app);
+    const pinnedApp =
+      fake.factory.getAppCheck.mock.calls[0][0] as {
+        name: string;
+        options: {
+          credential: unknown;
+          projectId: string;
+        };
+      };
+    expect(pinnedApp).not.toBe(fake.app);
+    expect(Object.isFrozen(pinnedApp)).toBe(true);
+    expect(Object.isFrozen(pinnedApp.options)).toBe(true);
+    expect(pinnedApp.name).toBe("lifesnap-runtime");
+    expect(pinnedApp.options).toEqual({
+      credential: fake.credential,
+      projectId: "zhang23-23",
+    });
     expect(fake.verifyToken).toHaveBeenCalledWith(
       "limited-use-token",
       { consume: true },
     );
     expect(fake.factory.getFirestore).toHaveBeenCalledWith(
-      fake.app,
+      pinnedApp,
       "lifesnap-quota",
     );
     expect(
@@ -199,17 +226,34 @@ describe("production Firebase runtime", () => {
     expect(dependencies.now()).toBeInstanceOf(Date);
   });
 
-  it("reuses only the matching named Firebase app owned by the same ADC credential", () => {
+  it("reuses the module-owned app snapshot without rereading mutable identity fields", () => {
     const fake = fakeFirebaseFactory();
+    buildRuntimeSecurity(completeProductionEnv(), fake.factory);
+    const pinnedApp =
+      fake.factory.getAppCheck.mock.calls[0][0];
+
+    fake.factory.applicationDefault.mockClear();
+    fake.factory.initializeApp.mockClear();
+    fake.factory.getAppCheck.mockClear();
+    fake.factory.getFirestore.mockClear();
     fake.factory.getApps.mockReturnValue([fake.app]);
+    fake.app.name = "mutated-name";
+    fake.app.options = {
+      credential: {
+        getAccessToken: vi.fn(),
+      },
+      projectId: "other-project",
+    };
 
     buildRuntimeSecurity(completeProductionEnv(), fake.factory);
 
     expect(fake.factory.applicationDefault).toHaveBeenCalledOnce();
     expect(fake.factory.initializeApp).not.toHaveBeenCalled();
-    expect(fake.factory.getAppCheck).toHaveBeenCalledWith(fake.app);
+    expect(fake.factory.getAppCheck).toHaveBeenCalledWith(
+      pinnedApp,
+    );
     expect(fake.factory.getFirestore).toHaveBeenCalledWith(
-      fake.app,
+      pinnedApp,
       "lifesnap-quota",
     );
   });
@@ -251,6 +295,64 @@ describe("production Firebase runtime", () => {
       buildRuntimeSecurity(completeProductionEnv(), fake.factory),
     ).toThrow("FIREBASE_APPS_INVALID");
     expect(fake.factory.applicationDefault).toHaveBeenCalledOnce();
+  });
+
+  it("never invokes an overridden registry map method", () => {
+    const fake = fakeFirebaseFactory();
+    const apps: unknown[] = [{}];
+    const maliciousMap = vi.fn(() => []);
+    const maliciousIterator = vi.fn(function* () {
+      yield fake.app;
+    });
+    Object.defineProperty(apps, "map", {
+      value: maliciousMap,
+    });
+    Object.defineProperty(apps, Symbol.iterator, {
+      value: maliciousIterator,
+    });
+    fake.factory.getApps.mockReturnValue(apps);
+
+    expect(() =>
+      buildRuntimeSecurity(completeProductionEnv(), fake.factory),
+    ).toThrow("FIREBASE_APPS_INVALID");
+    expect(maliciousMap).not.toHaveBeenCalled();
+    expect(maliciousIterator).not.toHaveBeenCalled();
+    expect(fake.factory.initializeApp).not.toHaveBeenCalled();
+  });
+
+  it("rejects sparse, accessor-backed, and revoked registries without invoking elements", () => {
+    const fake = fakeFirebaseFactory();
+    const sparse = new Array(1);
+    fake.factory.getApps.mockReturnValue(sparse);
+    expect(() =>
+      buildRuntimeSecurity(completeProductionEnv(), fake.factory),
+    ).toThrow("FIREBASE_APPS_INVALID");
+
+    let elementReads = 0;
+    const accessorElements: unknown[] = [];
+    Object.defineProperty(accessorElements, "0", {
+      configurable: true,
+      get() {
+        elementReads += 1;
+        return fake.app;
+      },
+    });
+    Object.defineProperty(accessorElements, "length", {
+      value: 1,
+    });
+    fake.factory.getApps.mockReturnValue(accessorElements);
+
+    expect(() =>
+      buildRuntimeSecurity(completeProductionEnv(), fake.factory),
+    ).toThrow("FIREBASE_APPS_INVALID");
+    expect(elementReads).toBe(0);
+
+    const revoked = Proxy.revocable([fake.app], {});
+    revoked.revoke();
+    fake.factory.getApps.mockReturnValue(revoked.proxy);
+    expect(() =>
+      buildRuntimeSecurity(completeProductionEnv(), fake.factory),
+    ).toThrow("FIREBASE_APPS_INVALID");
   });
 
   it("fails startup when ADC returns a malformed credential", () => {
@@ -410,6 +512,52 @@ describe("production Firebase runtime", () => {
     expect(fake.factory.getAppCheck).not.toHaveBeenCalled();
   });
 
+  it("rejects an external app with inherited stateful identity getters before downstream construction", () => {
+    const fake = fakeFirebaseFactory();
+    let nameReads = 0;
+    let optionsReads = 0;
+    const prototype = Object.defineProperties({}, {
+      name: {
+        get() {
+          nameReads += 1;
+          return nameReads === 1
+            ? "lifesnap-runtime"
+            : "flipped-name";
+        },
+      },
+      options: {
+        get() {
+          optionsReads += 1;
+          return optionsReads === 1
+            ? {
+                credential: fake.credential,
+                projectId: "zhang23-23",
+              }
+            : {
+                credential: fake.credential,
+                projectId: "other-project",
+              };
+        },
+      },
+    });
+    const externalApp = Object.assign(
+      Object.create(prototype),
+      {
+        INTERNAL: fake.app.INTERNAL,
+        getOrInitService: fake.app.getOrInitService,
+      },
+    );
+    fake.factory.getApps.mockReturnValue([externalApp]);
+
+    expect(() =>
+      buildRuntimeSecurity(completeProductionEnv(), fake.factory),
+    ).toThrow("FIREBASE_APP_IDENTITY_INVALID");
+    expect(nameReads).toBe(1);
+    expect(optionsReads).toBe(1);
+    expect(fake.factory.getAppCheck).not.toHaveBeenCalled();
+    expect(fake.factory.getFirestore).not.toHaveBeenCalled();
+  });
+
   it("maps throwing and revoked app snapshots to stable startup failures", () => {
     const throwingApp = Object.defineProperties({}, {
       name: {
@@ -492,6 +640,19 @@ describe("production Firebase runtime", () => {
           VALID_INSTALLATION_ID,
         ),
       ).toMatch(/^[a-f0-9]{64}$/);
+
+      const reusedDependencies = buildRuntimeSecurity(
+        completeProductionEnv(),
+      );
+      expect(
+        reusedDependencies.hashInstallationId(
+          VALID_INSTALLATION_ID,
+        ),
+      ).toBe(
+        dependencies.hashInstallationId(
+          VALID_INSTALLATION_ID,
+        ),
+      );
     } finally {
       const appToDelete =
         runtimeApp ??

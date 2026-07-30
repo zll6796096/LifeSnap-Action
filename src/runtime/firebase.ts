@@ -162,6 +162,18 @@ type FirebaseAppSnapshot = Readonly<{
   optionKeys: readonly PropertyKey[];
 }>;
 
+type OwnedFirebaseApp = Readonly<{
+  snapshot: FirebaseAppSnapshot;
+  facade: App;
+}>;
+
+type FirebaseRegistryEntry = Readonly<{
+  snapshot: FirebaseAppSnapshot;
+  owned: OwnedFirebaseApp | undefined;
+}>;
+
+const OWNED_FIREBASE_APPS = new WeakMap<object, OwnedFirebaseApp>();
+
 function snapshotFirebaseApp(
   value: unknown,
   errorCode: string,
@@ -209,21 +221,138 @@ function snapshotFirebaseApp(
 function validateRuntimeAppIdentity(
   snapshot: FirebaseAppSnapshot,
   adcCredential: unknown,
-): App {
-  const allowedOptionKeys = new Set<PropertyKey>([
-    "credential",
-    "projectId",
-  ]);
+): FirebaseAppSnapshot {
+  let optionsAreExact = snapshot.optionKeys.length === 2;
+  for (
+    let index = 0;
+    index < snapshot.optionKeys.length;
+    index += 1
+  ) {
+    const key = snapshot.optionKeys[index];
+    if (key !== "credential" && key !== "projectId") {
+      optionsAreExact = false;
+    }
+  }
   if (
     snapshot.name !== FIREBASE_APP_NAME ||
     snapshot.projectId !== FIREBASE_PROJECT_ID ||
     snapshot.credential !== adcCredential ||
-    snapshot.optionKeys.length !== allowedOptionKeys.size ||
-    snapshot.optionKeys.some((key) => !allowedOptionKeys.has(key))
+    !optionsAreExact
   ) {
     throw stableError("FIREBASE_APP_IDENTITY_INVALID");
   }
-  return snapshot.app;
+  return snapshot;
+}
+
+function createStableFirebaseApp(
+  snapshot: FirebaseAppSnapshot,
+): App {
+  const rawApp = snapshot.app as unknown as Record<
+    PropertyKey,
+    unknown
+  >;
+  const getOrInitService = snapshotCallable(
+    rawApp,
+    "getOrInitService",
+    "FIREBASE_APP_INVALID",
+  );
+  const rawInternal = snapshotProperty(
+    rawApp,
+    "INTERNAL",
+    "FIREBASE_APP_INVALID",
+  );
+  if (!isRecord(rawInternal)) {
+    throw stableError("FIREBASE_APP_INVALID");
+  }
+  const getToken = snapshotCallable(
+    rawInternal,
+    "getToken",
+    "FIREBASE_APP_INVALID",
+  );
+  const stableInternal = Object.freeze({
+    getToken: (...args: unknown[]) =>
+      Reflect.apply(getToken, rawInternal, args),
+  });
+  const stableOptions = Object.freeze({
+    credential: snapshot.credential as Credential,
+    projectId: snapshot.projectId as string,
+  });
+
+  let facade: App;
+  const forwardGetOrInitService = (
+    serviceName: unknown,
+    initializer: unknown,
+  ): unknown => {
+    if (typeof initializer !== "function") {
+      throw stableError("FIREBASE_APP_INVALID");
+    }
+    return Reflect.apply(getOrInitService, rawApp, [
+      serviceName,
+      () => Reflect.apply(initializer, undefined, [facade]),
+    ]);
+  };
+  facade = Object.freeze({
+    name: snapshot.name,
+    options: stableOptions,
+    INTERNAL: stableInternal,
+    getOrInitService: forwardGetOrInitService,
+  }) as unknown as App;
+  return facade;
+}
+
+function snapshotAppRegistry(
+  value: unknown,
+): FirebaseRegistryEntry[] {
+  try {
+    if (!Array.isArray(value)) {
+      throw stableError("FIREBASE_APPS_INVALID");
+    }
+    const lengthDescriptor = Reflect.getOwnPropertyDescriptor(
+      value,
+      "length",
+    );
+    if (
+      lengthDescriptor === undefined ||
+      !("value" in lengthDescriptor) ||
+      typeof lengthDescriptor.value !== "number" ||
+      !Number.isSafeInteger(lengthDescriptor.value) ||
+      lengthDescriptor.value < 0
+    ) {
+      throw stableError("FIREBASE_APPS_INVALID");
+    }
+
+    const entries: FirebaseRegistryEntry[] = [];
+    for (
+      let index = 0;
+      index < lengthDescriptor.value;
+      index += 1
+    ) {
+      const elementDescriptor = Reflect.getOwnPropertyDescriptor(
+        value,
+        String(index),
+      );
+      if (
+        elementDescriptor === undefined ||
+        !("value" in elementDescriptor) ||
+        !isRecord(elementDescriptor.value)
+      ) {
+        throw stableError("FIREBASE_APPS_INVALID");
+      }
+      const owned = OWNED_FIREBASE_APPS.get(
+        elementDescriptor.value,
+      );
+      const snapshot =
+        owned?.snapshot ??
+        snapshotFirebaseApp(
+          elementDescriptor.value,
+          "FIREBASE_APPS_INVALID",
+        );
+      entries[index] = Object.freeze({ snapshot, owned });
+    }
+    return entries;
+  } catch {
+    throw stableError("FIREBASE_APPS_INVALID");
+  }
 }
 
 function asFirestore(value: unknown): Firestore {
@@ -343,26 +472,26 @@ export function buildRuntimeSecurity(
     [],
     "FIREBASE_APPS_INVALID",
   );
-  let appSnapshots: FirebaseAppSnapshot[];
-  try {
-    if (!Array.isArray(appsValue)) {
-      throw stableError("FIREBASE_APPS_INVALID");
+  const registryEntries = snapshotAppRegistry(appsValue);
+  let matchingApp: FirebaseRegistryEntry | undefined;
+  let matchingAppCount = 0;
+  for (
+    let index = 0;
+    index < registryEntries.length;
+    index += 1
+  ) {
+    const entry = registryEntries[index];
+    if (entry.snapshot.name === FIREBASE_APP_NAME) {
+      matchingApp = entry;
+      matchingAppCount += 1;
     }
-    appSnapshots = appsValue.map((candidate) =>
-      snapshotFirebaseApp(candidate, "FIREBASE_APPS_INVALID"),
-    );
-  } catch {
-    throw stableError("FIREBASE_APPS_INVALID");
   }
-  const matchingApps = appSnapshots.filter(
-    (candidate) => candidate.name === FIREBASE_APP_NAME,
-  );
-  if (matchingApps.length > 1) {
+  if (matchingAppCount > 1) {
     throw stableError("FIREBASE_APP_IDENTITY_INVALID");
   }
 
   let firebaseApp: App;
-  if (matchingApps.length === 0) {
+  if (matchingAppCount === 0) {
     const initializedApp = callDependency(
       firebase.initializeApp,
       firebase.receiver,
@@ -372,18 +501,30 @@ export function buildRuntimeSecurity(
       ],
       "FIREBASE_APP_INVALID",
     );
-    firebaseApp = validateRuntimeAppIdentity(
+    const snapshot = validateRuntimeAppIdentity(
       snapshotFirebaseApp(
         initializedApp,
         "FIREBASE_APP_INVALID",
       ),
       credential,
     );
+    firebaseApp = createStableFirebaseApp(snapshot);
+    OWNED_FIREBASE_APPS.set(
+      snapshot.app as unknown as object,
+      Object.freeze({
+        snapshot,
+        facade: firebaseApp,
+      }),
+    );
   } else {
-    firebaseApp = validateRuntimeAppIdentity(
-      matchingApps[0],
+    if (matchingApp?.owned === undefined) {
+      throw stableError("FIREBASE_APP_IDENTITY_INVALID");
+    }
+    validateRuntimeAppIdentity(
+      matchingApp.owned.snapshot,
       credential,
     );
+    firebaseApp = matchingApp.owned.facade;
   }
 
   const verifier = appCheckVerifier(
