@@ -4,9 +4,9 @@
 <dict>
     <!-- Required app bundle metadata -->
     <key>CFBundleDevelopmentRegion</key>
-    <string>en</string>
+    <string>ja</string>
     <key>CFBundleDisplayName</key>
-    <string>LifeSnap</string>
+    <string>よていスナップ</string>
     <key>CFBundleExecutable</key>
     <string>$(EXECUTABLE_NAME)</string>
     <key>CFBundleIdentifier</key>

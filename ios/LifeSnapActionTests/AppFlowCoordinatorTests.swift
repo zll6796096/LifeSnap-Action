@@ -158,10 +158,19 @@ final class AppFlowCoordinatorTests: XCTestCase {
         XCTAssertTrue(body.contains("永続保存しません"))
         XCTAssertTrue(body.contains("Google 製品の改善に使用されません"))
         XCTAssertTrue(body.contains("キャンセルすると画像は送信されず"))
+        XCTAssertTrue(body.contains("よていスナップ"))
+        XCTAssertFalse(body.contains("LifeSnap"))
         XCTAssertEqual(ConsentPurpose.firstUpload.primaryButtonTitle, "同意して続ける")
         XCTAssertEqual(ConsentPurpose.retryUpload.primaryButtonTitle, "同意してもう一度試す")
         XCTAssertEqual(ConsentCopy.cancelButtonTitle, "キャンセル")
         XCTAssertEqual(ConsentCopy.privacyLinkTitle, "プライバシーポリシー")
+    }
+
+    func testCalendarSignatureUsesJapaneseBrand() {
+        XCTAssertEqual(
+            CalendarService.brandSignature,
+            "— よていスナップで作成"
+        )
     }
 
     private func makeCoordinator(client: MockExtractionClient) -> AppFlowCoordinator {

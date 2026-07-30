@@ -5,11 +5,11 @@ enum ConsentCopy {
     static let cancelButtonTitle = "キャンセル"
     static let privacyLinkTitle = "プライバシーポリシー"
     static let disclosureBody = """
-    この書類画像は、予定・タスク情報を抽出する目的で LifeSnap の Google Cloud Run バックエンドと第三者AIサービス Google Gemini（Google LLC）へ送信されます。
+    この書類画像は、予定・タスク情報を抽出する目的で よていスナップ の Google Cloud Run バックエンドと第三者AIサービス Google Gemini（Google LLC）へ送信されます。
 
     画像には、氏名、住所、日付、金額、機関名、予約情報などの個人情報が含まれる場合があります。
 
-    LifeSnap はリクエスト処理中にメモリ上で画像を扱い、画像、base64、OCR内容、抽出結果をデータベース・オブジェクトストレージ・ファイルへ永続保存しません。
+    よていスナップ はリクエスト処理中にメモリ上で画像を扱い、画像、base64、OCR内容、抽出結果をデータベース・オブジェクトストレージ・ファイルへ永続保存しません。
 
     Google Gemini Paid Service では、入力と出力は Google 製品の改善に使用されません。ただし、安全性、セキュリティ、不正利用防止、法的義務のために限定された期間ログ処理が行われる場合があり、処理は国や地域をまたぐ可能性があります。
 
@@ -99,7 +99,7 @@ struct UploadConsentView: View {
             DisclosureSummaryRow(
                 icon: "arrow.up.forward.app",
                 title: "送信先",
-                value: "LifeSnap と Google Gemini"
+                value: "よていスナップ と Google Gemini"
             )
 
             Divider()
@@ -115,7 +115,7 @@ struct UploadConsentView: View {
             DisclosureSummaryRow(
                 icon: "externaldrive.badge.xmark",
                 title: "保存",
-                value: "LifeSnap は画像や抽出内容を永続保存しません"
+                value: "よていスナップ は画像や抽出内容を永続保存しません"
             )
         }
         .appSectionStyle()

@@ -5,6 +5,7 @@ import EventKit
 /// Wraps EventKit for system calendar integration.
 final class CalendarService {
     static let shared = CalendarService()
+    static let brandSignature = "— よていスナップで作成"
 
     private let eventStore = EKEventStore()
 
@@ -100,7 +101,7 @@ final class CalendarService {
         if !task.issuer.isEmpty {
             parts.append("【発行元】\(task.issuer)")
         }
-        parts.append("— Created by LifeSnap Action")
+        parts.append(Self.brandSignature)
 
         return parts.joined(separator: "\n")
     }
