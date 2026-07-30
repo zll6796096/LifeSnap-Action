@@ -33,13 +33,21 @@ describe("privacy and extraction API behavior", () => {
       expect(response.status).toBe(200);
       expect(body).toContain("よていスナップ");
       expect(body).toContain("紙の案内を予定に変える");
-      expect(body).toContain("写真を撮る");
-      expect(body).toContain("写真を選ぶ");
-      expect(body).toContain("同意して続ける");
-      expect(body).toContain("同意してもう一度試す");
-      expect(body).toContain("予定を追加");
-      expect(body).toContain("キャンセル");
-      expect(body).toContain("画像を削除");
+      expect(body).toContain("「カメラで撮影」");
+      expect(body).toContain("「写真から選ぶ」");
+      expect(body).toContain("「同意して続ける」");
+      expect(body).toContain("「同意してもう一度試す」");
+      expect(body).toContain("「キャンセル」");
+      expect(body).toContain("「カレンダーの使用を許可」");
+      expect(body).toContain("「カレンダーに追加」");
+      expect(body).toContain("「追加する」");
+
+      const permissionAction = body.indexOf("「カレンダーの使用を許可」");
+      const addAction = body.indexOf("「カレンダーに追加」");
+      const confirmAction = body.indexOf("「追加する」");
+      expect(permissionAction).toBeLessThan(addAction);
+      expect(addAction).toBeLessThan(confirmAction);
+
       expect(body).not.toMatch(/\bLifeSnap(?: Action)?\b/);
       expect(body).not.toContain("同意してAI解析を開始");
       expect(body).not.toContain("同意して再解析");

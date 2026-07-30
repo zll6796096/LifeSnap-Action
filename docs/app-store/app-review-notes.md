@@ -26,6 +26,7 @@
 - Production deployment uses Secret Manager injection for `GEMINI_API_KEY`.
 - Current Paid Plan verification for this release is `PENDING` and blocks App Store submission. Historical Paid Service verification is not accepted as current evidence.
 - Before submission, verify that the production Gemini API key belongs to an active-billing Google Cloud project and record fresh evidence that Gemini is operating as a Paid Service.
+- Until that fresh evidence is recorded, there must be no candidate tag, no candidate invocation or extraction smoke, no traffic change, and no App Store action.
 - `MOCK_MODE` is development-only and forbidden in production.
 
 ## AI Upload Consent
@@ -47,9 +48,10 @@ Before each image upload, including retries, よていスナップ shows a dedic
 4. Tap `キャンセル`; verify that no image is uploaded and the pending image is cleared (`画像を削除`).
 5. Select the sample again and tap `同意して続ける`.
 6. Review the proposed event fields.
-7. Grant Calendar access when prompted.
-8. Tap `カレンダーに追加`, then `追加する`, to add the confirmed event (`予定を追加`).
-9. If retry appears, verify that `同意してもう一度試す` is required before another upload.
+7. Tap `カレンダーの使用を許可`.
+8. Grant Calendar access when prompted.
+9. Tap `カレンダーに追加`, then `追加する`, to add the confirmed event (`予定を追加`).
+10. If retry appears, verify that `同意してもう一度試す` is required before another upload.
 
 ## Expected Permission Prompts
 

@@ -32,7 +32,7 @@ Google states that Paid Service prompts and responses are not used to improve Go
 
 ## Calendar Access
 
-Calendar permission is used only when the user reviews the extracted fields, taps `カレンダーに追加`, and confirms `追加する` (`予定を追加`). よていスナップ does not upload or read the user's existing calendar contents.
+Calendar permission is used only after the user reviews the extracted fields. On first use, the user taps `カレンダーの使用を許可` and grants the system permission, then taps `カレンダーに追加` and confirms `追加する` (`予定を追加`). よていスナップ does not upload or read the user's existing calendar contents.
 
 ## Logging
 

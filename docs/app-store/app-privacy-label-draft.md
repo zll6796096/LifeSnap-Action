@@ -48,7 +48,7 @@ This is a conservative draft for App Store Connect. It is based on the implement
 
 ## Calendar Data
 
-The app requests Calendar permission only after the user reviews the extracted fields and chooses `カレンダーに追加` and `追加する` (`予定を追加`). Existing calendar contents are not uploaded to よていスナップ.
+The app requests Calendar permission only after the user reviews the extracted fields. On first use, the user taps `カレンダーの使用を許可` and grants the system permission, then taps `カレンダーに追加` and confirms `追加する` (`予定を追加`). Existing calendar contents are not uploaded to よていスナップ.
 
 ## Why Not Select "Data Not Collected"
 
