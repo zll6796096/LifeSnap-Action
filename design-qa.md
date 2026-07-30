@@ -39,4 +39,37 @@ The reference and latest simulator screenshot were placed in one comparison imag
 - Issuer is preserved as a separate, lower-emphasis metadata row because it is useful source information.
 - The CTA uses a solid semantic system blue instead of the reference gradient to meet the approved “no gradients” Apple-native rule.
 
+## Task 5 icon, Japanese rebrand, and adaptive launch acceptance
+
+### Evidence and normalization
+
+- Source visual truth: `docs/superpowers/specs/assets/yotei-snap-icon-direction-2-reference.png` (1254 × 1254 pixels).
+- Final marketing icon: `ios/LifeSnapAction/Resources/Assets.xcassets/AppIcon.appiconset/AppIcon-marketing.png` (1024 × 1024 pixels, opaque).
+- Installed implementation: `docs/verification/yotei-snap-release/home-screen-light.png` (1179 × 2556 pixels; iPhone 15, 393 × 852 points at 3× density, light appearance, after first launch).
+- Real light launch frame: `docs/verification/yotei-snap-release/launch-screen-light.png` (1178 × 2556 pixels), verified as frame 020 from the retained clean first-launch recording rather than a static storyboard preview.
+- Light transition: `docs/verification/yotei-snap-release/launch-transition-light-contact-sheet.png`.
+- Dark transition: `docs/verification/yotei-snap-release/launch-transition-dark-contact-sheet.png`.
+- Sanitized provenance: `docs/verification/yotei-snap-release/launch-transition-evidence.txt`.
+- Full-view comparison input: the reference, 1024-pixel final, and installed Home crop were normalized to 768 × 768 panels and inspected together in `/tmp/yotei-task5-reference-final-home-sizes.png`.
+- Focused comparison: the actual 20-, 60-, and 180-pixel AppIcon files were enlarged with nearest-neighbor sampling and inspected together in `/tmp/yotei-task5-icon-20-60-180-inspection.png`; a separate focused crop was unnecessary because the installed mask and complete label are readable in the full-view comparison.
+
+### Compiled identity and signing provenance
+
+- Source commit: `6e7f930ed453cffe498726219347fd44dc7dfe7b`.
+- Normally signed simulator Release bundle: `com.zll.lifesnapaction`, marketing version `1.1`, build `4`, display name `よていスナップ`, launch storyboard `LaunchScreen`.
+- Bundle-content SHA-256: `6bb7bdd089234b796a24fd6b8cb374532dedc18574a6e77e06c9d75dfc38a936`; executable SHA-256: `1ee246719c49abfa509862a11caf87eddc2dc8908ba273e7bce6b21d1e5f8614`. The fresh rebuild and both retained adaptive simulator installations match the recorded executable.
+- `codesign --verify --deep --strict --verbose=2` passed. The ad-hoc simulator signature binds a 31-entry `Info.plist`, uses sealed resources version 2, and contains the compiled `LaunchScreen.storyboardc`.
+- Signing root cause: the earlier black/denylisted SplashBoard capture came from a simulator Release product built with `CODE_SIGNING_ALLOWED=NO`, leaving `Info.plist` unbound and resources unsealed. Removing `UIRequiresFullScreen` alone did not change that behavior. The normal/default simulator-signing build produces valid SplashBoard evidence and zero denylist rejections.
+
+### Visual findings
+
+- Icon fidelity: the final retains the selected paper-turn-to-calendar silhouette, removes one excess document line, enlarges the single checkmark, keeps restrained physical depth, and introduces no glow, sparkle, camera, robot, or other AI-style motif.
+- Small-size quality: the 20-pixel asset still reads as document/calendar/check; the 60-pixel asset keeps the page fold and check distinct; the 180-pixel asset is crisp with no clipping, transparency halo, or muddy edge.
+- Installed mask and name: iOS applies the expected rounded mask without clipping the page fold or calendar edge. `よていスナップ` is complete, not truncated, has no blue new-install dot, and no old `LifeSnapAction` app or icon appears on the clean evidence device.
+- Light transition: Home icon zoom moves into a semantic light grouped background and then the light first screen. Near-full-black mismatch frames: `0`; SplashBoard denylist rejections: `0`.
+- Dark transition: Home icon zoom moves into the semantic dark grouped background and then the dark first screen. Near-full-light flash frames: `0`; SplashBoard denylist rejections: `0`.
+- Launch surface: intentionally neutral and undecorated, with no product name, logo, image, or fabricated visual. The real light launch frame and both timestamped contact sheets show semantic appearance continuity.
+- Typography, spacing, colors, image quality, and copy remain consistent with the approved Apple-native UI. No P0, P1, or P2 mismatch remains.
+- Evidence limit: this is iPhone 15 / iOS 26.5 simulator evidence; it does not claim physical-device, VoiceOver, distribution-signing, archive, upload, or App Store acceptance.
+
 final result: passed
