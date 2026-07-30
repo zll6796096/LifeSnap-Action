@@ -41,7 +41,7 @@ Before each image upload, including retries, よていスナップ shows a dedic
 ## Reviewer Test Steps
 
 1. Launch よていスナップ.
-2. Tap `カメラで撮影` or `ライブラリから選択`.
+2. Tap `カメラで撮影` or `写真から選ぶ`.
 3. Confirm that the upload-consent screen appears before processing.
 4. Tap `キャンセル`; verify that no image is uploaded.
 5. Select the sample again and tap `同意して続ける`.
