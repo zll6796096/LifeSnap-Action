@@ -20,6 +20,7 @@ import {
 const MINUTE_EXPIRY_MILLISECONDS = 24 * 60 * 60 * 1000;
 const DAILY_EXPIRY_MILLISECONDS = 30 * 24 * 60 * 60 * 1000;
 const THRESHOLDS = [70, 90, 100] as const;
+const INSTALLATION_HASH_PATTERN = /^[0-9a-f]{64}$/;
 
 type CounterDocument = {
   count: number;
@@ -68,18 +69,48 @@ function crossedThreshold(
 ): 70 | 90 | 100 | undefined {
   return THRESHOLDS.find(
     (threshold) =>
-      previousCount * 100 < limit * threshold &&
-      nextCount * 100 >= limit * threshold,
+      BigInt(previousCount) * 100n < BigInt(limit) * BigInt(threshold) &&
+      BigInt(nextCount) * 100n >= BigInt(limit) * BigInt(threshold),
   );
 }
 
 export class FirestoreQuotaStore implements QuotaStore {
+  private readonly policy: QuotaPolicy;
+
   constructor(
     private readonly db: Firestore,
-    private readonly policy: QuotaPolicy = PRODUCTION_QUOTA_POLICY,
-  ) {}
+    policy: QuotaPolicy = PRODUCTION_QUOTA_POLICY,
+  ) {
+    const values = [
+      policy.installPerMinute,
+      policy.installPerDay,
+      policy.v2PerDay,
+      policy.legacyPerDay,
+    ];
+    if (
+      values.some(
+        (value) => !Number.isSafeInteger(value) || value <= 0,
+      )
+    ) {
+      throw new Error("QUOTA_POLICY_INVALID");
+    }
+
+    this.policy = Object.freeze({
+      installPerMinute: policy.installPerMinute,
+      installPerDay: policy.installPerDay,
+      v2PerDay: policy.v2PerDay,
+      legacyPerDay: policy.legacyPerDay,
+    });
+  }
 
   async consume(scope: QuotaScope, now: Date): Promise<QuotaDecision> {
+    if (
+      scope.kind === "v2" &&
+      !INSTALLATION_HASH_PATTERN.test(scope.installationHash)
+    ) {
+      throw new Error("INSTALLATION_HASH_INVALID");
+    }
+
     const buckets = buildQuotaBuckets(now);
 
     return this.db.runTransaction(async (transaction) => {

@@ -62,6 +62,7 @@ class MemoryTransaction {
 
 class MemoryFirestore {
   private readonly documents = new Map<string, DocumentData>();
+  transactionCalls = 0;
 
   collection(collectionPath: string) {
     return {
@@ -73,6 +74,7 @@ class MemoryFirestore {
   async runTransaction<T>(
     callback: (transaction: MemoryTransaction) => Promise<T>,
   ): Promise<T> {
+    this.transactionCalls += 1;
     const transaction = new MemoryTransaction(this.documents);
     const result = await callback(transaction);
     transaction.commit();
@@ -113,6 +115,23 @@ const MINUTE_PATH = `install_minute/${INSTALLATION_HASH}:${EPOCH_MINUTE}`;
 const INSTALL_DAY_PATH = `install_day/${INSTALLATION_HASH}:${TOKYO_DAY}`;
 const V2_SERVICE_PATH = `service_day/v2:${TOKYO_DAY}`;
 const LEGACY_SERVICE_PATH = `service_day/legacy:${TOKYO_DAY}`;
+const POLICY_FIELDS: ReadonlyArray<keyof QuotaPolicy> = [
+  "installPerMinute",
+  "installPerDay",
+  "v2PerDay",
+  "legacyPerDay",
+];
+const INVALID_POLICY_VALUES = [
+  { label: "zero", value: 0 },
+  { label: "negative", value: -1 },
+  { label: "fractional", value: 1.5 },
+  { label: "NaN", value: Number.NaN },
+  { label: "Infinity", value: Number.POSITIVE_INFINITY },
+  { label: "unsafe integer", value: Number.MAX_SAFE_INTEGER + 1 },
+];
+const INVALID_POLICY_CASES = POLICY_FIELDS.flatMap((field) =>
+  INVALID_POLICY_VALUES.map(({ label, value }) => ({ field, label, value })),
+);
 
 function createStore(
   policy: QuotaPolicy = PRODUCTION_QUOTA_POLICY,
@@ -138,6 +157,90 @@ function millisecondsAt(
 }
 
 describe("FirestoreQuotaStore", () => {
+  it("freezes the production quota policy", () => {
+    expect(Object.isFrozen(PRODUCTION_QUOTA_POLICY)).toBe(true);
+  });
+
+  it.each([
+    {
+      label: "raw UUID",
+      installationHash: "e8b18b25-64a6-4af9-b31f-9b0b6d3c3d4e",
+    },
+    { label: "uppercase hex", installationHash: "A".repeat(64) },
+    { label: "short hex", installationHash: "a".repeat(63) },
+    {
+      label: "slash-containing value",
+      installationHash: `${"a".repeat(32)}/${"b".repeat(31)}`,
+    },
+  ])(
+    "rejects a $label installation hash before starting a transaction",
+    async ({ installationHash }) => {
+      const { db, store } = createStore();
+
+      await expect(
+        store.consume({ kind: "v2", installationHash }, NOW),
+      ).rejects.toThrow(new Error("INSTALLATION_HASH_INVALID"));
+
+      expect(db.transactionCalls).toBe(0);
+      expect(db.paths()).toEqual([]);
+    },
+  );
+
+  it.each(INVALID_POLICY_CASES)(
+    "rejects a $label $field policy before starting a transaction",
+    ({ field, value }) => {
+      const db = new MemoryFirestore();
+      const policy = {
+        ...PRODUCTION_QUOTA_POLICY,
+        [field]: value,
+      };
+
+      expect(
+        () => new FirestoreQuotaStore(db.asFirestore(), policy),
+      ).toThrow(new Error("QUOTA_POLICY_INVALID"));
+      expect(db.transactionCalls).toBe(0);
+      expect(db.paths()).toEqual([]);
+    },
+  );
+
+  it("snapshots caller-owned policy so later mutation cannot weaken the cap", async () => {
+    const callerPolicy = {
+      installPerMinute: 1,
+      installPerDay: 20,
+      v2PerDay: 500,
+      legacyPerDay: 50,
+    };
+    const { db, store } = createStore(callerPolicy);
+    callerPolicy.installPerMinute = 2;
+
+    await expect(store.consume(V2_SCOPE, NOW)).resolves.toEqual({
+      allowed: true,
+    });
+    await expect(store.consume(V2_SCOPE, NOW)).resolves.toEqual({
+      allowed: false,
+      code: "INSTALL_RATE_LIMITED",
+      retryAfterSeconds: 26,
+    });
+    expect(countAt(db, MINUTE_PATH)).toBe(1);
+  });
+
+  it("computes threshold crossings exactly for very large safe integers", async () => {
+    const maximumSafePolicy: QuotaPolicy = {
+      installPerMinute: Number.MAX_SAFE_INTEGER,
+      installPerDay: Number.MAX_SAFE_INTEGER,
+      v2PerDay: Number.MAX_SAFE_INTEGER,
+      legacyPerDay: Number.MAX_SAFE_INTEGER,
+    };
+    const { db, store } = createStore(maximumSafePolicy);
+    db.seed(V2_SERVICE_PATH, { count: 6_305_039_478_318_693 });
+
+    await expect(store.consume(V2_SCOPE, NOW)).resolves.toEqual({
+      allowed: true,
+      crossedThreshold: 70,
+    });
+    expect(countAt(db, V2_SERVICE_PATH)).toBe(6_305_039_478_318_694);
+  });
+
   it("allows the fifth minute request and rejects the sixth with Retry-After", async () => {
     const { db, store } = createStore();
     db.seed(MINUTE_PATH, { count: 4 });
@@ -229,6 +332,54 @@ describe("FirestoreQuotaStore", () => {
       marker: "unchanged",
     });
     expect(db.raw(V2_SERVICE_PATH)).toBeUndefined();
+  });
+
+  it("uses minute then install-day then service-day denial precedence without writes", async () => {
+    const { db, store } = createStore();
+    db.seed(MINUTE_PATH, { count: 5, marker: "minute" });
+    db.seed(INSTALL_DAY_PATH, { count: 20, marker: "install-day" });
+    db.seed(V2_SERVICE_PATH, { count: 500, marker: "service-day" });
+
+    await expect(store.consume(V2_SCOPE, NOW)).resolves.toMatchObject({
+      allowed: false,
+      code: "INSTALL_RATE_LIMITED",
+    });
+    expect(db.raw(MINUTE_PATH)).toEqual({ count: 5, marker: "minute" });
+    expect(db.raw(INSTALL_DAY_PATH)).toEqual({
+      count: 20,
+      marker: "install-day",
+    });
+    expect(db.raw(V2_SERVICE_PATH)).toEqual({
+      count: 500,
+      marker: "service-day",
+    });
+
+    db.delete(MINUTE_PATH);
+    await expect(store.consume(V2_SCOPE, NOW)).resolves.toMatchObject({
+      allowed: false,
+      code: "INSTALL_DAILY_LIMITED",
+    });
+    expect(db.raw(MINUTE_PATH)).toBeUndefined();
+    expect(db.raw(INSTALL_DAY_PATH)).toEqual({
+      count: 20,
+      marker: "install-day",
+    });
+    expect(db.raw(V2_SERVICE_PATH)).toEqual({
+      count: 500,
+      marker: "service-day",
+    });
+
+    db.delete(INSTALL_DAY_PATH);
+    await expect(store.consume(V2_SCOPE, NOW)).resolves.toMatchObject({
+      allowed: false,
+      code: "SERVICE_DAILY_LIMITED",
+    });
+    expect(db.raw(MINUTE_PATH)).toBeUndefined();
+    expect(db.raw(INSTALL_DAY_PATH)).toBeUndefined();
+    expect(db.raw(V2_SERVICE_PATH)).toEqual({
+      count: 500,
+      marker: "service-day",
+    });
   });
 
   it("writes only the documents belonging to the selected scope", async () => {

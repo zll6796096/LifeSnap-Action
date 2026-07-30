@@ -19,18 +19,18 @@ export type QuotaDecision =
     };
 
 export type QuotaPolicy = {
-  installPerMinute: number;
-  installPerDay: number;
-  v2PerDay: number;
-  legacyPerDay: number;
+  readonly installPerMinute: number;
+  readonly installPerDay: number;
+  readonly v2PerDay: number;
+  readonly legacyPerDay: number;
 };
 
-export const PRODUCTION_QUOTA_POLICY: QuotaPolicy = {
+export const PRODUCTION_QUOTA_POLICY: QuotaPolicy = Object.freeze({
   installPerMinute: 5,
   installPerDay: 20,
   v2PerDay: 500,
   legacyPerDay: 50,
-};
+});
 
 export interface QuotaStore {
   consume(scope: QuotaScope, now: Date): Promise<QuotaDecision>;
