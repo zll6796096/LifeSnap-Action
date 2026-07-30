@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createApp, type PrivacySafeLogger } from "../../../server";
@@ -44,6 +45,7 @@ afterEach(async () => {
         ),
     ),
   );
+  vi.restoreAllMocks();
 });
 
 describe("protected extraction routes", () => {
@@ -182,7 +184,7 @@ describe("protected extraction routes", () => {
     const body = await expectStablePublicError(
       response,
       503,
-      "QUOTA_SERVICE_UNAVAILABLE",
+      "SECURITY_SERVICE_UNAVAILABLE",
     );
     expect(JSON.stringify(body)).not.toContain(
       "SECRET_FIRESTORE_PROJECT_AND_PATH",
@@ -206,9 +208,104 @@ describe("protected extraction routes", () => {
     await expectStablePublicError(
       response,
       503,
-      "QUOTA_SERVICE_UNAVAILABLE",
+      "SECURITY_SERVICE_UNAVAILABLE",
     );
     expect(harness.extraction.extract).not.toHaveBeenCalled();
+  });
+
+  it("establishes one request identity before App Check and reuses it for rejection logs", async () => {
+    const requestId = "00000000-0000-4000-8000-000000000005";
+    const { logger, entries } = captureLogger();
+    const harness = securityHarness({
+      logger,
+      tokenOutcome: "invalid",
+    });
+    const randomUuid = vi
+      .spyOn(crypto, "randomUUID")
+      .mockImplementation(() => {
+        harness.callOrder.push("request-id");
+        return requestId;
+      });
+
+    const response = await harness.postV2({
+      token: "invalid",
+      installationId: VALID_INSTALLATION_ID,
+      image: imageForm("image/png", 16),
+    });
+
+    await expectStablePublicError(response, 401, "APP_CHECK_INVALID");
+    expect(harness.callOrder).toEqual(["request-id", "app-check"]);
+    expect(randomUuid).toHaveBeenCalledTimes(1);
+    expect(
+      entries.filter((entry) => entry.event === "extract_rejected"),
+    ).toEqual([
+      {
+        level: "warn",
+        event: "extract_rejected",
+        metadata: {
+          request_id: requestId,
+          route_category: "v2",
+          status: 401,
+          code: "APP_CHECK_INVALID",
+        },
+      },
+    ]);
+  });
+
+  it("establishes request identity before legacy image validation", async () => {
+    const requestId = "00000000-0000-4000-8000-000000000006";
+    const harness = securityHarness();
+    const randomUuid = vi
+      .spyOn(crypto, "randomUUID")
+      .mockImplementation(() => {
+        harness.callOrder.push("request-id");
+        return requestId;
+      });
+
+    const response = await harness.postLegacy(
+      imageForm("text/plain", 16),
+    );
+
+    await expectStablePublicError(
+      response,
+      400,
+      "UNSUPPORTED_IMAGE_TYPE",
+    );
+    expect(harness.callOrder).toEqual(["request-id"]);
+    expect(randomUuid).toHaveBeenCalledTimes(1);
+  });
+
+  it("reuses the pre-security request identity through quota and extraction logs", async () => {
+    const requestId = "00000000-0000-4000-8000-000000000007";
+    const { logger, entries } = captureLogger();
+    const harness = securityHarness({ logger });
+    const randomUuid = vi
+      .spyOn(crypto, "randomUUID")
+      .mockImplementation(() => {
+        harness.callOrder.push("request-id");
+        return requestId;
+      });
+
+    const response = await harness.postValidV2();
+
+    expect(response.status).toBe(200);
+    expect(harness.callOrder).toEqual([
+      "request-id",
+      "app-check",
+      "hash",
+      "quota",
+      "gemini",
+    ]);
+    expect(randomUuid).toHaveBeenCalledTimes(1);
+    expect(
+      entries
+        .filter(
+          (entry) =>
+            entry.event === "extract_request" ||
+            entry.event === "extract_success",
+        )
+        .map((entry) => entry.metadata.request_id),
+    ).toEqual([requestId, requestId]);
   });
 
   it("returns the same validated success schema from v1 and v2", async () => {

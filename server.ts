@@ -200,8 +200,9 @@ function setExtractNoStoreHeaders(res: Response) {
   res.setHeader("Pragma", "no-cache");
 }
 
-const setNoStore: RequestHandler = (_req, res, next) => {
+const startExtractionRequest: RequestHandler = (_req, res, next) => {
   setExtractNoStoreHeaders(res);
+  res.locals.requestId = crypto.randomUUID();
   next();
 };
 
@@ -342,17 +343,17 @@ function quotaHttpError(code: QuotaDeniedCode): PublicHttpError {
   return new PublicHttpError(429, code, messages[code]);
 }
 
-function quotaUnavailableError(): PublicHttpError {
+function securityUnavailableError(): PublicHttpError {
   return new PublicHttpError(
     503,
-    "QUOTA_SERVICE_UNAVAILABLE",
-    "利用状況の確認サービスを一時的に利用できません。しばらくしてからもう一度お試しください。",
+    "SECURITY_SERVICE_UNAVAILABLE",
+    APP_CHECK_FAILURES.SECURITY_SERVICE_UNAVAILABLE.message,
   );
 }
 
 function validateQuotaDecision(decision: QuotaDecision): QuotaDecision {
   if (typeof decision !== "object" || decision === null) {
-    throw quotaUnavailableError();
+    throw securityUnavailableError();
   }
   if (decision.allowed === true) {
     if (
@@ -361,7 +362,7 @@ function validateQuotaDecision(decision: QuotaDecision): QuotaDecision {
       decision.crossedThreshold !== 90 &&
       decision.crossedThreshold !== 100
     ) {
-      throw quotaUnavailableError();
+      throw securityUnavailableError();
     }
     return decision;
   }
@@ -375,7 +376,7 @@ function validateQuotaDecision(decision: QuotaDecision): QuotaDecision {
   ) {
     return decision;
   }
-  throw quotaUnavailableError();
+  throw securityUnavailableError();
 }
 
 function buildMockExtraction() {
@@ -524,7 +525,7 @@ export function createApp(options: CreateAppOptions = {}) {
       );
       return validateQuotaDecision(decision);
     } catch {
-      throw quotaUnavailableError();
+      throw securityUnavailableError();
     }
   }
 
@@ -545,7 +546,7 @@ export function createApp(options: CreateAppOptions = {}) {
     image: ImageInput,
     routeCategory: "legacy" | "v2",
   ): Promise<void> {
-    const requestId = crypto.randomUUID();
+    const requestId = res.locals.requestId as string;
     const startedAt = Date.now();
 
     try {
@@ -618,7 +619,7 @@ export function createApp(options: CreateAppOptions = {}) {
 
   app.post(
     "/api/v2/extract",
-    setNoStore,
+    startExtractionRequest,
     requireSecurity,
     verifyAppCheck,
     hashInstallationHeader,
@@ -643,7 +644,7 @@ export function createApp(options: CreateAppOptions = {}) {
 
   app.post(
     "/api/extract",
-    setNoStore,
+    startExtractionRequest,
     requireSecurity,
     legacyUpload.single("image"),
     asyncHandler(async (req, res) => {
@@ -665,11 +666,23 @@ export function createApp(options: CreateAppOptions = {}) {
     const isExtractionRoute =
       req.path === "/api/extract" ||
       req.path === "/api/v2/extract";
+    const routeCategory =
+      req.path === "/api/v2/extract" ? "v2" : "legacy";
+    const requestId =
+      typeof res.locals.requestId === "string"
+        ? res.locals.requestId
+        : crypto.randomUUID();
     if (isExtractionRoute) {
       setExtractNoStoreHeaders(res);
     }
 
     if (isPublicHttpError(err)) {
+      logger.warn("extract_rejected", {
+        request_id: requestId,
+        route_category: routeCategory,
+        status: err.statusCode,
+        code: err.code,
+      });
       sendJsonError(res, err.statusCode, err.code, err.publicMessage);
       return;
     }
@@ -679,9 +692,16 @@ export function createApp(options: CreateAppOptions = {}) {
         ? readProperty(err as Record<PropertyKey, unknown>, "code")
         : undefined;
     if (errorCode === "LIMIT_FILE_SIZE" && isExtractionRoute) {
+      const status = req.path === "/api/v2/extract" ? 413 : 400;
+      logger.warn("extract_rejected", {
+        request_id: requestId,
+        route_category: routeCategory,
+        status,
+        code: "IMAGE_TOO_LARGE",
+      });
       sendJsonError(
         res,
-        req.path === "/api/v2/extract" ? 413 : 400,
+        status,
         "IMAGE_TOO_LARGE",
         "画像サイズが大きすぎます。10MB以下の画像をアップロードしてください。",
       );
@@ -689,7 +709,7 @@ export function createApp(options: CreateAppOptions = {}) {
     }
 
     logger.error("request_failed", {
-      request_id: crypto.randomUUID(),
+      request_id: requestId,
       route: req.path,
       status: 500,
       ...safeErrorMetadata(err),
