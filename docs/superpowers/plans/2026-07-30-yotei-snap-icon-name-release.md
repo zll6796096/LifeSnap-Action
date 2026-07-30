@@ -18,7 +18,7 @@
 - `docs/superpowers/specs/assets/yotei-snap-app-icon-master-source.png` — selected final generated master before deterministic resizing.
 - `docs/verification/yotei-snap-release/icon-reference-vs-final.png` — normalized design comparison.
 - `docs/verification/yotei-snap-release/home-screen-light.png` — installed icon and display-name evidence.
-- `docs/verification/yotei-snap-release/launch-screen-light.png` — launch-name evidence.
+- `docs/verification/yotei-snap-release/launch-screen-light.png` — representative neutral launch-transition evidence.
 - `docs/release/yotei-snap-v1.1-app-store-release-gate.md` — source-of-truth release evidence and external-state boundary.
 
 ### Modified product files
@@ -26,7 +26,7 @@
 - `package.json` — expose the deterministic iOS release contract as `npm run validate:ios-release`.
 - `ios/LifeSnapActionTests/AppFlowCoordinatorTests.swift` — assert the new visible brand while retaining required consent disclosures.
 - `ios/LifeSnapAction/Info.plist` — Japanese development region and `CFBundleDisplayName`.
-- `ios/LifeSnapAction/Resources/LaunchScreen.storyboard` — new launch-screen name.
+- `ios/LifeSnapAction/Resources/LaunchScreen.storyboard` — neutral Apple HIG-aligned launch surface that matches the first screen.
 - `ios/LifeSnapAction/Services/CalendarService.swift` — testable Japanese calendar-note signature.
 - `ios/LifeSnapAction/Views/UploadConsentView.swift` — new brand name without weakening Google/Gemini/privacy copy.
 - `ios/project.yml` — version 1.1 Build 4 source setting.
@@ -117,6 +117,15 @@ assert_not_contains() {
   fi
 }
 
+assert_xpath_count() {
+  file_path="$1"
+  xpath_expression="$2"
+  expected_count="$3"
+  label="$4"
+  actual_count="$(xmllint --xpath "count($xpath_expression)" "$file_path" 2>/dev/null || true)"
+  assert_equal "$actual_count" "$expected_count" "$label"
+}
+
 if ! plutil -lint "$plist_path" >/dev/null; then
   fail "Info.plist syntax"
 else
@@ -133,7 +142,15 @@ display_name="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleDisplayName' "$plist_
 development_region="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleDevelopmentRegion' "$plist_path")"
 assert_equal "$display_name" "よていスナップ" "installed display name"
 assert_equal "$development_region" "ja" "development region"
-assert_contains "$storyboard_path" 'text="よていスナップ"' "launch-screen brand"
+assert_xpath_count "$storyboard_path" '//view' "1" "launch screen has exactly one basic view"
+assert_xpath_count "$storyboard_path" '//viewController/view[@key="view" and @opaque="YES"]' "1" "launch root is explicitly opaque"
+assert_xpath_count "$storyboard_path" '//viewController/view[@key="view"]/*[not(self::rect or self::autoresizingMask or self::viewLayoutGuide or self::color)]' "0" "launch root has no visual child objects"
+assert_xpath_count "$storyboard_path" '//label | //image | //imageView | //*[@image]' "0" "launch screen has no labels or images"
+assert_xpath_count "$storyboard_path" '//*[@customClass or @customModule or @customModuleProvider] | //userDefinedRuntimeAttributes | //userDefinedRuntimeAttribute' "0" "launch screen has no custom classes or runtime attributes"
+assert_xpath_count "$storyboard_path" '//viewController/view[@key="view"]/color[@key="backgroundColor" and @red="0.94901960784313721" and @green="0.94901960784313721" and @blue="0.96862745098039216" and @alpha="1" and @colorSpace="custom" and @customColorSpace="sRGB"]' "1" "launch background is opaque sRGB #F2F2F7"
+assert_not_contains "$storyboard_path" 'appearance="dark"' "launch screen dark appearance"
+assert_not_contains "$storyboard_path" 'よていスナップ' "launch screen product name"
+assert_not_contains "$storyboard_path" 'LifeSnap' "launch screen old brand"
 assert_contains "$calendar_path" '— よていスナップで作成' "calendar-note signature"
 assert_contains "$consent_path" 'よていスナップ' "consent visible brand"
 assert_not_contains "$consent_path" 'LifeSnap' "consent old visible brand"
@@ -481,11 +498,19 @@ In `Info.plist`, set:
 <string>よていスナップ</string>
 ```
 
-In `LaunchScreen.storyboard`, replace the launch label text with:
+In `LaunchScreen.storyboard`, apply the user-approved 2026-07-30 launch amendment:
 
 ```xml
-text="よていスナップ"
+<device id="retina6_12" orientation="portrait" appearance="light"/>
+<view key="view" contentMode="scaleToFill" opaque="YES" id="launch-root-view">
+    <rect key="frame" x="0.0" y="0.0" width="393" height="852"/>
+    <autoresizingMask key="autoresizingMask" widthSizable="YES" heightSizable="YES"/>
+    <viewLayoutGuide key="safeArea" id="launch-safe-area"/>
+    <color key="backgroundColor" red="0.94901960784313721" green="0.94901960784313721" blue="0.96862745098039216" alpha="1" colorSpace="custom" customColorSpace="sRGB"/>
+</view>
 ```
+
+Remove the launch label, constraints, images, logos, custom classes, and runtime attributes. Keep `UILaunchStoryboardName = LaunchScreen` unchanged. The launch screen intentionally contains no product name; Home screen identity remains `よていスナップ`.
 
 - [ ] **Step 4: Run tests and static brand checks**
 
@@ -630,7 +655,7 @@ Add these rules:
 
 ```markdown
 - Screenshots must use the approved Apple-native UI and the よていスナップ brand.
-- Do not show the old LifeSnap icon, old launch name, mock badges, or personal document data.
+- Do not show the old LifeSnap icon, a branded launch screen, a black launch flash, mock badges, or personal document data.
 ```
 
 - [ ] **Step 6: Create the release gate document**
@@ -743,11 +768,12 @@ xcodebuild \
   -sdk iphonesimulator \
   -destination 'platform=iOS Simulator,id=56C4DC85-0732-49CF-8389-10D16B2BBDC3' \
   -derivedDataPath /tmp/yotei-snap-final-release-derived \
-  CODE_SIGNING_ALLOWED=NO \
   build -quiet
 ```
 
 Expected: every command exits 0; Vitest reports 29 passing tests or the current higher reviewed count.
+
+The Release build installed for visual acceptance must use Xcode's normal simulator signing. A `CODE_SIGNING_ALLOWED=NO` app has an unbound `Info.plist` and no sealed resources and is not valid installed-product evidence.
 
 - [ ] **Step 2: Install the exact Release simulator build**
 
@@ -787,26 +813,44 @@ Inspect the screenshot. Acceptance:
 
 If the app is on another Home page, navigate to its page in Simulator before recapturing; do not substitute an asset-file preview for installed-product evidence.
 
-- [ ] **Step 4: Capture the launch brand**
+- [ ] **Step 4: Capture and inspect the neutral launch transition**
 
-Run:
+Create a new iPhone 15 simulator on the same reviewed runtime, clean-install the exact normally signed Release app, begin recording while Home is visible, and launch once:
 
 ```bash
-xcrun simctl terminate \
-  56C4DC85-0732-49CF-8389-10D16B2BBDC3 \
-  com.zll.lifesnapaction || true
-
-xcrun simctl launch \
-  56C4DC85-0732-49CF-8389-10D16B2BBDC3 \
-  com.zll.lifesnapaction
-
-xcrun simctl io \
-  56C4DC85-0732-49CF-8389-10D16B2BBDC3 \
-  screenshot \
-  docs/verification/yotei-snap-release/launch-screen-light.png
+launch_qa_name="YoteiSnap-Launch-QA-$(date +%Y%m%d%H%M%S)"
+launch_qa_udid="$(xcrun simctl create \
+  "$launch_qa_name" \
+  com.apple.CoreSimulator.SimDeviceType.iPhone-15 \
+  com.apple.CoreSimulator.SimRuntime.iOS-26-5)"
+xcrun simctl boot "$launch_qa_udid"
+xcrun simctl bootstatus "$launch_qa_udid" -b
+xcrun simctl install \
+  "$launch_qa_udid" \
+  /tmp/yotei-snap-final-release-derived/Build/Products/Release-iphonesimulator/LifeSnapAction.app
+xcrun simctl io "$launch_qa_udid" recordVideo \
+  --codec=h264 \
+  --force \
+  /tmp/yotei-snap-launch-transition.mp4 &
+launch_record_pid=$!
+sleep 1
+xcrun simctl launch "$launch_qa_udid" com.zll.lifesnapaction
+sleep 3
+kill -INT "$launch_record_pid"
+wait "$launch_record_pid"
 ```
 
-If the launch screen is too brief to capture reliably, record a short simulator video, extract the launch frame with `ffmpeg`, and retain only the frame containing `よていスナップ`.
+Extract a contact sheet and inspect the individual transition frames. Copy a representative real `#F2F2F7` launch frame—not a constructed image—to `docs/verification/yotei-snap-release/launch-screen-light.png`.
+
+Acceptance:
+
+- the sequence starts on Home and includes the installed icon zoom;
+- there is no sustained pure-black frame between icon zoom and runtime;
+- the launch surface is visually `#F2F2F7`, has no product name, logo, image, or other decoration, and blends into the first screen;
+- the runtime first screen remains intact;
+- SplashBoard logs contain no denylist rejection for `com.zll.lifesnapaction`.
+
+If a clean device still records the denylist rejection or a sustained black transition, stop as blocked and retain the diagnostics outside the repository.
 
 - [ ] **Step 5: Complete Product Design QA**
 
@@ -816,7 +860,7 @@ Open these together in one comparison input:
 - `ios/LifeSnapAction/Resources/Assets.xcassets/AppIcon.appiconset/AppIcon-marketing.png`
 - `docs/verification/yotei-snap-release/home-screen-light.png`
 
-Check icon fidelity, 20px/60px/180px quality, installed mask behavior, display-name readability, launch-screen typography, and consistency with the approved UI.
+Check icon fidelity, 20px/60px/180px quality, installed mask behavior, display-name readability, the neutral launch-to-first-screen transition, and consistency with the approved UI.
 
 Append an icon/rebrand section to `design-qa.md`. The report must end exactly:
 

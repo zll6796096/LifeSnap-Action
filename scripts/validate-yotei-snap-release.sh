@@ -51,6 +51,16 @@ assert_not_contains() {
   fi
 }
 
+assert_xpath_count() {
+  file=$1
+  xpath=$2
+  expected=$3
+  label=$4
+
+  actual=$(xmllint --xpath "count($xpath)" "$file" 2>/dev/null || true)
+  assert_equal "$actual" "$expected" "$label"
+}
+
 info_plist="$project_root/ios/LifeSnapAction/Info.plist"
 launch_screen="$project_root/ios/LifeSnapAction/Resources/LaunchScreen.storyboard"
 calendar_service="$project_root/ios/LifeSnapAction/Services/CalendarService.swift"
@@ -80,7 +90,17 @@ assert_equal "$development_region" 'ja' 'CFBundleDevelopmentRegion'
 assert_equal "$short_version" '$(MARKETING_VERSION)' 'CFBundleShortVersionString'
 assert_equal "$bundle_version" '$(CURRENT_PROJECT_VERSION)' 'CFBundleVersion'
 
-assert_contains "$launch_screen" 'text="よていスナップ"' 'LaunchScreen title'
+assert_xpath_count "$launch_screen" '//view' '1' 'LaunchScreen has exactly one basic view'
+assert_xpath_count "$launch_screen" '//viewController/view[@key="view" and @opaque="YES"]' '1' 'LaunchScreen root view is explicitly opaque'
+assert_xpath_count "$launch_screen" '//viewController/view[@key="view"]/*[not(self::rect or self::autoresizingMask or self::viewLayoutGuide or self::color)]' '0' 'LaunchScreen root has no visual child objects'
+assert_xpath_count "$launch_screen" '//label' '0' 'LaunchScreen has no labels'
+assert_xpath_count "$launch_screen" '//image | //imageView | //*[@image]' '0' 'LaunchScreen has no images or logos'
+assert_xpath_count "$launch_screen" '//*[@customClass or @customModule or @customModuleProvider]' '0' 'LaunchScreen has no custom classes'
+assert_xpath_count "$launch_screen" '//userDefinedRuntimeAttributes | //userDefinedRuntimeAttribute' '0' 'LaunchScreen has no runtime attributes'
+assert_xpath_count "$launch_screen" '//viewController/view[@key="view"]/color[@key="backgroundColor" and @red="0.94901960784313721" and @green="0.94901960784313721" and @blue="0.96862745098039216" and @alpha="1" and @colorSpace="custom" and @customColorSpace="sRGB"]' '1' 'LaunchScreen background is opaque sRGB #F2F2F7'
+assert_not_contains "$launch_screen" 'appearance="dark"' 'LaunchScreen is not dark'
+assert_not_contains "$launch_screen" 'よていスナップ' 'LaunchScreen has no product name'
+assert_not_contains "$launch_screen" 'LifeSnap' 'LaunchScreen has no old brand'
 assert_contains "$calendar_service" '— よていスナップで作成' 'Calendar attribution'
 assert_contains "$upload_consent" 'よていスナップ' 'Upload consent brand'
 assert_not_contains "$upload_consent" 'LifeSnap' 'Upload consent old brand removed'

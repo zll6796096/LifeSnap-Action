@@ -91,7 +91,9 @@
   - `CFBundleDisplayName = よていスナップ`
   - `CFBundleDevelopmentRegion = ja`
 - `ios/LifeSnapAction/Resources/LaunchScreen.storyboard`
-  - 启动页文字改为 `よていスナップ`
+  - 2026-07-30 用户批准修订：启动页采用与首页浅色 `systemGroupedBackground` 接近的纯色 `#F2F2F7`
+  - 不显示品牌文字、图标、Logo 或装饰；只保留一个不透明基础根视图
+  - 启动验收改为“无黑闪、浅色启动页平滑进入首页”，主屏仍必须完整显示图标与 `よていスナップ`
 - `ios/LifeSnapAction/Services/CalendarService.swift`
   - 日历事件备注署名改为新品牌
 - `ios/LifeSnapAction/Views/UploadConsentView.swift`
@@ -139,7 +141,7 @@ Apple 当前规则：
 1. 生成正式图标母版，检查后生成 17 个尺寸。
 2. 更新用户可见品牌、版本号和商店资料草案。
 3. 运行完整 iOS 与后端回归。
-4. 安装到模拟器，验收桌面图标、桌面名称、启动页和主流程。
+4. 安装到模拟器，验收桌面图标、桌面名称、无黑闪的浅色启动过渡和主流程。
 5. 使用真实签名执行 Release archive 与验证。
 6. 创建/更新 App Store Connect 1.1 元数据，上传 Build 4。
 7. 绑定构建、填写审核信息并提交 App Review。
@@ -149,7 +151,7 @@ Apple 当前规则：
 
 - 正式 1024 图标和 17 个正确尺寸的 AppIcon 文件
 - 主屏图标与 `よていスナップ` 标签的模拟器截图
-- 启动页和关键 UI 仍符合批准方案的截图
+- 全新模拟器上“主屏 → 无品牌浅色启动页 → 首页”的真实逐帧证据与代表性截图
 - `xcodebuild` 测试与 Release build 成功
 - 后端 `npm test`、`npm run lint`、`npm run build` 成功
 - Archive/validate/upload 的可审计结果
@@ -182,7 +184,8 @@ Apple 当前规则：
 - 图标在 1024、180、120、80、60、40、29、20 像素下均无糊边、裁切和不可辨识细节。
 - `Contents.json` 引用的所有文件存在、尺寸正确且无透明像素。
 - 主屏显示 `よていスナップ`，无截断。
-- 启动页显示新名称，布局无裁切。
+- 启动页为不透明 sRGB `#F2F2F7` 单一根视图，不显示名称、Logo、图片或其他装饰。
+- 使用正常模拟器签名的 Release 构建全新安装后，从主屏启动到首页无持续纯黑帧，浅色过渡平滑；`CODE_SIGNING_ALLOWED=NO` 产物不得作为安装视觉验收证据。
 - 用户可见界面不再出现旧品牌；法律/技术披露仍准确。
 - Bundle ID、工程 target、后端契约保持不变。
 - 版本为 1.1 Build 4，并在两处工程配置一致。
