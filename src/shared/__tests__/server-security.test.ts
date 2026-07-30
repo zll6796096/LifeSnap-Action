@@ -832,6 +832,117 @@ describe("protected extraction routes", () => {
     expect(harness.extraction.extract).toHaveBeenCalledTimes(1);
   });
 
+  it("absorbs async logger rejection during successful extraction", async () => {
+    const secret = "ASYNC_SUCCESS_LOGGER_SECRET";
+    const harness = securityHarness({
+      logger: asyncRejectingLogger(secret),
+    });
+
+    await expectNoUnhandledRejections(async () => {
+      const response = await harness.postValidV2();
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual(validExtractionFixture());
+    });
+  });
+
+  it("absorbs async logger rejection at a quota threshold", async () => {
+    const harness = securityHarness({
+      logger: asyncRejectingLogger("ASYNC_THRESHOLD_LOGGER_SECRET"),
+      quotaDecision: { allowed: true, crossedThreshold: 90 },
+    });
+
+    await expectNoUnhandledRejections(async () => {
+      const response = await harness.postValidV2();
+      expect(response.status).toBe(200);
+      expect(harness.extraction.extract).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it("absorbs async logger rejection during App Check rejection", async () => {
+    const secret = "ASYNC_APP_CHECK_LOGGER_SECRET";
+    const harness = securityHarness({
+      logger: asyncRejectingLogger(secret),
+      tokenOutcome: "invalid",
+    });
+
+    await expectNoUnhandledRejections(async () => {
+      const response = await harness.postV2({
+        token: "invalid",
+        installationId: VALID_INSTALLATION_ID,
+        image: imageForm("image/png", 16),
+      });
+      const body = await expectStablePublicError(
+        response,
+        401,
+        "APP_CHECK_INVALID",
+      );
+      expect(JSON.stringify(body)).not.toContain(secret);
+      expect(harness.extraction.extract).not.toHaveBeenCalled();
+    });
+  });
+
+  it("absorbs async logger rejection during extraction failure", async () => {
+    const secret = "ASYNC_FAILURE_LOGGER_SECRET";
+    const harness = securityHarness({
+      logger: asyncRejectingLogger(secret),
+      extractionError: new Error("UPSTREAM_FAILURE"),
+    });
+
+    await expectNoUnhandledRejections(async () => {
+      const response = await harness.postValidV2();
+      const body = await expectStablePublicError(
+        response,
+        502,
+        "AI_EXTRACTION_FAILED",
+      );
+      expect(JSON.stringify(body)).not.toContain(secret);
+    });
+  });
+
+  it("ignores a logger result with a throwing then getter", async () => {
+    let thenReads = 0;
+    const secret = "HOSTILE_THEN_GETTER_SECRET";
+    const hostileThenable = {
+      get then() {
+        thenReads += 1;
+        throw new Error(secret);
+      },
+    };
+    const logger: PrivacySafeLogger = {
+      info: () => hostileThenable,
+      warn: () => hostileThenable,
+      error: () => hostileThenable,
+    };
+    const harness = securityHarness({ logger });
+
+    const response = await harness.postValidV2();
+
+    expect(response.status).toBe(200);
+    expect(thenReads).toBeGreaterThan(0);
+    expect(harness.extraction.extract).toHaveBeenCalledTimes(1);
+  });
+
+  it("ignores a revoked logger-result thenable", async () => {
+    const revocable = Proxy.revocable(
+      {
+        then() {},
+      },
+      {},
+    );
+    revocable.revoke();
+    const logger: PrivacySafeLogger = {
+      info: () => revocable.proxy,
+      warn: () => revocable.proxy,
+      error: () => revocable.proxy,
+    };
+    const harness = securityHarness({ logger });
+
+    const response = await harness.postValidV2();
+
+    expect(response.status).toBe(200);
+    expect(harness.extraction.extract).toHaveBeenCalledTimes(1);
+  });
+
   it("fails closed when extraction security dependencies are absent", async () => {
     const app = createApp({ env: testEnv() });
 
@@ -1109,4 +1220,33 @@ function invocationThrowingLogger(
     warn: fail,
     error: fail,
   };
+}
+
+function asyncRejectingLogger(secret: string): PrivacySafeLogger {
+  const fail = async () => {
+    throw new Error(secret);
+  };
+  return {
+    info: fail,
+    warn: fail,
+    error: fail,
+  };
+}
+
+async function expectNoUnhandledRejections(
+  run: () => Promise<void>,
+) {
+  const reasons: unknown[] = [];
+  const onUnhandledRejection = (reason: unknown) => {
+    reasons.push(reason);
+  };
+  process.on("unhandledRejection", onUnhandledRejection);
+  try {
+    await run();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(reasons).toEqual([]);
+  } finally {
+    process.off("unhandledRejection", onUnhandledRejection);
+  }
 }

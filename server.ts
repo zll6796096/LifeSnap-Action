@@ -68,6 +68,28 @@ const defaultLogger: PrivacySafeLogger = {
   error: (event, metadata) => console.error(JSON.stringify({ level: "error", event, ...metadata })),
 };
 
+function absorbLoggerResult(result: unknown) {
+  if (
+    (typeof result !== "object" || result === null) &&
+    typeof result !== "function"
+  ) {
+    return;
+  }
+
+  try {
+    const then = Reflect.get(result, "then");
+    if (typeof then !== "function") {
+      return;
+    }
+    Reflect.apply(then, result, [
+      undefined,
+      () => undefined,
+    ]);
+  } catch {
+    // Hostile or revoked thenables are logging failures and are ignored.
+  }
+}
+
 function createSafeLogger(candidate: PrivacySafeLogger): PrivacySafeLogger {
   const invoke = (
     level: keyof PrivacySafeLogger,
@@ -79,10 +101,11 @@ function createSafeLogger(candidate: PrivacySafeLogger): PrivacySafeLogger {
       if (typeof method !== "function") {
         return;
       }
-      Reflect.apply(method, candidate, [
+      const result: unknown = Reflect.apply(method, candidate, [
         event,
         Object.freeze({ ...metadata }),
       ]);
+      absorbLoggerResult(result);
     } catch {
       // Logging must never change request processing or public responses.
     }
