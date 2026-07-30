@@ -2,6 +2,7 @@ import http from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
 import { createApp, type PrivacySafeLogger } from "../../../server";
+import { createGeminiExtractionService } from "../../extraction/extraction-service";
 
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 
@@ -74,7 +75,7 @@ describe("privacy and extraction API behavior", () => {
   });
 
   it("rejects missing, invalid, and oversized images without leaking details", async () => {
-    await withServer(createApp({ env: testEnv() }), async (baseUrl) => {
+    await withServer(createApp({ env: testEnv(), security: testSecurity() }), async (baseUrl) => {
       const missing = await fetch(`${baseUrl}/api/extract`, { method: "POST" });
       await expectStablePublicError(missing, 400, "IMAGE_REQUIRED");
 
@@ -96,7 +97,12 @@ describe("privacy and extraction API behavior", () => {
     await withServer(
       createApp({
         env: testEnv({ GEMINI_API_KEY: "test-key" }),
-        createGeminiClient: () => fakeGeminiClient(successGeminiText()),
+        security: testSecurity(),
+        extractionService: createGeminiExtractionService({
+          apiKey: "test-key",
+          model: "gemini-2.5-flash",
+          createClient: () => fakeGeminiClient(successGeminiText()),
+        }),
       }),
       async (baseUrl) => {
         const response = await fetch(`${baseUrl}/api/extract`, {
@@ -114,13 +120,12 @@ describe("privacy and extraction API behavior", () => {
     await withServer(
       createApp({
         env: testEnv({ NODE_ENV: "production", GEMINI_API_KEY: "test-key" }),
-        createGeminiClient: () => ({
-          models: {
-            generateContent: async () => {
-              throw new Error("SECRET_INTERNAL_CONTEXT");
-            },
+        security: testSecurity(),
+        extractionService: {
+          extract: async () => {
+            throw new Error("SECRET_INTERNAL_CONTEXT");
           },
-        }),
+        },
       }),
       async (baseUrl) => {
         const response = await fetch(`${baseUrl}/api/extract`, {
@@ -142,7 +147,12 @@ describe("privacy and extraction API behavior", () => {
       createApp({
         env: testEnv({ GEMINI_API_KEY: "test-key" }),
         logger,
-        createGeminiClient: () => fakeGeminiClient(successGeminiText(sentinel)),
+        security: testSecurity(),
+        extractionService: createGeminiExtractionService({
+          apiKey: "test-key",
+          model: "gemini-2.5-flash",
+          createClient: () => fakeGeminiClient(successGeminiText(sentinel)),
+        }),
       }),
       async (baseUrl) => {
         const response = await fetch(`${baseUrl}/api/extract`, {
@@ -165,7 +175,10 @@ describe("privacy and extraction API behavior", () => {
   });
 
   it("keeps mock extraction schema-valid without an external Gemini call", async () => {
-    await withServer(createApp({ env: testEnv({ MOCK_MODE: "true" }) }), async (baseUrl) => {
+    await withServer(createApp({
+      env: testEnv({ MOCK_MODE: "true" }),
+      security: testSecurity(),
+    }), async (baseUrl) => {
       const response = await fetch(`${baseUrl}/api/extract`, {
         method: "POST",
         body: imageForm("image/png", 16),
@@ -188,6 +201,19 @@ function testEnv(overrides: Partial<NodeJS.ProcessEnv> = {}) {
     MOCK_MODE: "false",
     GEMINI_API_KEY: "",
     ...overrides,
+  };
+}
+
+function testSecurity() {
+  return {
+    appCheckVerifier: {
+      verify: async () => ({ appId: "unused-by-legacy-route" }),
+    },
+    quotaStore: {
+      consume: async () => ({ allowed: true as const }),
+    },
+    hashInstallationId: () => "a".repeat(64),
+    now: () => new Date("2026-07-31T01:00:00Z"),
   };
 }
 

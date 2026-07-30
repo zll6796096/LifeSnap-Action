@@ -1,13 +1,31 @@
 import crypto from "node:crypto";
-import express, { type ErrorRequestHandler, type Request, type Response } from "express";
+import express, {
+  type ErrorRequestHandler,
+  type NextFunction,
+  type Request,
+  type RequestHandler,
+  type Response,
+} from "express";
 import dotenv from "dotenv";
 import multer from "multer";
 import { GoogleGenAI } from "@google/genai";
 import {
-  geminiResponseSchema,
-  GEMINI_EXTRACTION_PROMPT,
-  validateGeminiExtraction,
-} from "./src/shared/gemini-schema";
+  createGeminiExtractionService,
+  type ExtractionService,
+  type GeminiClient,
+  type ImageInput,
+} from "./src/extraction/extraction-service";
+import type {
+  QuotaDecision,
+  QuotaDeniedCode,
+  QuotaStore,
+} from "./src/quota/contracts";
+import type { AppCheckRequestErrorCode } from "./src/security/app-check";
+import { validateGeminiExtraction } from "./src/shared/gemini-schema";
+import {
+  isPublicHttpError,
+  PublicHttpError,
+} from "./src/shared/http-error";
 
 dotenv.config({ quiet: true });
 
@@ -24,18 +42,22 @@ export type PrivacySafeLogger = {
   error: (event: string, metadata: LogMetadata) => void;
 };
 
-type GeminiClient = {
-  models: {
-    generateContent: (request: unknown) => Promise<{ text?: string }>;
-  };
-};
-
 type AppEnvironment = Pick<NodeJS.ProcessEnv, "NODE_ENV" | "MOCK_MODE" | "GEMINI_API_KEY">;
+
+export type SecurityDependencies = {
+  appCheckVerifier: {
+    verify(token: string | undefined): Promise<{ appId: string }>;
+  };
+  quotaStore: QuotaStore;
+  hashInstallationId(value: string): string;
+  now(): Date;
+};
 
 export type CreateAppOptions = {
   env?: AppEnvironment;
   logger?: PrivacySafeLogger;
-  createGeminiClient?: (apiKey: string) => GeminiClient;
+  extractionService?: ExtractionService;
+  security?: SecurityDependencies;
 };
 
 const defaultLogger: PrivacySafeLogger = {
@@ -101,16 +123,6 @@ const PRIVACY_POLICY_HTML = `<!doctype html>
 </body>
 </html>`;
 
-class PublicHttpError extends Error {
-  constructor(
-    readonly statusCode: number,
-    readonly code: string,
-    readonly publicMessage: string,
-  ) {
-    super(publicMessage);
-  }
-}
-
 function isAllowedImageMimeType(mimeType: string): boolean {
   return ALLOWED_IMAGE_MIME_TYPES.has(mimeType.toLowerCase());
 }
@@ -126,22 +138,60 @@ function createDefaultGeminiClient(apiKey: string): GeminiClient {
   }) as GeminiClient;
 }
 
-function safeErrorMetadata(error: unknown): LogMetadata {
-  const record = typeof error === "object" && error !== null ? (error as Record<string, unknown>) : {};
-  const name = typeof record.name === "string" ? record.name : "Error";
-  const code =
-    typeof record.code === "string" || typeof record.code === "number" ? record.code : undefined;
-  const status =
-    typeof record.status === "number"
-      ? record.status
-      : typeof record.statusCode === "number"
-        ? record.statusCode
-        : undefined;
-
-  return { error_name: name, upstream_code: code, upstream_status: status };
+function readProperty(
+  value: Record<PropertyKey, unknown>,
+  key: PropertyKey,
+): unknown {
+  try {
+    return value[key];
+  } catch {
+    return undefined;
+  }
 }
 
-function sendJsonError(res: Response, statusCode: number, code: string, message: string) {
+function safeErrorMetadata(error: unknown): LogMetadata {
+  const record =
+    typeof error === "object" && error !== null
+      ? (error as Record<PropertyKey, unknown>)
+      : undefined;
+  const rawName = record === undefined ? undefined : readProperty(record, "name");
+  const rawStatus = record === undefined ? undefined : readProperty(record, "status");
+  const rawStatusCode =
+    record === undefined ? undefined : readProperty(record, "statusCode");
+  const safeNames = new Set([
+    "ApiError",
+    "Error",
+    "PublicHttpError",
+    "SyntaxError",
+    "ZodError",
+  ]);
+  const name =
+    typeof rawName === "string" && safeNames.has(rawName)
+      ? rawName
+      : "Error";
+  const candidateStatus =
+    typeof rawStatus === "number"
+      ? rawStatus
+      : typeof rawStatusCode === "number"
+        ? rawStatusCode
+        : undefined;
+  const status =
+    candidateStatus !== undefined &&
+    Number.isInteger(candidateStatus) &&
+    candidateStatus >= 400 &&
+    candidateStatus <= 599
+      ? candidateStatus
+      : undefined;
+
+  return { error_name: name, upstream_status: status };
+}
+
+function sendJsonError(
+  res: Response,
+  statusCode: number,
+  code: string,
+  message: string,
+) {
   return res.status(statusCode).json({ code, error: message });
 }
 
@@ -150,7 +200,14 @@ function setExtractNoStoreHeaders(res: Response) {
   res.setHeader("Pragma", "no-cache");
 }
 
-function buildUploadMiddleware() {
+const setNoStore: RequestHandler = (_req, res, next) => {
+  setExtractNoStoreHeaders(res);
+  next();
+};
+
+function buildUploadMiddleware(
+  invalidTypeStatus: 400 | 415,
+) {
   return multer({
     storage: multer.memoryStorage(),
     limits: { fileSize: MAX_IMAGE_BYTES, files: 1 },
@@ -160,7 +217,7 @@ function buildUploadMiddleware() {
       } else {
         cb(
           new PublicHttpError(
-            400,
+            invalidTypeStatus,
             "UNSUPPORTED_IMAGE_TYPE",
             "許可されていない画像形式です。JPEG、PNG、WebP画像のみアップロード可能です。",
           ),
@@ -168,6 +225,157 @@ function buildUploadMiddleware() {
       }
     },
   });
+}
+
+function asyncHandler(
+  handler: (
+    req: Request,
+    res: Response,
+    next: NextFunction,
+  ) => Promise<void>,
+): RequestHandler {
+  return (req, res, next) => {
+    void handler(req, res, next).catch(next);
+  };
+}
+
+function requireImage(req: Request): ImageInput {
+  if (!req.file) {
+    throw new PublicHttpError(
+      400,
+      "IMAGE_REQUIRED",
+      "画像データが必要です。multipart/form-data の image フィールドで送信してください。",
+    );
+  }
+
+  return {
+    buffer: req.file.buffer,
+    mimeType: req.file.mimetype,
+  };
+}
+
+const APP_CHECK_FAILURES: Readonly<
+  Record<AppCheckRequestErrorCode, { status: 401 | 403 | 503; message: string }>
+> = Object.freeze({
+  APP_CHECK_REQUIRED: {
+    status: 401,
+    message: "App Check トークンが必要です。",
+  },
+  APP_CHECK_INVALID: {
+    status: 401,
+    message: "App Check トークンが無効です。",
+  },
+  APP_CHECK_REPLAYED: {
+    status: 401,
+    message: "App Check トークンはすでに使用されています。",
+  },
+  APP_ID_FORBIDDEN: {
+    status: 403,
+    message: "このアプリからのリクエストは許可されていません。",
+  },
+  SECURITY_SERVICE_UNAVAILABLE: {
+    status: 503,
+    message:
+      "セキュリティ確認サービスを一時的に利用できません。しばらくしてからもう一度お試しください。",
+  },
+});
+
+function appCheckHttpError(error: unknown): PublicHttpError {
+  if (typeof error === "object" && error !== null) {
+    const code = readProperty(
+      error as Record<PropertyKey, unknown>,
+      "code",
+    );
+    if (
+      typeof code === "string" &&
+      Object.prototype.hasOwnProperty.call(APP_CHECK_FAILURES, code)
+    ) {
+      const publicFailure =
+        APP_CHECK_FAILURES[code as AppCheckRequestErrorCode];
+      return new PublicHttpError(
+        publicFailure.status,
+        code,
+        publicFailure.message,
+      );
+    }
+  }
+
+  const fallback = APP_CHECK_FAILURES.SECURITY_SERVICE_UNAVAILABLE;
+  return new PublicHttpError(
+    fallback.status,
+    "SECURITY_SERVICE_UNAVAILABLE",
+    fallback.message,
+  );
+}
+
+function installationHttpError(error: unknown): PublicHttpError {
+  if (typeof error === "object" && error !== null) {
+    const code = readProperty(
+      error as Record<PropertyKey, unknown>,
+      "code",
+    );
+    if (code === "INSTALLATION_ID_INVALID") {
+      return new PublicHttpError(
+        400,
+        "INSTALLATION_ID_INVALID",
+        "インストール識別子が無効です。",
+      );
+    }
+  }
+
+  return new PublicHttpError(
+    503,
+    "SECURITY_SERVICE_UNAVAILABLE",
+    APP_CHECK_FAILURES.SECURITY_SERVICE_UNAVAILABLE.message,
+  );
+}
+
+function quotaHttpError(code: QuotaDeniedCode): PublicHttpError {
+  const messages: Readonly<Record<QuotaDeniedCode, string>> = {
+    INSTALL_RATE_LIMITED:
+      "短時間の利用上限に達しました。しばらくしてからもう一度お試しください。",
+    INSTALL_DAILY_LIMITED:
+      "本日の利用上限に達しました。時間をおいてもう一度お試しください。",
+    SERVICE_DAILY_LIMITED:
+      "本日のサービス利用上限に達しました。時間をおいてもう一度お試しください。",
+  };
+  return new PublicHttpError(429, code, messages[code]);
+}
+
+function quotaUnavailableError(): PublicHttpError {
+  return new PublicHttpError(
+    503,
+    "QUOTA_SERVICE_UNAVAILABLE",
+    "利用状況の確認サービスを一時的に利用できません。しばらくしてからもう一度お試しください。",
+  );
+}
+
+function validateQuotaDecision(decision: QuotaDecision): QuotaDecision {
+  if (typeof decision !== "object" || decision === null) {
+    throw quotaUnavailableError();
+  }
+  if (decision.allowed === true) {
+    if (
+      decision.crossedThreshold !== undefined &&
+      decision.crossedThreshold !== 70 &&
+      decision.crossedThreshold !== 90 &&
+      decision.crossedThreshold !== 100
+    ) {
+      throw quotaUnavailableError();
+    }
+    return decision;
+  }
+  if (
+    decision.allowed === false &&
+    (decision.code === "INSTALL_RATE_LIMITED" ||
+      decision.code === "INSTALL_DAILY_LIMITED" ||
+      decision.code === "SERVICE_DAILY_LIMITED") &&
+    Number.isSafeInteger(decision.retryAfterSeconds) &&
+    decision.retryAfterSeconds > 0
+  ) {
+    return decision;
+  }
+  throw quotaUnavailableError();
 }
 
 function buildMockExtraction() {
@@ -200,10 +408,20 @@ export function createApp(options: CreateAppOptions = {}) {
   const app = express();
   const env = options.env ?? process.env;
   const logger = options.logger ?? defaultLogger;
-  const createGeminiClient = options.createGeminiClient ?? createDefaultGeminiClient;
   const isProduction = env.NODE_ENV === "production";
   const mockModeEnabled = env.MOCK_MODE === "true";
-  const upload = buildUploadMiddleware();
+  const legacyUpload = buildUploadMiddleware(400);
+  const v2Upload = buildUploadMiddleware(415);
+  const security = options.security;
+  const extractionService =
+    options.extractionService ??
+    (env.GEMINI_API_KEY
+      ? createGeminiExtractionService({
+          apiKey: env.GEMINI_API_KEY,
+          model: GEMINI_MODEL,
+          createClient: createDefaultGeminiClient,
+        })
+      : undefined);
 
   if (isProduction && mockModeEnabled) {
     throw new Error("MOCK_MODE must not be enabled when NODE_ENV=production.");
@@ -233,30 +451,110 @@ export function createApp(options: CreateAppOptions = {}) {
     res.type("html").send(PRIVACY_POLICY_HTML);
   });
 
-  app.post("/api/extract", upload.single("image"), async (req, res): Promise<void> => {
-    const requestId = crypto.randomUUID();
-    const startedAt = Date.now();
-    setExtractNoStoreHeaders(res);
+  const requireSecurity: RequestHandler = (_req, _res, next) => {
+    if (security === undefined) {
+      next(
+        new PublicHttpError(
+          503,
+          "SECURITY_SERVICE_UNAVAILABLE",
+          APP_CHECK_FAILURES.SECURITY_SERVICE_UNAVAILABLE.message,
+        ),
+      );
+      return;
+    }
+    next();
+  };
+
+  const verifyAppCheck: RequestHandler = asyncHandler(
+    async (req, _res, next) => {
+      try {
+        await security?.appCheckVerifier.verify(
+          req.get("X-Firebase-AppCheck"),
+        );
+      } catch (error) {
+        throw appCheckHttpError(error);
+      }
+      next();
+    },
+  );
+
+  const hashInstallationHeader: RequestHandler = (req, res, next) => {
+    const installationId = req.headers["x-lifesnap-install-id"];
+    if (
+      security === undefined ||
+      typeof installationId !== "string" ||
+      installationId.trim().length === 0
+    ) {
+      next(
+        new PublicHttpError(
+          400,
+          "INSTALLATION_ID_INVALID",
+          "インストール識別子が無効です。",
+        ),
+      );
+      return;
+    }
 
     try {
-      if (!req.file) {
-        sendJsonError(res, 400, "IMAGE_REQUIRED", "画像データが必要です。multipart/form-data の image フィールドで送信してください。");
-        return;
-      }
+      res.locals.installationHash =
+        security.hashInstallationId(installationId);
+      next();
+    } catch (error) {
+      next(installationHttpError(error));
+    }
+  };
 
-      const finalMimeType = req.file.mimetype;
-      const imageSizeBytes = req.file.size;
+  async function consumeQuota(
+    scope:
+      | { kind: "legacy" }
+      | { kind: "v2"; installationHash: string },
+  ): Promise<QuotaDecision> {
+    if (security === undefined) {
+      throw new PublicHttpError(
+        503,
+        "SECURITY_SERVICE_UNAVAILABLE",
+        APP_CHECK_FAILURES.SECURITY_SERVICE_UNAVAILABLE.message,
+      );
+    }
 
-      if (!isAllowedImageMimeType(finalMimeType)) {
-        sendJsonError(res, 400, "UNSUPPORTED_IMAGE_TYPE", "許可されていない画像形式です。JPEG、PNG、WebP画像のみアップロード可能です。");
-        return;
-      }
+    try {
+      const decision = await security.quotaStore.consume(
+        scope,
+        security.now(),
+      );
+      return validateQuotaDecision(decision);
+    } catch {
+      throw quotaUnavailableError();
+    }
+  }
 
+  function logThreshold(
+    decision: QuotaDecision,
+    routeCategory: "legacy" | "v2",
+  ) {
+    if (decision.allowed && decision.crossedThreshold !== undefined) {
+      logger.warn("quota_threshold", {
+        route_category: routeCategory,
+        threshold_percent: decision.crossedThreshold,
+      });
+    }
+  }
+
+  async function handleExtraction(
+    res: Response,
+    image: ImageInput,
+    routeCategory: "legacy" | "v2",
+  ): Promise<void> {
+    const requestId = crypto.randomUUID();
+    const startedAt = Date.now();
+
+    try {
       logger.info("extract_request", {
         request_id: requestId,
-        mime: finalMimeType,
-        bytes: imageSizeBytes,
+        mime: image.mimeType,
+        bytes: image.buffer.length,
         model: GEMINI_MODEL,
+        route_category: routeCategory,
       });
 
       if (mockModeEnabled) {
@@ -268,8 +566,8 @@ export function createApp(options: CreateAppOptions = {}) {
         const mockResult = buildMockExtraction();
         logger.info("extract_success", {
           request_id: requestId,
-          mime: finalMimeType,
-          bytes: imageSizeBytes,
+          mime: image.mimeType,
+          bytes: image.buffer.length,
           latency_ms: Date.now() - startedAt,
           model: "mock",
           status: 200,
@@ -279,48 +577,20 @@ export function createApp(options: CreateAppOptions = {}) {
         return;
       }
 
-      const geminiApiKey = env.GEMINI_API_KEY;
-      if (!geminiApiKey) {
-        logger.error("extract_configuration_error", {
-          request_id: requestId,
-          code: "GEMINI_KEY_MISSING",
-          status: 503,
-        });
-        sendJsonError(res, 503, "AI_SERVICE_UNAVAILABLE", "AI解析サービスを一時的に利用できません。しばらくしてからもう一度お試しください。");
-        return;
+      if (extractionService === undefined) {
+        throw new PublicHttpError(
+          503,
+          "AI_SERVICE_UNAVAILABLE",
+          "AI解析サービスを一時的に利用できません。しばらくしてからもう一度お試しください。",
+        );
       }
 
-      const ai = createGeminiClient(geminiApiKey);
-      const response = await ai.models.generateContent({
-        model: GEMINI_MODEL,
-        contents: [
-          {
-            inlineData: {
-              mimeType: finalMimeType,
-              data: req.file.buffer.toString("base64"),
-            },
-          },
-          {
-            text: GEMINI_EXTRACTION_PROMPT,
-          },
-        ],
-        config: {
-          responseMimeType: "application/json",
-          responseSchema: geminiResponseSchema,
-        },
-      });
-
-      if (!response.text) {
-        throw new PublicHttpError(502, "AI_EMPTY_RESPONSE", "AI解析サービスから有効な応答を取得できませんでした。");
-      }
-
-      const parsedRaw = JSON.parse(response.text);
-      const validated = validateGeminiExtraction(parsedRaw);
+      const validated = await extractionService.extract(image);
 
       logger.info("extract_success", {
         request_id: requestId,
-        mime: finalMimeType,
-        bytes: imageSizeBytes,
+        mime: image.mimeType,
+        bytes: image.buffer.length,
         latency_ms: Date.now() - startedAt,
         model: GEMINI_MODEL,
         status: 200,
@@ -330,7 +600,7 @@ export function createApp(options: CreateAppOptions = {}) {
       res.json(validated);
     } catch (error: unknown) {
       const publicError =
-        error instanceof PublicHttpError
+        isPublicHttpError(error)
           ? error
           : new PublicHttpError(502, "AI_EXTRACTION_FAILED", "画像の解析中にエラーが発生しました。しばらくしてからもう一度お試しください。");
 
@@ -344,20 +614,77 @@ export function createApp(options: CreateAppOptions = {}) {
 
       sendJsonError(res, publicError.statusCode, publicError.code, publicError.publicMessage);
     }
-  });
+  }
+
+  app.post(
+    "/api/v2/extract",
+    setNoStore,
+    requireSecurity,
+    verifyAppCheck,
+    hashInstallationHeader,
+    v2Upload.single("image"),
+    asyncHandler(async (req, res) => {
+      const image = requireImage(req);
+      const decision = await consumeQuota({
+        kind: "v2",
+        installationHash: res.locals.installationHash as string,
+      });
+      if (!decision.allowed) {
+        res.setHeader(
+          "Retry-After",
+          String(decision.retryAfterSeconds),
+        );
+        throw quotaHttpError(decision.code);
+      }
+      logThreshold(decision, "v2");
+      await handleExtraction(res, image, "v2");
+    }),
+  );
+
+  app.post(
+    "/api/extract",
+    setNoStore,
+    requireSecurity,
+    legacyUpload.single("image"),
+    asyncHandler(async (req, res) => {
+      const image = requireImage(req);
+      const decision = await consumeQuota({ kind: "legacy" });
+      if (!decision.allowed) {
+        res.setHeader(
+          "Retry-After",
+          String(decision.retryAfterSeconds),
+        );
+        throw quotaHttpError(decision.code);
+      }
+      logThreshold(decision, "legacy");
+      await handleExtraction(res, image, "legacy");
+    }),
+  );
 
   const errorHandler: ErrorRequestHandler = (err, req: Request, res: Response, _next) => {
-    if (req.path === "/api/extract") {
+    const isExtractionRoute =
+      req.path === "/api/extract" ||
+      req.path === "/api/v2/extract";
+    if (isExtractionRoute) {
       setExtractNoStoreHeaders(res);
     }
 
-    if (err instanceof PublicHttpError) {
+    if (isPublicHttpError(err)) {
       sendJsonError(res, err.statusCode, err.code, err.publicMessage);
       return;
     }
 
-    if (err instanceof multer.MulterError && err.code === "LIMIT_FILE_SIZE") {
-      sendJsonError(res, 400, "IMAGE_TOO_LARGE", "画像サイズが大きすぎます。10MB以下の画像をアップロードしてください。");
+    const errorCode =
+      typeof err === "object" && err !== null
+        ? readProperty(err as Record<PropertyKey, unknown>, "code")
+        : undefined;
+    if (errorCode === "LIMIT_FILE_SIZE" && isExtractionRoute) {
+      sendJsonError(
+        res,
+        req.path === "/api/v2/extract" ? 413 : 400,
+        "IMAGE_TOO_LARGE",
+        "画像サイズが大きすぎます。10MB以下の画像をアップロードしてください。",
+      );
       return;
     }
 
