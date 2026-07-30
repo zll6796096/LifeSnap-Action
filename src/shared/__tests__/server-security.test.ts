@@ -838,7 +838,7 @@ describe("protected extraction routes", () => {
       logger: asyncRejectingLogger(secret),
     });
 
-    await expectNoUnhandledRejections(async () => {
+    await expectNoProcessErrors(async () => {
       const response = await harness.postValidV2();
       expect(response.status).toBe(200);
       expect(await response.json()).toEqual(validExtractionFixture());
@@ -851,7 +851,7 @@ describe("protected extraction routes", () => {
       quotaDecision: { allowed: true, crossedThreshold: 90 },
     });
 
-    await expectNoUnhandledRejections(async () => {
+    await expectNoProcessErrors(async () => {
       const response = await harness.postValidV2();
       expect(response.status).toBe(200);
       expect(harness.extraction.extract).toHaveBeenCalledTimes(1);
@@ -865,7 +865,7 @@ describe("protected extraction routes", () => {
       tokenOutcome: "invalid",
     });
 
-    await expectNoUnhandledRejections(async () => {
+    await expectNoProcessErrors(async () => {
       const response = await harness.postV2({
         token: "invalid",
         installationId: VALID_INSTALLATION_ID,
@@ -888,7 +888,7 @@ describe("protected extraction routes", () => {
       extractionError: new Error("UPSTREAM_FAILURE"),
     });
 
-    await expectNoUnhandledRejections(async () => {
+    await expectNoProcessErrors(async () => {
       const response = await harness.postValidV2();
       const body = await expectStablePublicError(
         response,
@@ -941,6 +941,36 @@ describe("protected extraction routes", () => {
 
     expect(response.status).toBe(200);
     expect(harness.extraction.extract).toHaveBeenCalledTimes(1);
+  });
+
+  it("safely assimilates a synchronously fulfilling logger thenable", async () => {
+    let fulfillments = 0;
+    const harness = securityHarness({
+      logger: fulfillingThenableLogger("sync", () => {
+        fulfillments += 1;
+      }),
+    });
+
+    await expectNoProcessErrors(async () => {
+      const response = await harness.postValidV2();
+      expect(response.status).toBe(200);
+    });
+    expect(fulfillments).toBe(2);
+  });
+
+  it("safely assimilates an asynchronously fulfilling logger thenable", async () => {
+    let fulfillments = 0;
+    const harness = securityHarness({
+      logger: fulfillingThenableLogger("async", () => {
+        fulfillments += 1;
+      }),
+    });
+
+    await expectNoProcessErrors(async () => {
+      const response = await harness.postValidV2();
+      expect(response.status).toBe(200);
+    });
+    expect(fulfillments).toBe(2);
   });
 
   it("fails closed when extraction security dependencies are absent", async () => {
@@ -1233,20 +1263,51 @@ function asyncRejectingLogger(secret: string): PrivacySafeLogger {
   };
 }
 
-async function expectNoUnhandledRejections(
+function fulfillingThenableLogger(
+  mode: "async" | "sync",
+  onFulfilled: () => void,
+): PrivacySafeLogger {
+  const thenable = {
+    then(resolve: (value?: unknown) => void) {
+      const fulfill = () => {
+        resolve(undefined);
+        onFulfilled();
+      };
+      if (mode === "sync") {
+        fulfill();
+      } else {
+        setImmediate(fulfill);
+      }
+    },
+  };
+  return {
+    info: () => thenable,
+    warn: () => thenable,
+    error: () => thenable,
+  };
+}
+
+async function expectNoProcessErrors(
   run: () => Promise<void>,
 ) {
-  const reasons: unknown[] = [];
+  const unhandledRejections: unknown[] = [];
+  const uncaughtExceptions: unknown[] = [];
   const onUnhandledRejection = (reason: unknown) => {
-    reasons.push(reason);
+    unhandledRejections.push(reason);
+  };
+  const onUncaughtException = (error: unknown) => {
+    uncaughtExceptions.push(error);
   };
   process.on("unhandledRejection", onUnhandledRejection);
+  process.on("uncaughtException", onUncaughtException);
   try {
     await run();
     await new Promise<void>((resolve) => setImmediate(resolve));
     await new Promise<void>((resolve) => setImmediate(resolve));
-    expect(reasons).toEqual([]);
+    expect(unhandledRejections).toEqual([]);
+    expect(uncaughtExceptions).toEqual([]);
   } finally {
     process.off("unhandledRejection", onUnhandledRejection);
+    process.off("uncaughtException", onUncaughtException);
   }
 }

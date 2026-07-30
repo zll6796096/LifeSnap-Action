@@ -69,22 +69,8 @@ const defaultLogger: PrivacySafeLogger = {
 };
 
 function absorbLoggerResult(result: unknown) {
-  if (
-    (typeof result !== "object" || result === null) &&
-    typeof result !== "function"
-  ) {
-    return;
-  }
-
   try {
-    const then = Reflect.get(result, "then");
-    if (typeof then !== "function") {
-      return;
-    }
-    Reflect.apply(then, result, [
-      undefined,
-      () => undefined,
-    ]);
+    void Promise.resolve(result).catch(() => undefined);
   } catch {
     // Hostile or revoked thenables are logging failures and are ignored.
   }
