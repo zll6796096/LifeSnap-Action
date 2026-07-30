@@ -19,6 +19,9 @@
 - `docs/verification/yotei-snap-release/icon-reference-vs-final.png` — normalized design comparison.
 - `docs/verification/yotei-snap-release/home-screen-light.png` — installed icon and display-name evidence.
 - `docs/verification/yotei-snap-release/launch-screen-light.png` — representative neutral launch-transition evidence.
+- `docs/verification/yotei-snap-release/launch-transition-light-contact-sheet.png` — timestamped clean first-launch sequence in light appearance.
+- `docs/verification/yotei-snap-release/launch-transition-dark-contact-sheet.png` — timestamped clean first-launch sequence in dark appearance.
+- `docs/verification/yotei-snap-release/launch-transition-evidence.txt` — sanitized build, signing, simulator, frame, mismatch, and denylist evidence.
 - `docs/release/yotei-snap-v1.1-app-store-release-gate.md` — source-of-truth release evidence and external-state boundary.
 
 ### Modified product files
@@ -138,17 +141,30 @@ else
   pass "LaunchScreen storyboard syntax"
 fi
 
+ibtool_path="$(xcrun --find ibtool 2>/dev/null || true)"
+if [ -n "$ibtool_path" ] && "$ibtool_path" --warnings --errors --notices "$storyboard_path" >/dev/null; then
+  pass "LaunchScreen storyboard Interface Builder validation"
+else
+  fail "LaunchScreen storyboard Interface Builder validation"
+fi
+
 display_name="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleDisplayName' "$plist_path")"
 development_region="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleDevelopmentRegion' "$plist_path")"
 assert_equal "$display_name" "よていスナップ" "installed display name"
 assert_equal "$development_region" "ja" "development region"
+assert_xpath_count "$storyboard_path" '/document[@launchScreen="YES"]' "1" "launch document is marked as a launch screen"
+assert_xpath_count "$storyboard_path" '//viewController' "1" "launch screen has exactly one view controller"
+assert_xpath_count "$storyboard_path" '//viewController/view[@key="view"]' "1" "launch screen has exactly one root view"
 assert_xpath_count "$storyboard_path" '//view' "1" "launch screen has exactly one basic view"
+assert_xpath_count "$storyboard_path" '/document[@initialViewController and string-length(@initialViewController) > 0]' "1" "launch initial view controller id is nonempty"
+assert_xpath_count "$storyboard_path" '/document[@initialViewController = //viewController/@id]' "1" "launch initial view controller id matches its controller"
 assert_xpath_count "$storyboard_path" '//viewController/view[@key="view" and @opaque="YES"]' "1" "launch root is explicitly opaque"
 assert_xpath_count "$storyboard_path" '//viewController/view[@key="view"]/*[not(self::rect or self::autoresizingMask or self::viewLayoutGuide or self::color)]' "0" "launch root has no visual child objects"
 assert_xpath_count "$storyboard_path" '//label | //image | //imageView | //*[@image]' "0" "launch screen has no labels or images"
 assert_xpath_count "$storyboard_path" '//*[@customClass or @customModule or @customModuleProvider] | //userDefinedRuntimeAttributes | //userDefinedRuntimeAttribute' "0" "launch screen has no custom classes or runtime attributes"
-assert_xpath_count "$storyboard_path" '//viewController/view[@key="view"]/color[@key="backgroundColor" and @red="0.94901960784313721" and @green="0.94901960784313721" and @blue="0.96862745098039216" and @alpha="1" and @colorSpace="custom" and @customColorSpace="sRGB"]' "1" "launch background is opaque sRGB #F2F2F7"
-assert_not_contains "$storyboard_path" 'appearance="dark"' "launch screen dark appearance"
+assert_xpath_count "$storyboard_path" '//viewController/view[@key="view"]/color[@key="backgroundColor" and @systemColor="systemGroupedBackgroundColor"]' "1" "launch background uses semantic system grouped background"
+assert_xpath_count "$storyboard_path" '/document/resources/systemColor[@name="systemGroupedBackgroundColor"]' "1" "launch declares semantic system grouped background resource"
+assert_xpath_count "$storyboard_path" '/document/device/@appearance' "0" "launch screen does not force an appearance"
 assert_not_contains "$storyboard_path" 'よていスナップ' "launch screen product name"
 assert_not_contains "$storyboard_path" 'LifeSnap' "launch screen old brand"
 assert_contains "$calendar_path" '— よていスナップで作成' "calendar-note signature"
@@ -501,16 +517,21 @@ In `Info.plist`, set:
 In `LaunchScreen.storyboard`, apply the user-approved 2026-07-30 launch amendment:
 
 ```xml
-<device id="retina6_12" orientation="portrait" appearance="light"/>
+<device id="retina6_12" orientation="portrait"/>
 <view key="view" contentMode="scaleToFill" opaque="YES" id="launch-root-view">
     <rect key="frame" x="0.0" y="0.0" width="393" height="852"/>
     <autoresizingMask key="autoresizingMask" widthSizable="YES" heightSizable="YES"/>
     <viewLayoutGuide key="safeArea" id="launch-safe-area"/>
-    <color key="backgroundColor" red="0.94901960784313721" green="0.94901960784313721" blue="0.96862745098039216" alpha="1" colorSpace="custom" customColorSpace="sRGB"/>
+    <color key="backgroundColor" systemColor="systemGroupedBackgroundColor"/>
 </view>
+<resources>
+    <systemColor name="systemGroupedBackgroundColor">
+        <color red="0.94901960784313721" green="0.94901960784313721" blue="0.96862745098039216" alpha="1" colorSpace="custom" customColorSpace="sRGB"/>
+    </systemColor>
+</resources>
 ```
 
-Remove the launch label, constraints, images, logos, custom classes, and runtime attributes. Keep `UILaunchStoryboardName = LaunchScreen` unchanged. The launch screen intentionally contains no product name; Home screen identity remains `よていスナップ`.
+Use the semantic system color and do not force a light or dark appearance. Remove the launch label, constraints, images, logos, custom classes, and runtime attributes. Keep `UILaunchStoryboardName = LaunchScreen` unchanged. The launch screen intentionally contains no product name; Home screen identity remains `よていスナップ`.
 
 - [ ] **Step 4: Run tests and static brand checks**
 
@@ -740,6 +761,9 @@ git commit -m "docs: prepare yotei snap 1.1 release"
 - Modify: `design-qa.md`
 - Create: `docs/verification/yotei-snap-release/home-screen-light.png`
 - Create: `docs/verification/yotei-snap-release/launch-screen-light.png`
+- Create: `docs/verification/yotei-snap-release/launch-transition-light-contact-sheet.png`
+- Create: `docs/verification/yotei-snap-release/launch-transition-dark-contact-sheet.png`
+- Create: `docs/verification/yotei-snap-release/launch-transition-evidence.txt`
 - Modify: `docs/release/yotei-snap-v1.1-app-store-release-gate.md`
 
 - [ ] **Step 1: Run all automated checks**
@@ -813,44 +837,56 @@ Inspect the screenshot. Acceptance:
 
 If the app is on another Home page, navigate to its page in Simulator before recapturing; do not substitute an asset-file preview for installed-product evidence.
 
-- [ ] **Step 4: Capture and inspect the neutral launch transition**
+- [ ] **Step 4: Capture and inspect adaptive light and dark launch transitions**
 
-Create a new iPhone 15 simulator on the same reviewed runtime, clean-install the exact normally signed Release app, begin recording while Home is visible, and launch once:
+Create two new iPhone 15 simulators on the same reviewed runtime: one light and one dark. Set each appearance before installing the exact same normally signed Release app. Each simulator must be clean, and the App must never have launched before recording. Begin recording while Home is visible and launch exactly once:
 
 ```bash
-launch_qa_name="YoteiSnap-Launch-QA-$(date +%Y%m%d%H%M%S)"
-launch_qa_udid="$(xcrun simctl create \
-  "$launch_qa_name" \
-  com.apple.CoreSimulator.SimDeviceType.iPhone-15 \
-  com.apple.CoreSimulator.SimRuntime.iOS-26-5)"
-xcrun simctl boot "$launch_qa_udid"
-xcrun simctl bootstatus "$launch_qa_udid" -b
-xcrun simctl install \
-  "$launch_qa_udid" \
-  /tmp/yotei-snap-final-release-derived/Build/Products/Release-iphonesimulator/LifeSnapAction.app
-xcrun simctl io "$launch_qa_udid" recordVideo \
-  --codec=h264 \
-  --force \
-  /tmp/yotei-snap-launch-transition.mp4 &
-launch_record_pid=$!
-sleep 1
-xcrun simctl launch "$launch_qa_udid" com.zll.lifesnapaction
-sleep 3
-kill -INT "$launch_record_pid"
-wait "$launch_record_pid"
+for launch_appearance in light dark; do
+  launch_qa_name="YoteiSnap-Launch-${launch_appearance}-QA-$(date +%Y%m%d%H%M%S)"
+  launch_qa_udid="$(xcrun simctl create \
+    "$launch_qa_name" \
+    com.apple.CoreSimulator.SimDeviceType.iPhone-15 \
+    com.apple.CoreSimulator.SimRuntime.iOS-26-5)"
+  xcrun simctl boot "$launch_qa_udid"
+  xcrun simctl bootstatus "$launch_qa_udid" -b
+  xcrun simctl ui "$launch_qa_udid" appearance "$launch_appearance"
+  xcrun simctl install \
+    "$launch_qa_udid" \
+    /tmp/yotei-snap-final-release-derived/Build/Products/Release-iphonesimulator/LifeSnapAction.app
+  xcrun simctl io "$launch_qa_udid" recordVideo \
+    --codec=h264 \
+    --force \
+    "/tmp/yotei-snap-launch-transition-${launch_appearance}.mp4" &
+  launch_record_pid=$!
+  sleep 1
+  xcrun simctl launch "$launch_qa_udid" com.zll.lifesnapaction
+  sleep 3
+  kill -INT "$launch_record_pid"
+  wait "$launch_record_pid"
+done
 ```
 
-Extract a contact sheet and inspect the individual transition frames. Copy a representative real `#F2F2F7` launch frame—not a constructed image—to `docs/verification/yotei-snap-release/launch-screen-light.png`.
+Extract timestamped contact sheets and inspect the individual transition frames. Copy a representative real light semantic-color launch frame—not a constructed image—to `docs/verification/yotei-snap-release/launch-screen-light.png`.
 
 Acceptance:
 
-- the sequence starts on Home and includes the installed icon zoom;
-- there is no sustained pure-black frame between icon zoom and runtime;
-- the launch surface is visually `#F2F2F7`, has no product name, logo, image, or other decoration, and blends into the first screen;
-- the runtime first screen remains intact;
-- SplashBoard logs contain no denylist rejection for `com.zll.lifesnapaction`.
+- each sequence starts on Home and includes the installed icon zoom;
+- light appearance has no sustained black mismatch between icon zoom and runtime;
+- dark appearance has no light-color flash between icon zoom and runtime;
+- both launch surfaces have no product name, logo, image, or other decoration and blend into the matching first screen;
+- the runtime first screen remains intact in both appearances;
+- SplashBoard logs contain zero denylist rejections for `com.zll.lifesnapaction` on both simulators.
 
-If a clean device still records the denylist rejection or a sustained black transition, stop as blocked and retain the diagnostics outside the repository.
+Create:
+
+- `docs/verification/yotei-snap-release/launch-transition-light-contact-sheet.png`
+- `docs/verification/yotei-snap-release/launch-transition-dark-contact-sheet.png`
+- `docs/verification/yotei-snap-release/launch-transition-evidence.txt`
+
+The contact sheets must show timestamps. The sanitized evidence log must include commands/results, App bundle content SHA-256, signature verification summary without signing identities or secrets, simulator names/UDIDs, frame sequences, light black-mismatch count, dark light-flash count, and per-simulator denylist count. Keep these three evidence files untracked in the launch-screen correction commit; stage them only when completing this full Task 5 acceptance.
+
+If either clean device records a denylist rejection, a light-mode black mismatch, or a dark-mode light flash, stop as blocked and retain the diagnostics outside the repository.
 
 - [ ] **Step 5: Complete Product Design QA**
 
@@ -861,6 +897,7 @@ Open these together in one comparison input:
 - `docs/verification/yotei-snap-release/home-screen-light.png`
 
 Check icon fidelity, 20px/60px/180px quality, installed mask behavior, display-name readability, the neutral launch-to-first-screen transition, and consistency with the approved UI.
+Also inspect both timestamped launch contact sheets and verify that the transition follows the selected system appearance.
 
 Append an icon/rebrand section to `design-qa.md`. The report must end exactly:
 
@@ -888,6 +925,9 @@ git add \
   design-qa.md \
   docs/verification/yotei-snap-release/home-screen-light.png \
   docs/verification/yotei-snap-release/launch-screen-light.png \
+  docs/verification/yotei-snap-release/launch-transition-light-contact-sheet.png \
+  docs/verification/yotei-snap-release/launch-transition-dark-contact-sheet.png \
+  docs/verification/yotei-snap-release/launch-transition-evidence.txt \
   docs/release/yotei-snap-v1.1-app-store-release-gate.md
 git commit -m "test: verify yotei snap rebrand"
 ```

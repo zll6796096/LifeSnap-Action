@@ -1,7 +1,8 @@
 # 「よていスナップ」图标、品牌名与 App Store 更新设计
 
 日期：2026-07-30  
-状态：用户已批准设计方向，待规格文件复核  
+状态：用户已批准；规格已复核，实施与本地验收进行中
+
 工作分支：`codex/lifesnap-apple-native-ui`
 
 ## 1. 真实目标
@@ -91,9 +92,10 @@
   - `CFBundleDisplayName = よていスナップ`
   - `CFBundleDevelopmentRegion = ja`
 - `ios/LifeSnapAction/Resources/LaunchScreen.storyboard`
-  - 2026-07-30 用户批准修订：启动页采用与首页浅色 `systemGroupedBackground` 接近的纯色 `#F2F2F7`
+  - 2026-07-30 用户批准修订：启动页采用语义色 `systemGroupedBackgroundColor`，随系统明暗模式自适应；浅色外观约为 `#F2F2F7`
+  - 不强制 `light` 或 `dark` 外观，避免深色模式首启出现浅色闪屏
   - 不显示品牌文字、图标、Logo 或装饰；只保留一个不透明基础根视图
-  - 启动验收改为“无黑闪、浅色启动页平滑进入首页”，主屏仍必须完整显示图标与 `よていスナップ`
+  - 启动验收覆盖全新浅色与深色模拟器：浅色无黑色错配，深色无浅色闪屏，并平滑进入首页；主屏仍必须完整显示图标与 `よていスナップ`
 - `ios/LifeSnapAction/Services/CalendarService.swift`
   - 日历事件备注署名改为新品牌
 - `ios/LifeSnapAction/Views/UploadConsentView.swift`
@@ -141,7 +143,7 @@ Apple 当前规则：
 1. 生成正式图标母版，检查后生成 17 个尺寸。
 2. 更新用户可见品牌、版本号和商店资料草案。
 3. 运行完整 iOS 与后端回归。
-4. 安装到模拟器，验收桌面图标、桌面名称、无黑闪的浅色启动过渡和主流程。
+4. 安装到全新浅色与深色模拟器，验收桌面图标、桌面名称、自适应启动过渡和主流程。
 5. 使用真实签名执行 Release archive 与验证。
 6. 创建/更新 App Store Connect 1.1 元数据，上传 Build 4。
 7. 绑定构建、填写审核信息并提交 App Review。
@@ -151,7 +153,8 @@ Apple 当前规则：
 
 - 正式 1024 图标和 17 个正确尺寸的 AppIcon 文件
 - 主屏图标与 `よていスナップ` 标签的模拟器截图
-- 全新模拟器上“主屏 → 无品牌浅色启动页 → 首页”的真实逐帧证据与代表性截图
+- 全新浅色与深色模拟器上“主屏 → 无品牌语义色启动页 → 首页”的带时间戳真实逐帧接触表
+- 脱敏启动证据日志：构建命令与结果、App 内容哈希、签名摘要、模拟器名称/UDID、帧序列、错配帧计数与 SplashBoard denylist 计数
 - `xcodebuild` 测试与 Release build 成功
 - 后端 `npm test`、`npm run lint`、`npm run build` 成功
 - Archive/validate/upload 的可审计结果
@@ -184,8 +187,10 @@ Apple 当前规则：
 - 图标在 1024、180、120、80、60、40、29、20 像素下均无糊边、裁切和不可辨识细节。
 - `Contents.json` 引用的所有文件存在、尺寸正确且无透明像素。
 - 主屏显示 `よていスナップ`，无截断。
-- 启动页为不透明 sRGB `#F2F2F7` 单一根视图，不显示名称、Logo、图片或其他装饰。
-- 使用正常模拟器签名的 Release 构建全新安装后，从主屏启动到首页无持续纯黑帧，浅色过渡平滑；`CODE_SIGNING_ALLOWED=NO` 产物不得作为安装视觉验收证据。
+- 启动页为单一不透明根视图，背景引用 `systemGroupedBackgroundColor`，不强制外观，不显示名称、Logo、图片或其他装饰。
+- Storyboard 必须声明 `launchScreen="YES"`，只含一个 `viewController` 与一个根视图，且非空 `initialViewController` 与控制器 ID 一致。
+- 使用正常模拟器签名的同一份 Release 构建分别在全新、从未启动过 App 的浅色与深色 iPhone 15 模拟器验收：浅色无持续黑色错配帧，深色无浅色闪屏，运行时首页保持完整；`CODE_SIGNING_ALLOWED=NO` 产物不得作为安装视觉验收证据。
+- 本地证据固定为 `docs/verification/yotei-snap-release/launch-transition-light-contact-sheet.png`、`docs/verification/yotei-snap-release/launch-transition-dark-contact-sheet.png` 与 `docs/verification/yotei-snap-release/launch-transition-evidence.txt`；三者在启动页修正提交中保持未跟踪，留待完整 Task 5 验收提交。
 - 用户可见界面不再出现旧品牌；法律/技术披露仍准确。
 - Bundle ID、工程 target、后端契约保持不变。
 - 版本为 1.1 Build 4，并在两处工程配置一致。
