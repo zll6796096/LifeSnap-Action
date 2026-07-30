@@ -387,6 +387,7 @@ git commit -m "feat: add private quota identifiers"
 - Create: `firebase.json`
 - Modify: `package.json`
 - Modify: `package-lock.json`
+- Modify: `tsconfig.json`
 
 - [ ] **Step 1: Pin backend and emulator dependencies**
 
@@ -400,6 +401,19 @@ npm install --save-dev --save-exact firebase-tools@15.25.0
 ```
 
 Expected: `package.json` contains exact versions without `^` or `~`; `package-lock.json` changes only through npm.
+
+- [ ] **Step 1a: Make the normal lint command cover all backend source/tests**
+
+Change:
+
+```json
+"include": ["server.ts", "src/**/*.ts"]
+```
+
+Keep the existing frontend exclusions. Run `npm run lint` before adding the
+quota implementation and require it to type-check the Task 2 security/quota
+files as well as all subsequent backend tests; do not rely on a one-off
+alternate TypeScript command.
 
 - [ ] **Step 2: Write the quota contract**
 
@@ -512,17 +526,29 @@ The same test file defines a complete in-memory Firestore-shaped adapter so fail
 function makeTestStore(input: {
   policy: QuotaPolicy;
   counts: {
-    installMinute: number;
-    installDay: number;
-    serviceDay: number;
+    installMinute?: number;
+    installDay?: number;
+    serviceDay?: number;
+    legacyServiceDay?: number;
   };
 }) {
-  const state = new Map<string, number>([
-    ["install_minute", input.counts.installMinute],
-    ["install_day", input.counts.installDay],
-    ["service_day", input.counts.serviceDay],
-  ]);
-  const collectionFor = (path: string) => path.split("/")[0];
+  type TestDocument = Record<string, unknown>;
+  type TestReference = { path: string };
+  const buckets = buildQuotaBuckets(now);
+  const paths = {
+    installMinute:
+      `install_minute/${v2Scope.installationHash}:${buckets.epochMinute}`,
+    installDay:
+      `install_day/${v2Scope.installationHash}:${buckets.tokyoDay}`,
+    serviceDay: `service_day/v2:${buckets.tokyoDay}`,
+    legacyServiceDay: `service_day/legacy:${buckets.tokyoDay}`,
+  };
+  const state = new Map<string, TestDocument>();
+  for (const [name, count] of Object.entries(input.counts)) {
+    if (count !== undefined) {
+      state.set(paths[name as keyof typeof paths], { count });
+    }
+  }
   const db = {
     collection(collection: string) {
       return {
@@ -533,26 +559,40 @@ function makeTestStore(input: {
     },
     runTransaction<T>(
       run: (transaction: {
-        getAll: (...refs: Array<{ path: string }>) => Promise<
-          Array<{ data: () => { count: number } }>
+        getAll: (...refs: TestReference[]) => Promise<
+          Array<{
+            exists: boolean;
+            data: () => TestDocument | undefined;
+          }>
         >;
         set: (
-          ref: { path: string },
-          data: { count: number },
+          ref: TestReference,
+          data: TestDocument,
           options: { merge: true },
         ) => void;
       }) => Promise<T>,
     ) {
+      const pending: Array<{
+        ref: TestReference;
+        data: TestDocument;
+      }> = [];
       return run({
         getAll: async (...refs) =>
           refs.map((ref) => ({
-            data: () => ({
-              count: state.get(collectionFor(ref.path)) ?? 0,
-            }),
+            exists: state.has(ref.path),
+            data: () => state.get(ref.path),
           })),
         set: (ref, data) => {
-          state.set(collectionFor(ref.path), data.count);
+          pending.push({ ref, data });
         },
+      }).then((result) => {
+        for (const write of pending) {
+          state.set(write.ref.path, {
+            ...state.get(write.ref.path),
+            ...write.data,
+          });
+        }
+        return result;
       });
     },
   };
@@ -563,13 +603,23 @@ function makeTestStore(input: {
   return {
     consume: store.consume.bind(store),
     snapshot: () => ({
-      installMinute: state.get("install_minute"),
-      installDay: state.get("install_day"),
-      serviceDay: state.get("service_day"),
+      installMinute: state.get(paths.installMinute)?.count,
+      installDay: state.get(paths.installDay)?.count,
+      serviceDay: state.get(paths.serviceDay)?.count,
+      legacyServiceDay: state.get(paths.legacyServiceDay)?.count,
     }),
+    paths,
+    setRawDocument: (path: string, data: TestDocument) =>
+      state.set(path, data),
+    deleteDocument: (path: string) => state.delete(path),
   };
 }
 ```
+
+Use the `setRawDocument`/`deleteDocument` controls for corrupt/absent cases.
+Do not cast a collection-only counter map into Firestore: full-path separation,
+document existence, and transaction-local writes are part of the behavior under
+test.
 
 Add explicit table-driven cases for:
 
@@ -583,6 +633,9 @@ Add explicit table-driven cases for:
   `SERVICE_DAILY_LIMITED`;
 - a legacy consume changes only `service_day/legacy:*`, while a v2 consume
   changes only its installation documents and `service_day/v2:*`.
+- an existing counter with a missing, negative, fractional, string, `NaN`, or
+  unsafe-integer `count` rejects with `QUOTA_COUNTER_INVALID` and writes
+  nothing; only a genuinely absent document starts at zero.
 
 - [ ] **Step 4: Verify quota tests fail**
 
@@ -658,8 +711,16 @@ export class FirestoreQuotaStore implements QuotaStore {
           : [this.db.collection("service_day").doc(`legacy:${tokyoDay}`)];
       const snapshots = await transaction.getAll(...refs);
       const current = snapshots.map((snapshot) => {
+        if (!snapshot.exists) return 0;
         const value = snapshot.data()?.count;
-        return Number.isInteger(value) && value >= 0 ? value : 0;
+        if (
+          typeof value !== "number" ||
+          !Number.isSafeInteger(value) ||
+          value < 0
+        ) {
+          throw new Error("QUOTA_COUNTER_INVALID");
+        }
+        return value;
       });
       const minuteExpiry = new Date(
         minuteStart.getTime() + 24 * 60 * 60 * 1000,
@@ -795,6 +856,7 @@ Expected: exact-boundary, atomicity, and emulator concurrency tests pass.
 git add \
   package.json \
   package-lock.json \
+  tsconfig.json \
   firebase.json \
   src/quota
 git commit -m "feat: enforce atomic extraction quotas"
