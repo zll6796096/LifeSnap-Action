@@ -25,6 +25,27 @@ afterEach(async () => {
 });
 
 describe("privacy and extraction API behavior", () => {
+  it("serves the privacy policy with the current brand and user actions", async () => {
+    await withServer(createApp({ env: testEnv() }), async (baseUrl) => {
+      const response = await fetch(`${baseUrl}/privacy`);
+      const body = await response.text();
+
+      expect(response.status).toBe(200);
+      expect(body).toContain("よていスナップ");
+      expect(body).toContain("紙の案内を予定に変える");
+      expect(body).toContain("写真を撮る");
+      expect(body).toContain("写真を選ぶ");
+      expect(body).toContain("同意して続ける");
+      expect(body).toContain("同意してもう一度試す");
+      expect(body).toContain("予定を追加");
+      expect(body).toContain("キャンセル");
+      expect(body).toContain("画像を削除");
+      expect(body).not.toMatch(/\bLifeSnap(?: Action)?\b/);
+      expect(body).not.toContain("同意してAI解析を開始");
+      expect(body).not.toContain("同意して再解析");
+    });
+  });
+
   it("serves the privacy policy with required Gemini Paid Service disclosures", async () => {
     await withServer(createApp({ env: testEnv() }), async (baseUrl) => {
       const response = await fetch(`${baseUrl}/privacy`);
@@ -40,7 +61,7 @@ describe("privacy and extraction API behavior", () => {
       expect(body).toContain("HTTPS");
       expect(body).toContain("キャンセルした場合、画像は送信されず");
       expect(body).toContain("削除");
-      expect(body).toContain("2026-07-10");
+      expect(body).toContain("2026-07-30");
     });
   });
 

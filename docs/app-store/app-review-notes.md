@@ -24,7 +24,8 @@
 - Privacy policy: `https://lifesnap-action-sxielk4wua-an.a.run.app/privacy`
 - The Gemini API key is held only by the backend and is not included in the iOS app.
 - Production deployment uses Secret Manager injection for `GEMINI_API_KEY`.
-- The production Gemini API key has been verified to belong to an active-billing Google Cloud project, so Gemini is used as a Paid Service.
+- Current Paid Plan verification for this release is `PENDING` and blocks App Store submission. Historical Paid Service verification is not accepted as current evidence.
+- Before submission, verify that the production Gemini API key belongs to an active-billing Google Cloud project and record fresh evidence that Gemini is operating as a Paid Service.
 - `MOCK_MODE` is development-only and forbidden in production.
 
 ## AI Upload Consent
@@ -41,13 +42,13 @@ Before each image upload, including retries, よていスナップ shows a dedic
 ## Reviewer Test Steps
 
 1. Launch よていスナップ.
-2. Tap `カメラで撮影` or `写真から選ぶ`.
+2. Tap `カメラで撮影` (`写真を撮る`) or `写真から選ぶ` (`写真を選ぶ`).
 3. Confirm that the upload-consent screen appears before processing.
-4. Tap `キャンセル`; verify that no image is uploaded.
+4. Tap `キャンセル`; verify that no image is uploaded and the pending image is cleared (`画像を削除`).
 5. Select the sample again and tap `同意して続ける`.
 6. Review the proposed event fields.
 7. Grant Calendar access when prompted.
-8. Add the confirmed event to Calendar.
+8. Tap `カレンダーに追加`, then `追加する`, to add the confirmed event (`予定を追加`).
 9. If retry appears, verify that `同意してもう一度試す` is required before another upload.
 
 ## Expected Permission Prompts

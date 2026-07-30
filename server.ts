@@ -49,7 +49,7 @@ const PRIVACY_POLICY_HTML = `<!doctype html>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>LifeSnap Action Privacy Policy</title>
+  <title>よていスナップ プライバシーポリシー</title>
   <style>
     body { font-family: -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Noto Sans JP", sans-serif; line-height: 1.65; margin: 0; padding: 32px 20px; color: #15151f; background: #fff; }
     main { max-width: 820px; margin: 0 auto; }
@@ -62,41 +62,41 @@ const PRIVACY_POLICY_HTML = `<!doctype html>
 </head>
 <body>
   <main>
-    <h1>LifeSnap Action Privacy Policy</h1>
-    <p class="updated">Last updated: 2026-07-10</p>
+    <h1>よていスナップ プライバシーポリシー</h1>
+    <p class="updated">Last updated: 2026-07-30</p>
 
     <h2>日本語</h2>
-    <p>LifeSnap Action は、ユーザーが選択した書類画像から予定やタスク候補を抽出し、ユーザーが確認した場合だけ iOS カレンダーへ追加するアプリです。</p>
+    <p>よていスナップ（紙の案内を予定に変える）は、ユーザーが選択した書類画像から予定やタスク候補を抽出し、ユーザーが確認した場合だけ iOS カレンダーへ追加するアプリです。</p>
 
     <h2>送信されるデータときっかけ</h2>
-    <p>ユーザーが写真を撮影または選択したあと、アップロード前の確認画面で「同意してAI解析を開始」を選んだ場合に限り、その書類画像が LifeSnap の Google Cloud Run バックエンドへ HTTPS で送信されます。画像には、氏名、住所、日付、金額、機関名、予約情報などの個人情報が含まれる場合があります。</p>
+    <p>ユーザーは「カメラで撮影」で写真を撮るか、「写真から選ぶ」で写真を選ぶことができます。アップロード前の確認画面で初回は「同意して続ける」、再試行時は「同意してもう一度試す」を選んだ場合に限り、その書類画像が よていスナップ の Google Cloud Run バックエンドへ HTTPS で送信されます。画像には、氏名、住所、日付、金額、機関名、予約情報などの個人情報が含まれる場合があります。</p>
 
     <h2>処理の流れと目的</h2>
-    <p>LifeSnap のバックエンドは、予定やタスク候補を抽出する目的だけで画像を Google Gemini（Google LLC）へ送信します。Gemini API キーはバックエンドだけに保存され、iOS アプリには含まれません。</p>
+    <p>よていスナップ のバックエンドは、予定やタスク候補を抽出する目的だけで画像を Google Gemini（Google LLC）へ送信します。Gemini API キーはバックエンドだけに保存され、iOS アプリには含まれません。</p>
 
     <h2>保存期間</h2>
-    <p>LifeSnap は、アップロードされた画像、base64 データ、Gemini の生レスポンス、OCR 内容、抽出されたタイトル、氏名、住所、金額、要約をデータベース、オブジェクトストレージ、ファイルへ永続保存しません。画像はリクエスト処理中のメモリ上で扱われ、処理後に破棄されます。</p>
+    <p>よていスナップ は、アップロードされた画像、base64 データ、Gemini の生レスポンス、OCR 内容、抽出されたタイトル、氏名、住所、金額、要約をデータベース、オブジェクトストレージ、ファイルへ永続保存しません。画像はリクエスト処理中のメモリ上で扱われ、処理後に破棄されます。</p>
 
     <h2>Google Gemini Paid Service</h2>
     <p>本番環境の Gemini API キーは active billing が有効な Google Cloud Project に属する Paid Service として運用されます。Google は Paid Service の入力・出力を Google 製品の改善には使用しないと説明しています。ただし、安全性、セキュリティ、不正利用防止、法的義務のために、Google が限定された期間ログを処理する場合があります。また、Google の処理は国や地域をまたぐ場合があります。</p>
 
     <h2>同意しない場合</h2>
-    <p>ユーザーはアップロード前の確認画面でキャンセルできます。キャンセルした場合、画像は送信されず、AI 解析も行われず、カレンダーにも追加されません。</p>
+    <p>ユーザーはアップロード前の確認画面で「キャンセル」を選べます。キャンセルした場合、画像は送信されず、選択中の画像を削除し、AI 解析も予定の追加も行いません。</p>
 
     <h2>カレンダー</h2>
-    <p>カレンダー権限は、ユーザーが確認した予定を iOS のシステムカレンダーへ追加するためだけに使います。既存のカレンダー内容を LifeSnap バックエンドへアップロードしません。</p>
+    <p>カレンダー権限は、ユーザーが抽出結果を確認し、「カレンダーに追加」と「追加する」で予定を追加するためだけに使います。既存のカレンダー内容を よていスナップ のバックエンドへアップロードしません。</p>
 
     <h2>ログ</h2>
     <p>本番アプリケーションログは、request_id、MIME type、画像サイズ、処理時間、モデル名、HTTP status、抽出ルートなどの運用メタデータに限定します。画像、base64、リクエスト本文、Gemini の生レスポンス、OCR 内容、タイトル、氏名、住所、金額、要約は記録しません。</p>
 
     <h2>削除と撤回</h2>
-    <p>LifeSnap はアカウント、サーバー上の書類アーカイブ、履歴保存を提供していないため、アップロード済み画像のサーバー側削除依頼対象となる LifeSnap 永続データはありません。今後アップロード前の同意を撤回したい場合は、確認画面でキャンセルしてください。</p>
+    <p>よていスナップ はアカウント、サーバー上の書類アーカイブ、履歴保存を提供していないため、アップロード済み画像のサーバー側削除依頼対象となる よていスナップ の永続データはありません。アップロードしない場合は、確認画面で「キャンセル」を選んでください。</p>
 
     <h2>連絡先と更新</h2>
     <p>プライバシーに関する問い合わせは App Store のサポート連絡先から行ってください。このポリシーを更新する場合は、このページの更新日を変更します。</p>
 
     <h2>English Summary</h2>
-    <p>LifeSnap sends a selected document image to its Google Cloud Run backend and Google Gemini only after the user explicitly taps the upload consent button. LifeSnap does not persist uploaded images or extracted document contents. Google Gemini is used as a Paid Service under an active-billing Google Cloud project; Google does not use Paid Service inputs or outputs to improve Google products, but may process limited logs for safety, abuse prevention, security, and legal obligations.</p>
+    <p>Yotei Snap (よていスナップ) sends a selected document image to its Google Cloud Run backend and Google Gemini only after the user explicitly taps the upload consent button. Yotei Snap does not persist uploaded images or extracted document contents. Google Gemini is used as a Paid Service under an active-billing Google Cloud project; Google does not use Paid Service inputs or outputs to improve Google products, but may process limited logs for safety, abuse prevention, security, and legal obligations.</p>
   </main>
 </body>
 </html>`;
