@@ -23,8 +23,10 @@ import type {
 import type { AppCheckRequestErrorCode } from "./src/security/app-check";
 import { validateGeminiExtraction } from "./src/shared/gemini-schema";
 import {
-  isPublicHttpError,
-  PublicHttpError,
+  createPublicHttpError,
+  normalizePublicHttpError,
+  type PublicErrorKey,
+  type PublicHttpErrorSnapshot,
 } from "./src/shared/http-error";
 
 dotenv.config({ quiet: true });
@@ -65,6 +67,35 @@ const defaultLogger: PrivacySafeLogger = {
   warn: (event, metadata) => console.warn(JSON.stringify({ level: "warn", event, ...metadata })),
   error: (event, metadata) => console.error(JSON.stringify({ level: "error", event, ...metadata })),
 };
+
+function createSafeLogger(candidate: PrivacySafeLogger): PrivacySafeLogger {
+  const invoke = (
+    level: keyof PrivacySafeLogger,
+    event: string,
+    metadata: LogMetadata,
+  ) => {
+    try {
+      const method = candidate[level];
+      if (typeof method !== "function") {
+        return;
+      }
+      Reflect.apply(method, candidate, [
+        event,
+        Object.freeze({ ...metadata }),
+      ]);
+    } catch {
+      // Logging must never change request processing or public responses.
+    }
+  };
+
+  return Object.freeze({
+    info: (event, metadata) => invoke("info", event, metadata),
+    warn: (event, metadata) => invoke("warn", event, metadata),
+    error: (event, metadata) => invoke("error", event, metadata),
+  });
+}
+
+const safeDefaultLogger = createSafeLogger(defaultLogger);
 
 const PRIVACY_POLICY_HTML = `<!doctype html>
 <html lang="ja">
@@ -155,9 +186,6 @@ function safeErrorMetadata(error: unknown): LogMetadata {
       ? (error as Record<PropertyKey, unknown>)
       : undefined;
   const rawName = record === undefined ? undefined : readProperty(record, "name");
-  const rawStatus = record === undefined ? undefined : readProperty(record, "status");
-  const rawStatusCode =
-    record === undefined ? undefined : readProperty(record, "statusCode");
   const safeNames = new Set([
     "ApiError",
     "Error",
@@ -169,30 +197,30 @@ function safeErrorMetadata(error: unknown): LogMetadata {
     typeof rawName === "string" && safeNames.has(rawName)
       ? rawName
       : "Error";
-  const candidateStatus =
-    typeof rawStatus === "number"
-      ? rawStatus
-      : typeof rawStatusCode === "number"
-        ? rawStatusCode
-        : undefined;
-  const status =
-    candidateStatus !== undefined &&
-    Number.isInteger(candidateStatus) &&
-    candidateStatus >= 400 &&
-    candidateStatus <= 599
-      ? candidateStatus
-      : undefined;
 
-  return { error_name: name, upstream_status: status };
+  return { error_name: name };
 }
 
-function sendJsonError(
+function publicErrorSnapshot(
+  key: PublicErrorKey,
+): PublicHttpErrorSnapshot {
+  const snapshot = normalizePublicHttpError(
+    createPublicHttpError(key),
+  );
+  if (snapshot === undefined) {
+    throw new Error("PUBLIC_ERROR_CATALOG_INVALID");
+  }
+  return snapshot;
+}
+
+function sendPublicError(
   res: Response,
-  statusCode: number,
-  code: string,
-  message: string,
+  error: PublicHttpErrorSnapshot,
 ) {
-  return res.status(statusCode).json({ code, error: message });
+  return res.status(error.statusCode).json({
+    code: error.code,
+    error: error.publicMessage,
+  });
 }
 
 function setExtractNoStoreHeaders(res: Response) {
@@ -200,14 +228,48 @@ function setExtractNoStoreHeaders(res: Response) {
   res.setHeader("Pragma", "no-cache");
 }
 
-const startExtractionRequest: RequestHandler = (_req, res, next) => {
-  setExtractNoStoreHeaders(res);
-  res.locals.requestId = crypto.randomUUID();
-  next();
-};
+type ExtractionRouteCategory = "legacy" | "v2";
+
+type ExtractionRequestContext = Readonly<{
+  requestId: string;
+  routeCategory: ExtractionRouteCategory;
+}>;
+
+const EXTRACTION_CONTEXTS = new WeakSet<object>();
+
+function startExtractionRequest(
+  routeCategory: ExtractionRouteCategory,
+): RequestHandler {
+  return (_req, res, next) => {
+    setExtractNoStoreHeaders(res);
+    const context = Object.freeze({
+      requestId: crypto.randomUUID(),
+      routeCategory,
+    });
+    EXTRACTION_CONTEXTS.add(context);
+    res.locals.extractionContext = context;
+    next();
+  };
+}
+
+function extractionRequestContext(
+  res: Response,
+): ExtractionRequestContext | undefined {
+  const context = res.locals.extractionContext;
+  if (
+    typeof context !== "object" ||
+    context === null ||
+    !EXTRACTION_CONTEXTS.has(context)
+  ) {
+    return undefined;
+  }
+  return context as ExtractionRequestContext;
+}
 
 function buildUploadMiddleware(
-  invalidTypeStatus: 400 | 415,
+  invalidTypeError:
+    | "LEGACY_UNSUPPORTED_IMAGE_TYPE"
+    | "V2_UNSUPPORTED_IMAGE_TYPE",
 ) {
   return multer({
     storage: multer.memoryStorage(),
@@ -216,13 +278,7 @@ function buildUploadMiddleware(
       if (isAllowedImageMimeType(file.mimetype)) {
         cb(null, true);
       } else {
-        cb(
-          new PublicHttpError(
-            invalidTypeStatus,
-            "UNSUPPORTED_IMAGE_TYPE",
-            "許可されていない画像形式です。JPEG、PNG、WebP画像のみアップロード可能です。",
-          ),
-        );
+        cb(createPublicHttpError(invalidTypeError));
       }
     },
   });
@@ -242,11 +298,7 @@ function asyncHandler(
 
 function requireImage(req: Request): ImageInput {
   if (!req.file) {
-    throw new PublicHttpError(
-      400,
-      "IMAGE_REQUIRED",
-      "画像データが必要です。multipart/form-data の image フィールドで送信してください。",
-    );
+    throw createPublicHttpError("IMAGE_REQUIRED");
   }
 
   return {
@@ -255,33 +307,15 @@ function requireImage(req: Request): ImageInput {
   };
 }
 
-const APP_CHECK_FAILURES: Readonly<
-  Record<AppCheckRequestErrorCode, { status: 401 | 403 | 503; message: string }>
-> = Object.freeze({
-  APP_CHECK_REQUIRED: {
-    status: 401,
-    message: "App Check トークンが必要です。",
-  },
-  APP_CHECK_INVALID: {
-    status: 401,
-    message: "App Check トークンが無効です。",
-  },
-  APP_CHECK_REPLAYED: {
-    status: 401,
-    message: "App Check トークンはすでに使用されています。",
-  },
-  APP_ID_FORBIDDEN: {
-    status: 403,
-    message: "このアプリからのリクエストは許可されていません。",
-  },
-  SECURITY_SERVICE_UNAVAILABLE: {
-    status: 503,
-    message:
-      "セキュリティ確認サービスを一時的に利用できません。しばらくしてからもう一度お試しください。",
-  },
-});
+const APP_CHECK_ERROR_CODES = new Set<AppCheckRequestErrorCode>([
+  "APP_CHECK_REQUIRED",
+  "APP_CHECK_INVALID",
+  "APP_CHECK_REPLAYED",
+  "APP_ID_FORBIDDEN",
+  "SECURITY_SERVICE_UNAVAILABLE",
+]);
 
-function appCheckHttpError(error: unknown): PublicHttpError {
+function appCheckHttpError(error: unknown): Error {
   if (typeof error === "object" && error !== null) {
     const code = readProperty(
       error as Record<PropertyKey, unknown>,
@@ -289,94 +323,98 @@ function appCheckHttpError(error: unknown): PublicHttpError {
     );
     if (
       typeof code === "string" &&
-      Object.prototype.hasOwnProperty.call(APP_CHECK_FAILURES, code)
+      APP_CHECK_ERROR_CODES.has(code as AppCheckRequestErrorCode)
     ) {
-      const publicFailure =
-        APP_CHECK_FAILURES[code as AppCheckRequestErrorCode];
-      return new PublicHttpError(
-        publicFailure.status,
-        code,
-        publicFailure.message,
+      return createPublicHttpError(
+        code as AppCheckRequestErrorCode,
       );
     }
   }
 
-  const fallback = APP_CHECK_FAILURES.SECURITY_SERVICE_UNAVAILABLE;
-  return new PublicHttpError(
-    fallback.status,
-    "SECURITY_SERVICE_UNAVAILABLE",
-    fallback.message,
-  );
+  return createPublicHttpError("SECURITY_SERVICE_UNAVAILABLE");
 }
 
-function installationHttpError(error: unknown): PublicHttpError {
+function installationHttpError(error: unknown): Error {
   if (typeof error === "object" && error !== null) {
     const code = readProperty(
       error as Record<PropertyKey, unknown>,
       "code",
     );
     if (code === "INSTALLATION_ID_INVALID") {
-      return new PublicHttpError(
-        400,
-        "INSTALLATION_ID_INVALID",
-        "インストール識別子が無効です。",
-      );
+      return createPublicHttpError("INSTALLATION_ID_INVALID");
     }
   }
 
-  return new PublicHttpError(
-    503,
-    "SECURITY_SERVICE_UNAVAILABLE",
-    APP_CHECK_FAILURES.SECURITY_SERVICE_UNAVAILABLE.message,
-  );
+  return createPublicHttpError("SECURITY_SERVICE_UNAVAILABLE");
 }
 
-function quotaHttpError(code: QuotaDeniedCode): PublicHttpError {
-  const messages: Readonly<Record<QuotaDeniedCode, string>> = {
-    INSTALL_RATE_LIMITED:
-      "短時間の利用上限に達しました。しばらくしてからもう一度お試しください。",
-    INSTALL_DAILY_LIMITED:
-      "本日の利用上限に達しました。時間をおいてもう一度お試しください。",
-    SERVICE_DAILY_LIMITED:
-      "本日のサービス利用上限に達しました。時間をおいてもう一度お試しください。",
-  };
-  return new PublicHttpError(429, code, messages[code]);
+function quotaHttpError(code: QuotaDeniedCode): Error {
+  return createPublicHttpError(code);
 }
 
-function securityUnavailableError(): PublicHttpError {
-  return new PublicHttpError(
-    503,
-    "SECURITY_SERVICE_UNAVAILABLE",
-    APP_CHECK_FAILURES.SECURITY_SERVICE_UNAVAILABLE.message,
-  );
+function securityUnavailableError(): Error {
+  return createPublicHttpError("SECURITY_SERVICE_UNAVAILABLE");
 }
 
-function validateQuotaDecision(decision: QuotaDecision): QuotaDecision {
+function normalizeQuotaDecision(decision: unknown): QuotaDecision {
   if (typeof decision !== "object" || decision === null) {
     throw securityUnavailableError();
   }
-  if (decision.allowed === true) {
+
+  try {
+    const record = decision as Record<PropertyKey, unknown>;
+    const allowed = record.allowed;
+    if (allowed === true) {
+      const crossedThreshold = record.crossedThreshold;
+      if (
+        crossedThreshold !== undefined &&
+        crossedThreshold !== 70 &&
+        crossedThreshold !== 90 &&
+        crossedThreshold !== 100
+      ) {
+        throw securityUnavailableError();
+      }
+      return Object.freeze(
+        crossedThreshold === undefined
+          ? { allowed: true as const }
+          : {
+              allowed: true as const,
+              crossedThreshold,
+            },
+      );
+    }
+
+    if (allowed !== false) {
+      throw securityUnavailableError();
+    }
+
+    const code = record.code;
+    const retryAfterSeconds = record.retryAfterSeconds;
     if (
-      decision.crossedThreshold !== undefined &&
-      decision.crossedThreshold !== 70 &&
-      decision.crossedThreshold !== 90 &&
-      decision.crossedThreshold !== 100
+      code !== "INSTALL_RATE_LIMITED" &&
+      code !== "INSTALL_DAILY_LIMITED" &&
+      code !== "SERVICE_DAILY_LIMITED"
     ) {
       throw securityUnavailableError();
     }
-    return decision;
+    const maximumRetrySeconds =
+      code === "INSTALL_RATE_LIMITED" ? 60 : 86_400;
+    if (
+      typeof retryAfterSeconds !== "number" ||
+      !Number.isSafeInteger(retryAfterSeconds) ||
+      retryAfterSeconds < 1 ||
+      retryAfterSeconds > maximumRetrySeconds
+    ) {
+      throw securityUnavailableError();
+    }
+    return Object.freeze({
+      allowed: false as const,
+      code,
+      retryAfterSeconds,
+    });
+  } catch {
+    throw securityUnavailableError();
   }
-  if (
-    decision.allowed === false &&
-    (decision.code === "INSTALL_RATE_LIMITED" ||
-      decision.code === "INSTALL_DAILY_LIMITED" ||
-      decision.code === "SERVICE_DAILY_LIMITED") &&
-    Number.isSafeInteger(decision.retryAfterSeconds) &&
-    decision.retryAfterSeconds > 0
-  ) {
-    return decision;
-  }
-  throw securityUnavailableError();
 }
 
 function buildMockExtraction() {
@@ -408,11 +446,15 @@ function buildMockExtraction() {
 export function createApp(options: CreateAppOptions = {}) {
   const app = express();
   const env = options.env ?? process.env;
-  const logger = options.logger ?? defaultLogger;
+  const logger = createSafeLogger(options.logger ?? defaultLogger);
   const isProduction = env.NODE_ENV === "production";
   const mockModeEnabled = env.MOCK_MODE === "true";
-  const legacyUpload = buildUploadMiddleware(400);
-  const v2Upload = buildUploadMiddleware(415);
+  const legacyUpload = buildUploadMiddleware(
+    "LEGACY_UNSUPPORTED_IMAGE_TYPE",
+  );
+  const v2Upload = buildUploadMiddleware(
+    "V2_UNSUPPORTED_IMAGE_TYPE",
+  );
   const security = options.security;
   const extractionService =
     options.extractionService ??
@@ -454,13 +496,7 @@ export function createApp(options: CreateAppOptions = {}) {
 
   const requireSecurity: RequestHandler = (_req, _res, next) => {
     if (security === undefined) {
-      next(
-        new PublicHttpError(
-          503,
-          "SECURITY_SERVICE_UNAVAILABLE",
-          APP_CHECK_FAILURES.SECURITY_SERVICE_UNAVAILABLE.message,
-        ),
-      );
+      next(createPublicHttpError("SECURITY_SERVICE_UNAVAILABLE"));
       return;
     }
     next();
@@ -486,13 +522,7 @@ export function createApp(options: CreateAppOptions = {}) {
       typeof installationId !== "string" ||
       installationId.trim().length === 0
     ) {
-      next(
-        new PublicHttpError(
-          400,
-          "INSTALLATION_ID_INVALID",
-          "インストール識別子が無効です。",
-        ),
-      );
+      next(createPublicHttpError("INSTALLATION_ID_INVALID"));
       return;
     }
 
@@ -511,11 +541,7 @@ export function createApp(options: CreateAppOptions = {}) {
       | { kind: "v2"; installationHash: string },
   ): Promise<QuotaDecision> {
     if (security === undefined) {
-      throw new PublicHttpError(
-        503,
-        "SECURITY_SERVICE_UNAVAILABLE",
-        APP_CHECK_FAILURES.SECURITY_SERVICE_UNAVAILABLE.message,
-      );
+      throw createPublicHttpError("SECURITY_SERVICE_UNAVAILABLE");
     }
 
     try {
@@ -523,7 +549,7 @@ export function createApp(options: CreateAppOptions = {}) {
         scope,
         security.now(),
       );
-      return validateQuotaDecision(decision);
+      return normalizeQuotaDecision(decision);
     } catch {
       throw securityUnavailableError();
     }
@@ -544,9 +570,13 @@ export function createApp(options: CreateAppOptions = {}) {
   async function handleExtraction(
     res: Response,
     image: ImageInput,
-    routeCategory: "legacy" | "v2",
   ): Promise<void> {
-    const requestId = res.locals.requestId as string;
+    const context = extractionRequestContext(res);
+    if (context === undefined) {
+      throw createPublicHttpError("INTERNAL_ERROR");
+    }
+    const requestId = context.requestId;
+    const routeCategory = context.routeCategory;
     const startedAt = Date.now();
 
     try {
@@ -579,11 +609,7 @@ export function createApp(options: CreateAppOptions = {}) {
       }
 
       if (extractionService === undefined) {
-        throw new PublicHttpError(
-          503,
-          "AI_SERVICE_UNAVAILABLE",
-          "AI解析サービスを一時的に利用できません。しばらくしてからもう一度お試しください。",
-        );
+        throw createPublicHttpError("AI_SERVICE_UNAVAILABLE");
       }
 
       const validated = await extractionService.extract(image);
@@ -601,9 +627,8 @@ export function createApp(options: CreateAppOptions = {}) {
       res.json(validated);
     } catch (error: unknown) {
       const publicError =
-        isPublicHttpError(error)
-          ? error
-          : new PublicHttpError(502, "AI_EXTRACTION_FAILED", "画像の解析中にエラーが発生しました。しばらくしてからもう一度お試しください。");
+        normalizePublicHttpError(error) ??
+        publicErrorSnapshot("AI_EXTRACTION_FAILED");
 
       logger.error("extract_failed", {
         request_id: requestId,
@@ -613,13 +638,13 @@ export function createApp(options: CreateAppOptions = {}) {
         ...safeErrorMetadata(error),
       });
 
-      sendJsonError(res, publicError.statusCode, publicError.code, publicError.publicMessage);
+      sendPublicError(res, publicError);
     }
   }
 
   app.post(
     "/api/v2/extract",
-    startExtractionRequest,
+    startExtractionRequest("v2"),
     requireSecurity,
     verifyAppCheck,
     hashInstallationHeader,
@@ -637,14 +662,18 @@ export function createApp(options: CreateAppOptions = {}) {
         );
         throw quotaHttpError(decision.code);
       }
-      logThreshold(decision, "v2");
-      await handleExtraction(res, image, "v2");
+      const context = extractionRequestContext(res);
+      if (context === undefined) {
+        throw createPublicHttpError("INTERNAL_ERROR");
+      }
+      logThreshold(decision, context.routeCategory);
+      await handleExtraction(res, image);
     }),
   );
 
   app.post(
     "/api/extract",
-    startExtractionRequest,
+    startExtractionRequest("legacy"),
     requireSecurity,
     legacyUpload.single("image"),
     asyncHandler(async (req, res) => {
@@ -657,33 +686,33 @@ export function createApp(options: CreateAppOptions = {}) {
         );
         throw quotaHttpError(decision.code);
       }
-      logThreshold(decision, "legacy");
-      await handleExtraction(res, image, "legacy");
+      const context = extractionRequestContext(res);
+      if (context === undefined) {
+        throw createPublicHttpError("INTERNAL_ERROR");
+      }
+      logThreshold(decision, context.routeCategory);
+      await handleExtraction(res, image);
     }),
   );
 
   const errorHandler: ErrorRequestHandler = (err, req: Request, res: Response, _next) => {
-    const isExtractionRoute =
-      req.path === "/api/extract" ||
-      req.path === "/api/v2/extract";
-    const routeCategory =
-      req.path === "/api/v2/extract" ? "v2" : "legacy";
-    const requestId =
-      typeof res.locals.requestId === "string"
-        ? res.locals.requestId
-        : crypto.randomUUID();
+    const context = extractionRequestContext(res);
+    const isExtractionRoute = context !== undefined;
+    const routeCategory = context?.routeCategory;
+    const requestId = context?.requestId ?? crypto.randomUUID();
     if (isExtractionRoute) {
       setExtractNoStoreHeaders(res);
     }
 
-    if (isPublicHttpError(err)) {
+    const publicError = normalizePublicHttpError(err);
+    if (publicError !== undefined) {
       logger.warn("extract_rejected", {
         request_id: requestId,
         route_category: routeCategory,
-        status: err.statusCode,
-        code: err.code,
+        status: publicError.statusCode,
+        code: publicError.code,
       });
-      sendJsonError(res, err.statusCode, err.code, err.publicMessage);
+      sendPublicError(res, publicError);
       return;
     }
 
@@ -692,30 +721,30 @@ export function createApp(options: CreateAppOptions = {}) {
         ? readProperty(err as Record<PropertyKey, unknown>, "code")
         : undefined;
     if (errorCode === "LIMIT_FILE_SIZE" && isExtractionRoute) {
-      const status = req.path === "/api/v2/extract" ? 413 : 400;
+      const tooLargeError = publicErrorSnapshot(
+        routeCategory === "v2"
+          ? "V2_IMAGE_TOO_LARGE"
+          : "LEGACY_IMAGE_TOO_LARGE",
+      );
       logger.warn("extract_rejected", {
         request_id: requestId,
         route_category: routeCategory,
-        status,
-        code: "IMAGE_TOO_LARGE",
+        status: tooLargeError.statusCode,
+        code: tooLargeError.code,
       });
-      sendJsonError(
-        res,
-        status,
-        "IMAGE_TOO_LARGE",
-        "画像サイズが大きすぎます。10MB以下の画像をアップロードしてください。",
-      );
+      sendPublicError(res, tooLargeError);
       return;
     }
 
+    const internalError = publicErrorSnapshot("INTERNAL_ERROR");
     logger.error("request_failed", {
       request_id: requestId,
       route: req.path,
-      status: 500,
+      status: internalError.statusCode,
       ...safeErrorMetadata(err),
     });
 
-    sendJsonError(res, 500, "INTERNAL_ERROR", "サーバーエラーが発生しました。");
+    sendPublicError(res, internalError);
   };
 
   app.use(errorHandler);
@@ -725,6 +754,6 @@ export function createApp(options: CreateAppOptions = {}) {
 
 if (!process.env.VITEST && process.env.NODE_ENV !== "test") {
   createApp().listen(PORT, "0.0.0.0", () => {
-    defaultLogger.info("server_started", { port: PORT });
+    safeDefaultLogger.info("server_started", { port: PORT });
   });
 }

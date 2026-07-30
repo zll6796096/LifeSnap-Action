@@ -3,7 +3,7 @@ import {
   GEMINI_EXTRACTION_PROMPT,
   validateGeminiExtraction,
 } from "../shared/gemini-schema";
-import { PublicHttpError } from "../shared/http-error";
+import { createPublicHttpError } from "../shared/http-error";
 
 export type ImageInput = {
   buffer: Buffer;
@@ -52,11 +52,7 @@ export function createGeminiExtractionService(options: {
       });
 
       if (!response.text) {
-        throw new PublicHttpError(
-          502,
-          "AI_EMPTY_RESPONSE",
-          "AI解析サービスから有効な応答を取得できませんでした。",
-        );
+        throw createPublicHttpError("AI_EMPTY_RESPONSE");
       }
 
       return validateGeminiExtraction(JSON.parse(response.text));

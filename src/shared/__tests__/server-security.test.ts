@@ -11,6 +11,7 @@ import {
   GEMINI_EXTRACTION_PROMPT,
   validateGeminiExtraction,
 } from "../gemini-schema";
+import { createPublicHttpError } from "../http-error";
 
 const VALID_INSTALLATION_ID = "e8b18b25-64a6-4af9-b31f-9b0b6d3c3d4e";
 const INSTALLATION_HASH = "a".repeat(64);
@@ -152,24 +153,26 @@ describe("protected extraction routes", () => {
   });
 
   it.each([
-    "INSTALL_RATE_LIMITED",
-    "INSTALL_DAILY_LIMITED",
-    "SERVICE_DAILY_LIMITED",
+    ["INSTALL_RATE_LIMITED", 59],
+    ["INSTALL_DAILY_LIMITED", 73],
+    ["SERVICE_DAILY_LIMITED", 73],
   ] as const)(
     "returns a stable 429 with Retry-After for %s",
-    async (code) => {
+    async (code, retryAfterSeconds) => {
       const harness = securityHarness({
         quotaDecision: {
           allowed: false,
           code,
-          retryAfterSeconds: 73,
+          retryAfterSeconds,
         },
       });
 
       const response = await harness.postValidV2();
 
       await expectStablePublicError(response, 429, code);
-      expect(response.headers.get("retry-after")).toBe("73");
+      expect(response.headers.get("retry-after")).toBe(
+        String(retryAfterSeconds),
+      );
       expect(harness.extraction.extract).not.toHaveBeenCalled();
     },
   );
@@ -212,6 +215,148 @@ describe("protected extraction routes", () => {
     );
     expect(harness.extraction.extract).not.toHaveBeenCalled();
   });
+
+  it("snapshots a denied quota decision before a proxy can flip it to allowed", async () => {
+    let allowedReads = 0;
+    const decision = new Proxy(
+      {
+        code: "INSTALL_RATE_LIMITED",
+        retryAfterSeconds: 11,
+      },
+      {
+        get(target, property, receiver) {
+          if (property === "allowed") {
+            allowedReads += 1;
+            return allowedReads <= 2 ? false : true;
+          }
+          return Reflect.get(target, property, receiver);
+        },
+      },
+    ) as QuotaDecision;
+    const harness = securityHarness({ quotaDecision: decision });
+
+    const response = await harness.postValidV2();
+
+    await expectStablePublicError(
+      response,
+      429,
+      "INSTALL_RATE_LIMITED",
+    );
+    expect(response.headers.get("retry-after")).toBe("11");
+    expect(allowedReads).toBe(1);
+    expect(harness.extraction.extract).not.toHaveBeenCalled();
+  });
+
+  it("snapshots an allowed quota decision without rereading a throwing proxy", async () => {
+    let allowedReads = 0;
+    const decision = new Proxy(
+      { crossedThreshold: undefined },
+      {
+        get(target, property, receiver) {
+          if (property === "allowed") {
+            allowedReads += 1;
+            if (allowedReads > 1) {
+              throw new Error("SECRET_ALLOWED_REREAD");
+            }
+            return true;
+          }
+          return Reflect.get(target, property, receiver);
+        },
+      },
+    ) as QuotaDecision;
+    const harness = securityHarness({ quotaDecision: decision });
+
+    const response = await harness.postValidV2();
+
+    expect(response.status).toBe(200);
+    expect(allowedReads).toBe(1);
+    expect(harness.extraction.extract).toHaveBeenCalledTimes(1);
+  });
+
+  it("fails closed when an allowed quota threshold getter is hostile", async () => {
+    const decision = new Proxy(
+      { allowed: true },
+      {
+        get(target, property, receiver) {
+          if (property === "crossedThreshold") {
+            throw new Error("SECRET_THRESHOLD_GETTER");
+          }
+          return Reflect.get(target, property, receiver);
+        },
+      },
+    ) as QuotaDecision;
+    const harness = securityHarness({ quotaDecision: decision });
+
+    const response = await harness.postValidV2();
+
+    await expectStablePublicError(
+      response,
+      503,
+      "SECURITY_SERVICE_UNAVAILABLE",
+    );
+    expect(harness.extraction.extract).not.toHaveBeenCalled();
+  });
+
+  it("snapshots Retry-After before a proxy can mutate it", async () => {
+    let retryReads = 0;
+    const decision = new Proxy(
+      {
+        allowed: false,
+        code: "INSTALL_RATE_LIMITED",
+      },
+      {
+        get(target, property, receiver) {
+          if (property === "retryAfterSeconds") {
+            retryReads += 1;
+            if (retryReads > 1) {
+              throw new Error("SECRET_RETRY_REREAD");
+            }
+            return 17;
+          }
+          return Reflect.get(target, property, receiver);
+        },
+      },
+    ) as QuotaDecision;
+    const harness = securityHarness({ quotaDecision: decision });
+
+    const response = await harness.postValidV2();
+
+    await expectStablePublicError(
+      response,
+      429,
+      "INSTALL_RATE_LIMITED",
+    );
+    expect(response.headers.get("retry-after")).toBe("17");
+    expect(retryReads).toBe(1);
+    expect(harness.extraction.extract).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["INSTALL_RATE_LIMITED", 61],
+    ["INSTALL_DAILY_LIMITED", 86_401],
+    ["SERVICE_DAILY_LIMITED", 86_401],
+  ] as const)(
+    "fails closed for out-of-bounds %s Retry-After",
+    async (code, retryAfterSeconds) => {
+      const harness = securityHarness({
+        quotaDecision: {
+          allowed: false,
+          code,
+          retryAfterSeconds,
+        },
+      });
+
+      const response = await harness.postValidV2();
+
+      await expectStablePublicError(
+        response,
+        503,
+        "SECURITY_SERVICE_UNAVAILABLE",
+      );
+      expect(response.headers.get("retry-after")).toBeNull();
+      expect(harness.extraction.extract).not.toHaveBeenCalled();
+    },
+  );
 
   it("establishes one request identity before App Check and reuses it for rejection logs", async () => {
     const requestId = "00000000-0000-4000-8000-000000000005";
@@ -306,6 +451,61 @@ describe("protected extraction routes", () => {
         )
         .map((entry) => entry.metadata.request_id),
     ).toEqual([requestId, requestId]);
+  });
+
+  it("classifies trailing-slash v2 App Check rejection from route locals", async () => {
+    const { logger, entries } = captureLogger();
+    const harness = securityHarness({
+      logger,
+      tokenOutcome: "invalid",
+    });
+
+    const response = await requestOnce(
+      harness.app,
+      "/api/v2/extract/",
+      {
+        token: "invalid",
+        installationId: VALID_INSTALLATION_ID,
+        body: imageForm("image/png", 16),
+      },
+    );
+
+    await expectStablePublicError(response, 401, "APP_CHECK_INVALID");
+    expect(
+      entries.filter((entry) => entry.event === "extract_rejected"),
+    ).toEqual([
+      expect.objectContaining({
+        metadata: expect.objectContaining({
+          route_category: "v2",
+          status: 401,
+          code: "APP_CHECK_INVALID",
+        }),
+      }),
+    ]);
+  });
+
+  it("keeps trailing-slash upload limits route-specific", async () => {
+    const harness = securityHarness();
+
+    const v2 = await requestOnce(
+      harness.app,
+      "/api/v2/extract/",
+      {
+        token: "valid",
+        installationId: VALID_INSTALLATION_ID,
+        body: imageForm("image/png", MAX_IMAGE_BYTES + 1),
+      },
+    );
+    await expectStablePublicError(v2, 413, "IMAGE_TOO_LARGE");
+
+    const legacy = await requestOnce(
+      harness.app,
+      "/api/extract/",
+      {
+        body: imageForm("image/png", MAX_IMAGE_BYTES + 1),
+      },
+    );
+    await expectStablePublicError(legacy, 400, "IMAGE_TOO_LARGE");
   });
 
   it("returns the same validated success schema from v1 and v2", async () => {
@@ -479,6 +679,157 @@ describe("protected extraction routes", () => {
 
     await expectStablePublicError(response, 502, "AI_EXTRACTION_FAILED");
     expect(JSON.stringify(entries)).not.toContain(secret);
+  });
+
+  it("does not trust mutated fields on a genuine public error", async () => {
+    const secret = "GENUINE_PUBLIC_ERROR_SECRET";
+    const error = createPublicHttpError("AI_EMPTY_RESPONSE");
+    expect(Reflect.set(error, "statusCode", 599)).toBe(false);
+    expect(Reflect.set(error, "code", secret)).toBe(false);
+    expect(Reflect.set(error, "publicMessage", secret)).toBe(false);
+    const { logger, entries } = captureLogger();
+    const harness = securityHarness({
+      logger,
+      extractionError: error,
+    });
+
+    const response = await harness.postValidV2();
+
+    await expectStablePublicError(response, 502, "AI_EMPTY_RESPONSE");
+    expect(JSON.stringify(entries)).not.toContain(secret);
+  });
+
+  it("rejects a stateful public-error proxy without leaking its fields", async () => {
+    const secret = "STATEFUL_PUBLIC_ERROR_SECRET";
+    const genuine = createPublicHttpError("AI_EMPTY_RESPONSE");
+    const error = new Proxy(genuine, {
+      get(target, property, receiver) {
+        if (
+          property === "statusCode" ||
+          property === "code" ||
+          property === "publicMessage"
+        ) {
+          return property === "statusCode" ? 599 : secret;
+        }
+        return Reflect.get(target, property, receiver);
+      },
+    });
+    const { logger, entries } = captureLogger();
+    const harness = securityHarness({
+      logger,
+      extractionError: error,
+    });
+
+    const response = await harness.postValidV2();
+
+    await expectStablePublicError(
+      response,
+      502,
+      "AI_EXTRACTION_FAILED",
+    );
+    expect(JSON.stringify(entries)).not.toContain(secret);
+  });
+
+  it("rejects a revoked public-error proxy without changing the stable response", async () => {
+    const genuine = createPublicHttpError("AI_EMPTY_RESPONSE");
+    const revocable = Proxy.revocable(genuine, {});
+    revocable.revoke();
+    const harness = securityHarness({
+      extractionError: revocable.proxy,
+    });
+
+    const response = await harness.postValidV2();
+
+    await expectStablePublicError(
+      response,
+      502,
+      "AI_EXTRACTION_FAILED",
+    );
+  });
+
+  it("ignores a throwing logger during successful extraction", async () => {
+    const harness = securityHarness({
+      logger: throwingLogger("SUCCESS_LOGGER_SECRET"),
+    });
+
+    const response = await harness.postValidV2();
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toContain(
+      "application/json",
+    );
+    expect(await response.json()).toEqual(validExtractionFixture());
+  });
+
+  it("ignores a throwing logger during App Check rejection", async () => {
+    const secret = "APP_CHECK_LOGGER_SECRET";
+    const harness = securityHarness({
+      logger: throwingLogger(secret),
+      tokenOutcome: "invalid",
+    });
+
+    const response = await harness.postV2({
+      token: "invalid",
+      installationId: VALID_INSTALLATION_ID,
+      image: imageForm("image/png", 16),
+    });
+
+    const body = await expectStablePublicError(
+      response,
+      401,
+      "APP_CHECK_INVALID",
+    );
+    expect(JSON.stringify(body)).not.toContain(secret);
+    expect(harness.extraction.extract).not.toHaveBeenCalled();
+  });
+
+  it("ignores a throwing logger at a quota threshold", async () => {
+    const harness = securityHarness({
+      logger: invocationThrowingLogger("THRESHOLD_LOGGER_SECRET"),
+      quotaDecision: { allowed: true, crossedThreshold: 90 },
+    });
+
+    const response = await harness.postValidV2();
+
+    expect(response.status).toBe(200);
+    expect(harness.extraction.extract).toHaveBeenCalledTimes(1);
+  });
+
+  it("ignores a throwing logger during extraction failure", async () => {
+    const secret = "FAILURE_LOGGER_SECRET";
+    const harness = securityHarness({
+      logger: invocationThrowingLogger(secret),
+      extractionError: new Error("UPSTREAM_SECRET"),
+    });
+
+    const response = await harness.postValidV2();
+
+    const body = await expectStablePublicError(
+      response,
+      502,
+      "AI_EXTRACTION_FAILED",
+    );
+    expect(JSON.stringify(body)).not.toContain(secret);
+  });
+
+  it("ignores a revoked logger proxy", async () => {
+    const revocable = Proxy.revocable(
+      {
+        info() {},
+        warn() {},
+        error() {},
+      },
+      {},
+    );
+    revocable.revoke();
+    const harness = securityHarness({
+      logger: revocable.proxy as PrivacySafeLogger,
+    });
+
+    const response = await harness.postValidV2();
+
+    expect(response.status).toBe(200);
+    expect(harness.extraction.extract).toHaveBeenCalledTimes(1);
   });
 
   it("fails closed when extraction security dependencies are absent", async () => {
@@ -737,4 +1088,25 @@ function captureLogger() {
       entries.push({ level: "error", event, metadata }),
   };
   return { logger, entries };
+}
+
+function throwingLogger(secret: string): PrivacySafeLogger {
+  return new Proxy({} as PrivacySafeLogger, {
+    get() {
+      throw new Error(secret);
+    },
+  });
+}
+
+function invocationThrowingLogger(
+  secret: string,
+): PrivacySafeLogger {
+  const fail = () => {
+    throw new Error(secret);
+  };
+  return {
+    info: fail,
+    warn: fail,
+    error: fail,
+  };
 }
