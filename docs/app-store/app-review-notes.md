@@ -24,9 +24,11 @@
 - Privacy policy: `https://lifesnap-action-sxielk4wua-an.a.run.app/privacy`
 - The Gemini API key is held only by the backend and is not included in the iOS app.
 - Production deployment uses Secret Manager injection for `GEMINI_API_KEY`.
-- Current Paid Plan verification for this release is `PENDING` and blocks App Store submission. Historical Paid Service verification is not accepted as current evidence.
-- Before submission, verify that the production Gemini API key belongs to an active-billing Google Cloud project and record fresh evidence that Gemini is operating as a Paid Service.
-- Until that fresh evidence is recorded, there must be no candidate tag, no candidate invocation or extraction smoke, no traffic change, and no App Store action.
+- Current Gemini Paid Plan verification is `VERIFIED` as of 2026-07-31 JST: AI Studio displayed `Paid 1`; the LifeSnap key belongs to project `zhang23-23` and displayed `Tier 1` / prepaid; the masked AI Studio key identity matched Secret Manager `lifesnap-gemini-api-key:latest`.
+- The Cloud Billing API was not enabled or called, and no billing or payment setting was changed.
+- Production revision `lifesnap-action-00039-rwn` runs Cloud Build `14c3eff7-a07c-479b-81c5-453b0d5e7256` source `8e1b6f5eb679c95a420c7307f5bedf4fe5a5a50d` at image digest `sha256:8bb5f60e05db572fa9232c1bec894620567025ee61b1d19f44cd3fe3ce338a26`.
+- The zero-traffic candidate and unchanged production URL both passed strict `/health`, current `/privacy`, and synthetic `/api/extract` smoke checks. The extraction response was schema-complete with `Cache-Control: no-store`; no document contents or raw AI output were recorded.
+- Production traffic is one untagged `100%` target to `lifesnap-action-00039-rwn`; rollback revision `lifesnap-action-00037-89l` is at `0%`.
 - `MOCK_MODE` is development-only and forbidden in production.
 
 ## AI Upload Consent

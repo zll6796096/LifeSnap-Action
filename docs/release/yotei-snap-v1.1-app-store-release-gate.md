@@ -26,7 +26,9 @@
 | Release contract | PASS | `npm run validate:ios-release` exited 0; identity, semantic launch screen, version/build, and the exact 17 opaque AppIcon descriptors passed |
 | iOS tests | PASS | 12/12 passed, 0 failed, 0 skipped on `LifeSnap iPhone 15` (`56C4DC85-0732-49CF-8389-10D16B2BBDC3`), iOS 26.5 (23F77) |
 | Simulator visual acceptance | PASS | Exact normally signed Release bundle verified on clean light and dark iPhone 15 simulators; five evidence paths are listed below |
-| Backend regression | PASS | `npm test`: 3 files and 29/29 tests passed; `npm run lint` and `npm run build` exited 0 |
+| Backend regression | PASS | `npm test`: 3 files and 30/30 tests passed; `npm run lint` and `npm run build` exited 0 |
+| Gemini Paid Plan | VERIFIED | AI Studio displayed `Paid 1`; the LifeSnap key in project `zhang23-23` displayed `Tier 1` / prepaid; masked identity comparison with Secret Manager passed |
+| Production backend | PASS | Revision `lifesnap-action-00039-rwn` is the sole untagged `100%` target; candidate and live strict smoke checks passed |
 | Signing identity | PENDING | Distribution identity not checked; local simulator ad-hoc signature verification is not App Store signing evidence |
 | Archive | PENDING | Not run |
 | Export validation | PENDING | Not run |
@@ -97,13 +99,23 @@ npm run lint
 npm run build
 ```
 
-Result: `PASS`. Vitest passed 3 files and 29/29 tests. TypeScript lint/type-check and the esbuild production bundle both exited 0.
+Result: `PASS`. Vitest passed 3 files and 30/30 tests. TypeScript lint/type-check and the esbuild production bundle both exited 0.
 
-## Remaining Task 5B Blockers
+### Current Gemini Paid Plan and production backend
 
-- The live external privacy-copy state has not been re-verified or changed in this task.
-- The current App Store Paid Service state remains unresolved.
-- These external blockers do not invalidate the observed local Task 5 evidence and are not authorization for archive, upload, metadata mutation, or App Review submission.
+- Gemini Paid Plan state was freshly verified on 2026-07-31 JST: AI Studio displayed `Paid 1`; the LifeSnap key belongs to project `zhang23-23` and displayed `Tier 1` / prepaid; the masked AI Studio key identity matched Secret Manager `lifesnap-gemini-api-key:latest`.
+- The Cloud Billing API was not enabled or called. No billing or payment setting was changed.
+- The immutable release image was copied without rebuild or source deploy into revision `lifesnap-action-00039-rwn`: Cloud Build `14c3eff7-a07c-479b-81c5-453b0d5e7256`, source `8e1b6f5eb679c95a420c7307f5bedf4fe5a5a50d`, digest `sha256:8bb5f60e05db572fa9232c1bec894620567025ee61b1d19f44cd3fe3ce338a26`.
+- At zero traffic, the tagged candidate passed exact digest, provenance, runtime service account, `NODE_ENV=production`, `MOCK_MODE=false`, and Secret Manager reference checks. `/health`, current `/privacy`, and synthetic `/api/extract` smoke checks passed; extraction returned HTTP 200, a schema-complete response, and `Cache-Control: no-store`.
+- The exact candidate was promoted with a resource-version-conditional service replacement. The unchanged production URL passed the same strict smoke checks. Final traffic is one untagged `100%` target to `lifesnap-action-00039-rwn`; `lifesnap-action-00037-89l` is at `0%`; no candidate tag remains.
+- No uploaded document contents, OCR text, raw Gemini output, credentials, key suffix, account identifier, or payment data were recorded.
+
+## Remaining Apple Release Gates
+
+- Distribution signing identity remains unverified.
+- Archive, export validation, Build 4 upload, App Store metadata save, and App Review submission have not been performed.
+- App Review approval and storefront availability remain separate future states.
+- The verified backend and Paid Plan state are not authorization for any remaining Apple action.
 
 ## External-State Rule
 
@@ -120,3 +132,8 @@ Append timestamped, sanitized evidence here during execution. Do not include cre
   - The candidate inherited both stale labels `source-commit=54af5385680d7e835f81761955e44188d822ef87` and `release-build=acf54260-74d7-401f-b17a-d69a9c48a74e`; neither label is accepted as provenance for this candidate.
   - Candidate conditions are `Ready=True, reason=Retired`; `Active=False, reason=Retired`; and `ResourcesAvailable=Unknown, reason=Retired`. `ContainerReady=True` reports only that container image import completed; there is no `ContainerHealthy` condition. The service `latestReadyRevisionName` remains `lifesnap-action-00037-89l`. This proves control-plane revision creation and retirement only, not candidate startup health, serveability, or product acceptance.
   - No candidate URL or route was invoked during deployment or this review; zero candidate requests were issued by these tasks. Candidate invocation, smoke, and promotion remain blocked until fresh Gemini Paid Plan verification, and no App Store action was taken.
+- `2026-07-31T00:23:41+0900` (`2026-07-30T15:23:41Z`) — Fresh Gemini Paid Plan and copy-only Cloud Run cutover evidence:
+  - AI Studio displayed `Paid 1`; the LifeSnap key in project `zhang23-23` displayed `Tier 1` / prepaid; masked identity comparison with Secret Manager `lifesnap-gemini-api-key:latest` passed. The Cloud Billing API was not enabled or called, and no billing or payment setting was changed.
+  - A resource-version-conditional service replacement created `lifesnap-action-00039-rwn` at zero traffic from the same immutable digest `sha256:8bb5f60e05db572fa9232c1bec894620567025ee61b1d19f44cd3fe3ce338a26`, Cloud Build `14c3eff7-a07c-479b-81c5-453b0d5e7256`, and source `8e1b6f5eb679c95a420c7307f5bedf4fe5a5a50d`. No rebuild or source deploy occurred.
+  - Candidate runtime and strict smoke checks passed: exact non-stale provenance, preserved runtime service account/config/resources, `NODE_ENV=production`, `MOCK_MODE=false`, Secret Manager reference unchanged, `/health` HTTP 200 with status `ok`, current `/privacy` HTTP 200, and synthetic `/api/extract` HTTP 200 with a schema-complete response and `Cache-Control: no-store`. No response or document contents were recorded.
+  - The exact candidate was conditionally promoted. The unchanged production URL passed the same strict smoke checks. Final control-plane state is one untagged `100%` target to `lifesnap-action-00039-rwn`, `lifesnap-action-00037-89l` at `0%`, latest ready revision `lifesnap-action-00039-rwn`, no traffic tags, and exact service/template/revision provenance. Rollback was not needed. No App Store action was taken.
