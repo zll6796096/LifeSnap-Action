@@ -73,8 +73,12 @@ fi
 
 display_name=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleDisplayName' "$info_plist" 2>/dev/null || true)
 development_region=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleDevelopmentRegion' "$info_plist" 2>/dev/null || true)
+short_version=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$info_plist" 2>/dev/null || true)
+bundle_version=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$info_plist" 2>/dev/null || true)
 assert_equal "$display_name" 'よていスナップ' 'CFBundleDisplayName'
 assert_equal "$development_region" 'ja' 'CFBundleDevelopmentRegion'
+assert_equal "$short_version" '$(MARKETING_VERSION)' 'CFBundleShortVersionString'
+assert_equal "$bundle_version" '$(CURRENT_PROJECT_VERSION)' 'CFBundleVersion'
 
 assert_contains "$launch_screen" 'text="よていスナップ"' 'LaunchScreen title'
 assert_contains "$calendar_service" '— よていスナップで作成' 'Calendar attribution'
@@ -129,17 +133,40 @@ import fs from 'node:fs';
 
 const contentsPath = process.argv[2];
 const contents = JSON.parse(fs.readFileSync(contentsPath, 'utf8'));
-const filenames = contents.images.map((image) => image.filename);
-const uniqueFilenames = new Set(filenames);
+const expectedDescriptors = new Set([
+  'AppIcon-iphone-notification-2x.png|iphone|20x20|2x',
+  'AppIcon-iphone-notification-3x.png|iphone|20x20|3x',
+  'AppIcon-iphone-settings-2x.png|iphone|29x29|2x',
+  'AppIcon-iphone-settings-3x.png|iphone|29x29|3x',
+  'AppIcon-iphone-spotlight-2x.png|iphone|40x40|2x',
+  'AppIcon-iphone-spotlight-3x.png|iphone|40x40|3x',
+  'AppIcon-iphone-app-2x.png|iphone|60x60|2x',
+  'AppIcon-iphone-app-3x.png|iphone|60x60|3x',
+  'AppIcon-ipad-notification-1x.png|ipad|20x20|1x',
+  'AppIcon-ipad-notification-2x.png|ipad|20x20|2x',
+  'AppIcon-ipad-settings-1x.png|ipad|29x29|1x',
+  'AppIcon-ipad-settings-2x.png|ipad|29x29|2x',
+  'AppIcon-ipad-spotlight-1x.png|ipad|40x40|1x',
+  'AppIcon-ipad-spotlight-2x.png|ipad|40x40|2x',
+  'AppIcon-ipad-app-2x.png|ipad|76x76|2x',
+  'AppIcon-ipad-pro-2x.png|ipad|83.5x83.5|2x',
+  'AppIcon-marketing.png|ios-marketing|1024x1024|1x',
+]);
+const actualDescriptors = contents.images.map(({ filename, idiom, size, scale }) => `${filename}|${idiom}|${size}|${scale}`);
+const uniqueDescriptors = new Set(actualDescriptors);
 
-if (filenames.length !== 17 || filenames.some((filename) => typeof filename !== 'string' || filename.length === 0) || uniqueFilenames.size !== 17) {
-  throw new Error('Contents.json must contain exactly 17 unique nonempty filenames');
+if (
+  actualDescriptors.length !== expectedDescriptors.size ||
+  uniqueDescriptors.size !== expectedDescriptors.size ||
+  [...uniqueDescriptors].some((descriptor) => !expectedDescriptors.has(descriptor))
+) {
+  throw new Error('Contents.json must contain the exact 17 expected icon descriptors');
 }
 NODE
 then
-  pass 'Contents.json has 17 unique nonempty filenames'
+  pass 'Contents.json has the exact 17 expected icon descriptors'
 else
-  fail 'Contents.json has 17 unique nonempty filenames'
+  fail 'Contents.json has the exact 17 expected icon descriptors'
 fi
 
 if [ "$failure_count" -eq 0 ]; then
