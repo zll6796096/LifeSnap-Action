@@ -44,10 +44,12 @@ describe("installation identifier", () => {
     "123e4567-e89b-32d3-8456-426614174000",
     "123e4567-e89b-32d3-b456-426614174000",
     "123e4567-e89b-42d3-8456-426614174000",
+    "123e4567-e89b-42d3-9456-426614174000",
+    "123e4567-e89b-42d3-a456-426614174000",
     "123e4567-e89b-42d3-b456-426614174000",
     "123e4567-e89b-52d3-8456-426614174000",
     "123e4567-e89b-52d3-b456-426614174000",
-  ])("accepts RFC UUID versions 1 through 5: %s", (uuid) => {
+  ])("accepts RFC UUID versions 1 through 5 with variants 8 through b: %s", (uuid) => {
     expect(canonicalizeInstallationId(uuid)).toBe(uuid);
   });
 
@@ -55,6 +57,7 @@ describe("installation identifier", () => {
     "123e4567-e89b-02d3-8456-426614174000",
     "123e4567-e89b-62d3-8456-426614174000",
     "123e4567-e89b-42d3-7456-426614174000",
+    "123e4567-e89b-42d3-c456-426614174000",
   ])("rejects an unsupported UUID version or variant: %s", (uuid) => {
     expect(() => canonicalizeInstallationId(uuid)).toThrow(
       "INSTALLATION_ID_INVALID",
