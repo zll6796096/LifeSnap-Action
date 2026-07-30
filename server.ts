@@ -21,6 +21,7 @@ import type {
   QuotaStore,
 } from "./src/quota/contracts";
 import type { AppCheckRequestErrorCode } from "./src/security/app-check";
+import { buildRuntimeSecurity } from "./src/runtime/firebase";
 import { validateGeminiExtraction } from "./src/shared/gemini-schema";
 import {
   createPublicHttpError,
@@ -44,7 +45,12 @@ export type PrivacySafeLogger = {
   error: (event: string, metadata: LogMetadata) => void;
 };
 
-type AppEnvironment = Pick<NodeJS.ProcessEnv, "NODE_ENV" | "MOCK_MODE" | "GEMINI_API_KEY">;
+type AppEnvironment = Partial<
+  Pick<
+    NodeJS.ProcessEnv,
+    "NODE_ENV" | "MOCK_MODE" | "GEMINI_API_KEY"
+  >
+>;
 
 export type SecurityDependencies = {
   appCheckVerifier: {
@@ -761,8 +767,31 @@ export function createApp(options: CreateAppOptions = {}) {
   return app;
 }
 
+export type ProductionAppDependencies = {
+  buildRuntimeSecurity: (
+    env: NodeJS.ProcessEnv,
+  ) => SecurityDependencies;
+  createApp: (
+    options: CreateAppOptions,
+  ) => ReturnType<typeof createApp>;
+};
+
+const productionAppDependencies: ProductionAppDependencies = {
+  buildRuntimeSecurity,
+  createApp,
+};
+
+export function createProductionApp(
+  env: NodeJS.ProcessEnv = process.env,
+  dependencies: ProductionAppDependencies =
+    productionAppDependencies,
+) {
+  const security = dependencies.buildRuntimeSecurity(env);
+  return dependencies.createApp({ env, security });
+}
+
 if (!process.env.VITEST && process.env.NODE_ENV !== "test") {
-  createApp().listen(PORT, "0.0.0.0", () => {
+  createProductionApp().listen(PORT, "0.0.0.0", () => {
     safeDefaultLogger.info("server_started", { port: PORT });
   });
 }
