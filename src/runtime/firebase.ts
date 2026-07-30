@@ -156,6 +156,12 @@ export function buildRuntimeSecurity(
       "INSTALLATION_HMAC_KEY must contain at least 32 characters",
     );
   }
+  const geminiApiKey = env.GEMINI_API_KEY?.trim();
+  if (geminiApiKey && hmacKey === geminiApiKey) {
+    throw new Error(
+      "INSTALLATION_HMAC_KEY must not reuse GEMINI_API_KEY",
+    );
+  }
 
   const apps = factory.getApps();
   if (!Array.isArray(apps)) {

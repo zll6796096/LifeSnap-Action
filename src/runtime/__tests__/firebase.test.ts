@@ -118,6 +118,32 @@ describe("production Firebase runtime", () => {
     );
   });
 
+  it.each([
+    ["exactly", "r".repeat(48), "r".repeat(48)],
+    [
+      "after trimming surrounding whitespace",
+      `  ${"s".repeat(48)}\t`,
+      `\n${"s".repeat(48)}  `,
+    ],
+  ])(
+    "rejects HMAC and Gemini secret reuse %s before Firebase initialization",
+    (_case, hmacKey, geminiKey) => {
+      const fake = fakeFirebaseFactory();
+      const env = completeProductionEnv();
+      env.INSTALLATION_HMAC_KEY = hmacKey;
+      env.GEMINI_API_KEY = geminiKey;
+
+      expect(() =>
+        buildRuntimeSecurity(env, fake.factory),
+      ).toThrow(
+        "INSTALLATION_HMAC_KEY must not reuse GEMINI_API_KEY",
+      );
+      expect(fake.factory.getApps).not.toHaveBeenCalled();
+      expect(fake.factory.applicationDefault).not.toHaveBeenCalled();
+      expect(fake.factory.initializeApp).not.toHaveBeenCalled();
+    },
+  );
+
   it("builds ADC, consumed App Check, named Firestore, and deterministic HMAC dependencies", async () => {
     const fake = fakeFirebaseFactory();
     const env = completeProductionEnv();
