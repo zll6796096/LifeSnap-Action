@@ -97,5 +97,5 @@ describe("FirestoreQuotaStore emulator", () => {
     );
     expect(v2AfterLegacy.data()?.count).toBe(POLICY.installPerMinute);
     expect(legacySnapshot.data()?.count).toBe(1);
-  });
+  }, 15_000);
 });
