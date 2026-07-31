@@ -1535,6 +1535,7 @@ git commit -m "feat: wire fail-closed firebase runtime"
 ### Task 7: Provision the no-traffic Firebase, Firestore, Secret, and IAM boundary
 
 **Files:**
+- Amend: `docs/superpowers/plans/2026-07-31-yotei-snap-app-check-security.md`
 - Add after retrieval with `apply_patch`: `ios/LifeSnapAction/GoogleService-Info.plist`
 - Create: `docs/verification/yotei-snap-security/infrastructure-preflight.txt`
 - External state: Firebase project/app/App Check, Firestore, Secret Manager, IAM
@@ -1597,7 +1598,9 @@ apple_team_id="$(
 
 Expected: exactly one non-empty 10-character Team ID. If zero or multiple values appear, stop. Do not guess or use the App Store numeric Apple ID as a Team ID.
 
-- [ ] **Step 3: Enable only required APIs**
+- [ ] **Step 3: Enable the required APIs and reconcile Firebase's automatic expansion**
+
+Enable the four explicitly required APIs first:
 
 ```bash
 gcloud services enable \
@@ -1608,7 +1611,106 @@ gcloud services enable \
   --project="${project_id}"
 ```
 
-Do not enable Firebase Authentication, Analytics, Cloud Armor, or load-balancing APIs.
+Do not directly enable Firebase Authentication, Analytics, Cloud Armor, or
+load-balancing APIs. `addFirebase` and `iosApps.create` are not API-neutral:
+the 2026-07-31 Cloud Audit Logs showed that they automatically requested
+`BatchEnableServices` for 17 additional services.
+
+The `addFirebase` batch contained:
+
+```text
+appengine.googleapis.com
+cloudapis.googleapis.com
+cloudresourcemanager.googleapis.com
+fcm.googleapis.com
+firebasehosting.googleapis.com
+firebaserules.googleapis.com
+firebaseremoteconfig.googleapis.com
+firebaseremoteconfigrealtime.googleapis.com
+identitytoolkit.googleapis.com
+pubsub.googleapis.com
+runtimeconfig.googleapis.com
+securetoken.googleapis.com
+storage-component.googleapis.com
+testing.googleapis.com
+```
+
+The `iosApps.create` batch contained:
+
+```text
+fcmregistrations.googleapis.com
+firebaseappdistribution.googleapis.com
+firebaseinstallations.googleapis.com
+identitytoolkit.googleapis.com
+securetoken.googleapis.com
+```
+
+`identitytoolkit` and `securetoken` appeared in both batches, leaving 17
+unique automatically requested services. The original preflight directly
+proved only that `identitytoolkit.googleapis.com` was disabled. It did not
+record the other 16 services individually, so their preflight states are
+`UNKNOWN`; the idempotent batch request itself does not prove they were
+previously disabled.
+
+The user approved option A to reclaim the low-risk automatic service surface.
+The implementation used one ordinary disable command per service and ran the
+complete Task 7 read-back after every successful command. The first four
+successful removals were `identitytoolkit`, `securetoken`, `fcm`, and
+`fcmregistrations`. The first `firebaseinstallations` attempt stopped because
+active `firebaseremoteconfig` depended on it. No force, dependency cascade, or
+bypass was used. After the user approved the dependency-safe continuation,
+`firebaseremoteconfigrealtime`, `firebaseremoteconfig`,
+`firebaseinstallations`, and `firebaseappdistribution` were disabled in that
+order.
+
+An ordinary attempt to disable `firebaserules` then stopped because the core
+`firestore.googleapis.com` service depends on it. The user approved the final
+revision: retain `firebaserules` and disable `runtimeconfig` instead. The final
+replayable order is:
+
+```bash
+disable_and_verify() {
+  service_name="$1"
+  gcloud services disable "${service_name}" --project="${project_id}"
+  gcloud services list \
+    --enabled \
+    --project="${project_id}" \
+    --format='value(config.name)' |
+    grep -Fxq "${service_name}" && return 1
+  verify_task7_core
+}
+
+disable_and_verify identitytoolkit.googleapis.com
+disable_and_verify securetoken.googleapis.com
+disable_and_verify fcm.googleapis.com
+disable_and_verify fcmregistrations.googleapis.com
+disable_and_verify firebaseremoteconfigrealtime.googleapis.com
+disable_and_verify firebaseremoteconfig.googleapis.com
+disable_and_verify firebaseinstallations.googleapis.com
+disable_and_verify firebaseappdistribution.googleapis.com
+disable_and_verify runtimeconfig.googleapis.com
+```
+
+`verify_task7_core` denotes the explicit Firebase project/app/App Attest,
+Firestore/TTL, and unchanged Cloud Run checks in Step 10. Stop on the first
+disable or verification failure. Never delete product resources as part of
+service reconciliation.
+
+Final accepted service boundary:
+
+- disabled, 9 of 9: `identitytoolkit`, `securetoken`, `fcm`,
+  `fcmregistrations`, `firebaseinstallations`, `firebaseappdistribution`,
+  `firebaseremoteconfig`, `firebaseremoteconfigrealtime`, and `runtimeconfig`;
+- retained, 8 of 8: `appengine`, `cloudapis`, `cloudresourcemanager`, `pubsub`,
+  `storage-component`, `firebasehosting`, `testing`, and `firebaserules`;
+- core enabled, 4 of 4: `firebase`, `firebaseappcheck`, `firestore`, and
+  `secretmanager`.
+
+The first five retained services have existing infrastructure or an unknown
+caller surface. Hosting has an empty default site, Testing lacks sufficient
+usage evidence, and Firebase Rules is a confirmed service dependency of the
+required Firestore API. Do not describe the final state as “only four APIs are
+enabled.”
 
 - [ ] **Step 4: Attach Firebase to the existing GCP project if absent**
 
@@ -1720,12 +1822,16 @@ curl --fail-with-body --silent --show-error \
   "https://firebase.googleapis.com/v1beta1/projects/${project_id}/iosApps/${firebase_app_id}/config"
 ```
 
-Decode `configFileContents` into the temporary directory. Inspect that:
+Decode the returned base64 Firebase configuration payload into the temporary
+directory without printing it. Inspect that:
 
 - `BUNDLE_ID=com.zll.lifesnapaction`;
 - `PROJECT_ID=zhang23-23`;
 - `GOOGLE_APP_ID` equals the selected Firebase app ID;
-- Analytics, AdMob, Messaging, and Sign-In are not added by this plan.
+- no Analytics, AdMob, Messaging, or Sign-In SDK dependency or product
+  integration is added by this plan; plist capability flags and automatically
+  enabled service APIs are reviewed separately under the reconciled service
+  matrix in Steps 3 and 10.
 
 Use `apply_patch` to add the reviewed XML plist to `ios/LifeSnapAction/GoogleService-Info.plist`; do not use shell redirection to write into the repository.
 
@@ -1842,16 +1948,74 @@ Firestore describe/TTL list, runtime service-account describe, and
 to resource names, roles, conditions, database properties, provider type, and
 the one expected Cloud Build principal.
 
+Also require the reconciled service matrix. Reading only the four core APIs is
+not sufficient evidence because Firebase automatically expanded the service
+surface during project and app registration:
+
 ```bash
+enabled_services="$(
+  gcloud services list \
+    --enabled \
+    --project="${project_id}" \
+    --format='value(config.name)'
+)"
+
+for service_name in \
+  identitytoolkit.googleapis.com \
+  securetoken.googleapis.com \
+  fcm.googleapis.com \
+  fcmregistrations.googleapis.com \
+  firebaseinstallations.googleapis.com \
+  firebaseappdistribution.googleapis.com \
+  firebaseremoteconfig.googleapis.com \
+  firebaseremoteconfigrealtime.googleapis.com \
+  runtimeconfig.googleapis.com
+do
+  ! grep -Fxq "${service_name}" <<<"${enabled_services}"
+done
+
+for service_name in \
+  appengine.googleapis.com \
+  cloudapis.googleapis.com \
+  cloudresourcemanager.googleapis.com \
+  pubsub.googleapis.com \
+  storage-component.googleapis.com \
+  firebasehosting.googleapis.com \
+  testing.googleapis.com \
+  firebaserules.googleapis.com \
+  firebase.googleapis.com \
+  firebaseappcheck.googleapis.com \
+  firestore.googleapis.com \
+  secretmanager.googleapis.com
+do
+  grep -Fxq "${service_name}" <<<"${enabled_services}"
+done
+```
+
+Require Firebase project `ACTIVE`; one exact ACTIVE iOS app; App Attest TTL
+`3600s`; the exact named Firestore database and three ACTIVE TTL policies; both
+Secret resources with automatic replication and one enabled latest version;
+the two exact runtime project roles, two Secret resource accessors, and one
+resource-level deployment `actAs`; no project-level Service Account User for
+the deployment principal; and the original Cloud Run service account,
+revision, and 100 percent traffic assignment.
+
+```bash
+PATH=/Users/zhanglonglong/.nvm/versions/node/v24.16.0/bin:$PATH npm test
+PATH=/Users/zhanglonglong/.nvm/versions/node/v24.16.0/bin:$PATH \
+  npm run validate:ios-release
 git diff --check
 git status --short --branch
 git add \
-  ios/LifeSnapAction/GoogleService-Info.plist \
+  docs/superpowers/plans/2026-07-31-yotei-snap-app-check-security.md \
   docs/verification/yotei-snap-security/infrastructure-preflight.txt
-git commit -m "chore: register app check infrastructure"
+git commit -m "fix: document firebase service boundary"
 ```
 
-Expected: no token, Secret payload, personal account, or unrelated IAM member appears in the commit.
+Expected: 9 of 9 approved automatic services are disabled; all 8 retained
+dependencies and all 4 core APIs are enabled; every protected resource read
+passes; Cloud Run is unchanged; and no token, Secret payload, client API key,
+personal account, or unrelated IAM member appears in the corrective commit.
 
 ### Task 8: Bootstrap Firebase App Check and the production entitlement on iOS
 
