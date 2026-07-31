@@ -6,6 +6,39 @@ protocol URLSessioning {
 
 extension URLSession: URLSessioning {}
 
+final class NoRedirectURLSessionDelegate:
+    NSObject,
+    URLSessionTaskDelegate,
+    @unchecked Sendable
+{
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        willPerformHTTPRedirection response: HTTPURLResponse,
+        newRequest request: URLRequest,
+        completionHandler: @escaping (URLRequest?) -> Void
+    ) {
+        completionHandler(nil)
+    }
+}
+
+enum SecureURLSessionFactory {
+    static func make() -> URLSession {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.urlCache = nil
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        configuration.httpCookieStorage = nil
+        configuration.httpShouldSetCookies = false
+        configuration.urlCredentialStorage = nil
+
+        return URLSession(
+            configuration: configuration,
+            delegate: NoRedirectURLSessionDelegate(),
+            delegateQueue: nil
+        )
+    }
+}
+
 /// Sends attested image-extraction requests to the configured backend origin.
 final class APIClient {
     static let productionBaseURL =
@@ -24,7 +57,7 @@ final class APIClient {
 
     convenience init(
         bundle: Bundle = .main,
-        session: URLSessioning = URLSession.shared,
+        session: URLSessioning = SecureURLSessionFactory.make(),
         tokenProvider: AppCheckTokenProviding =
             FirebaseLimitedUseTokenProvider(),
         installationStore: InstallationIdentifierProviding =
@@ -102,7 +135,8 @@ final class APIClient {
             do {
                 return try decode(data: data, response: response)
             } catch let failure as ServerFailure {
-                if failure.code == "APP_CHECK_INVALID",
+                if failure.statusCode == 401,
+                   failure.code == "APP_CHECK_INVALID",
                    invalidTokenRetryCount == 0
                 {
                     invalidTokenRetryCount += 1
@@ -184,7 +218,7 @@ final class APIClient {
         response: URLResponse
     ) throws -> ExtractionResponse {
         guard let httpResponse = response as? HTTPURLResponse else {
-            throw ServerFailure(code: nil, publicError: .invalidResponse)
+            throw APIError.invalidResponse
         }
 
         if httpResponse.statusCode == 200 {
@@ -194,7 +228,7 @@ final class APIClient {
                     from: data
                 )
             } catch {
-                throw ServerFailure(code: nil, publicError: .invalidResponse)
+                throw APIError.invalidResponse
             }
         }
 
@@ -203,6 +237,7 @@ final class APIClient {
             from: data
         ))?.code
         throw ServerFailure(
+            statusCode: httpResponse.statusCode,
             code: code,
             publicError: Self.publicError(
                 for: code,
@@ -307,6 +342,7 @@ struct BackendImageExtractionClient: ImageExtractionClient {
 }
 
 private struct ServerFailure: Error {
+    let statusCode: Int
     let code: String?
     let publicError: APIError
 }

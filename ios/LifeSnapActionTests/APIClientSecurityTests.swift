@@ -3,6 +3,78 @@ import XCTest
 @testable import LifeSnapAction
 
 final class APIClientSecurityTests: XCTestCase {
+    func testRedirectDelegateRejects307And308WithoutForwardingRequest() throws {
+        let delegate = NoRedirectURLSessionDelegate()
+        let session = URLSession(
+            configuration: .ephemeral,
+            delegate: delegate,
+            delegateQueue: nil
+        )
+        defer { session.invalidateAndCancel() }
+
+        var original = URLRequest(
+            url: URL(string: "https://origin.example/api/v2/extract")!
+        )
+        original.httpMethod = "POST"
+        original.httpBody = image
+        let task = session.dataTask(with: original)
+        defer { task.cancel() }
+
+        for status in [307, 308] {
+            var forwarded = URLRequest(
+                url: URL(string: "https://redirect.example/collect")!
+            )
+            forwarded.httpMethod = "POST"
+            forwarded.httpBody = image
+            forwarded.setValue(
+                "sensitive-app-check-value",
+                forHTTPHeaderField: "X-Firebase-AppCheck"
+            )
+            forwarded.setValue(
+                validUUID,
+                forHTTPHeaderField: "X-LifeSnap-Install-ID"
+            )
+            let response = try XCTUnwrap(
+                HTTPURLResponse(
+                    url: original.url!,
+                    statusCode: status,
+                    httpVersion: nil,
+                    headerFields: [
+                        "Location": forwarded.url!.absoluteString,
+                    ]
+                )
+            )
+
+            var redirectDecision: URLRequest? = forwarded
+            delegate.urlSession(
+                session,
+                task: task,
+                willPerformHTTPRedirection: response,
+                newRequest: forwarded
+            ) { request in
+                redirectDecision = request
+            }
+
+            XCTAssertNil(redirectDecision, "status \(status)")
+        }
+    }
+
+    func testProductionSessionHasNoPersistentOrSharedStores() {
+        let session = SecureURLSessionFactory.make()
+        defer { session.invalidateAndCancel() }
+
+        XCTAssertTrue(session.delegate is NoRedirectURLSessionDelegate)
+        let configuration = session.configuration
+        XCTAssertNil(configuration.urlCache)
+        XCTAssertEqual(
+            configuration.requestCachePolicy,
+            .reloadIgnoringLocalCacheData
+        )
+        XCTAssertNil(configuration.httpCookieStorage)
+        XCTAssertFalse(configuration.httpShouldSetCookies)
+        XCTAssertNil(configuration.urlCredentialStorage)
+    }
+
     func testV2RequestContainsSecurityHeadersAndMultipartImage() async throws {
         let session = StubSession(responses: [.successExtraction])
         let tokens = StubTokenProvider(tokens: ["limited-1"])
@@ -79,6 +151,31 @@ final class APIClientSecurityTests: XCTestCase {
 
         XCTAssertEqual(session.requests.count, 2)
         XCTAssertEqual(tokens.callCount, 2)
+    }
+
+    func testAppCheckInvalidOnNon401StatusNeverRetries() async {
+        for status in [400, 403, 429, 500, 503] {
+            let session = StubSession(responses: [
+                .error(
+                    status,
+                    "APP_CHECK_INVALID",
+                    "private backend error"
+                ),
+            ])
+            let tokens = StubTokenProvider(
+                tokens: ["limited-1", "must-not-be-read"]
+            )
+
+            await assertFailure(
+                of: makeClient(session: session, tokens: tokens),
+                equals: invalidAppCheckMessage,
+                file: #filePath,
+                line: #line
+            )
+
+            XCTAssertEqual(session.requests.count, 1, "status \(status)")
+            XCTAssertEqual(tokens.callCount, 1, "status \(status)")
+        }
     }
 
     func testOnlyAppCheckInvalidIsRetried() async {
