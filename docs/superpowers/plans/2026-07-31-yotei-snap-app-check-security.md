@@ -1545,58 +1545,125 @@ git commit -m "feat: wire fail-closed firebase runtime"
 Use an isolated temporary directory:
 
 ```bash
-security_tmp_dir="$(mktemp -d)"
+set -euo pipefail
+
+if ! security_tmp_dir="$(mktemp -d)"; then
+  exit 1
+fi
 project_id="zhang23-23"
-project_number="$(
+if ! project_number="$(
   gcloud projects describe "${project_id}" \
     --format='value(projectNumber)'
-)"
+)"; then
+  exit 1
+fi
+if ! [[ "${project_number}" =~ ^[0-9]+$ ]]; then
+  exit 1
+fi
 
-gcloud run services describe lifesnap-action \
+if ! gcloud run services describe lifesnap-action \
   --project="${project_id}" \
   --region=asia-northeast1 \
   --format=json > "${security_tmp_dir}/service-before.json"
+then
+  exit 1
+fi
 
-gcloud firestore databases list \
+if ! gcloud firestore databases list \
   --project="${project_id}" \
   --format=json > "${security_tmp_dir}/databases-before.json"
+then
+  exit 1
+fi
 
-gcloud iam service-accounts describe \
-  "lifesnap-runtime@${project_id}.iam.gserviceaccount.com" \
-  --project="${project_id}" \
-  --format=json > "${security_tmp_dir}/runtime-sa-before.json" 2>/dev/null || true
+if ! service_accounts_json="$(
+  gcloud iam service-accounts list \
+    --project="${project_id}" \
+    --format=json
+)"; then
+  exit 1
+fi
+runtime_sa="lifesnap-runtime@${project_id}.iam.gserviceaccount.com"
+if ! runtime_sa_count="$(
+  jq \
+    --arg expected_email "${runtime_sa}" \
+    '[.[] | select(.email == $expected_email)] | length' \
+    <<<"${service_accounts_json}"
+)"; then
+  exit 1
+fi
+if ! [[ "${runtime_sa_count}" == "0" || "${runtime_sa_count}" == "1" ]]; then
+  exit 1
+fi
+if [[ "${runtime_sa_count}" == "1" ]] && ! jq -e \
+  --arg expected_email "${runtime_sa}" \
+  '[.[] | select(.email == $expected_email)] |
+   length == 1 and (.[0].disabled // false) == false' \
+  <<<"${service_accounts_json}" >/dev/null
+then
+  exit 1
+fi
+if ! jq \
+  --arg expected_email "${runtime_sa}" \
+  '[.[] | select(.email == $expected_email)]' \
+  <<<"${service_accounts_json}" \
+  > "${security_tmp_dir}/runtime-sa-before.json"
+then
+  exit 1
+fi
 ```
+
+The service-account list call must succeed before a zero count is accepted.
+Permission, authentication, transport, malformed JSON, or multiple-match
+failures are fatal and must never be reclassified as “absent.”
 
 Expected:
 
 - current service identity remains the previously observed default Compute service account;
 - no conflicting database named `lifesnap-quota` exists; if it exists, it must already be Firestore Native, Standard, `asia-northeast1`, and delete-protected;
-- any pre-existing `lifesnap-runtime` account must have no unexpected roles.
+- the exact `lifesnap-runtime` account count is zero or one, and an existing account is enabled.
 
 Write only sanitized facts to the verification file. Do not copy access tokens, IAM credentials, secret payloads, user emails, or unrelated principals.
 
-- [ ] **Step 2: Resolve exactly one Apple Team ID**
+- [ ] **Step 2: Validate the approved project Apple Team ID**
 
-Read certificate subjects and require one unique Organizational Unit:
+Use the project-approved Team ID and prove it is represented in both target
+certificate collections without printing any other Team ID:
 
 ```bash
-team_ids="$(
-  security find-certificate -a -c "Apple Development" -p |
-    openssl crl2pkcs7 -nocrl -certfile /dev/stdin |
-    openssl pkcs7 -print_certs -noout |
-    sed -n 's/.*OU=\\([^,/]*\\).*/\\1/p' |
-    sort -u
-)"
-apple_team_id="$(
-  printf '%s\n' "${team_ids}" |
-    awk 'NF { values[++count]=$0 } END {
-      if (count != 1 || length(values[1]) != 10) exit 1
-      print values[1]
-    }'
-)"
+set -euo pipefail
+
+apple_team_id="YMUG864233"
+if ! [[ "${apple_team_id}" =~ ^[A-Z0-9]{10}$ ]]; then
+  exit 1
+fi
+
+for certificate_name in "Apple Development" "Apple Distribution"; do
+  if ! matching_certificate_count="$(
+    security find-certificate -a -c "${certificate_name}" -p |
+      openssl crl2pkcs7 -nocrl -certfile /dev/stdin |
+      openssl pkcs7 -print_certs -noout |
+      sed -n 's/.*OU=\\([^,/]*\\).*/\\1/p' |
+      awk \
+        -v expected_team_id="${apple_team_id}" \
+        '$0 == expected_team_id { count++ }
+         END { print count + 0 }'
+  )"; then
+    exit 1
+  fi
+  if ! [[ "${matching_certificate_count}" =~ ^[0-9]+$ ]]; then
+    exit 1
+  fi
+  if ! [[ "${matching_certificate_count}" -ge 1 ]]; then
+    exit 1
+  fi
+done
 ```
 
-Expected: exactly one non-empty 10-character Team ID. If zero or multiple values appear, stop. Do not guess or use the App Store numeric Apple ID as a Team ID.
+Expected: `YMUG864233` is a valid 10-character Team ID and has at least one
+matching Apple Development certificate and at least one matching Apple
+Distribution certificate. The project-approved identity is authoritative;
+other installed Team IDs are neither selected nor printed.
 
 - [ ] **Step 3: Enable the four core APIs and record the automatic-expansion risk**
 
@@ -1669,125 +1736,398 @@ fi
 if [[ -z "${access_token}" ]]; then
   exit 1
 fi
-if ! firebase_project_http_code="$(
-  curl --silent --show-error \
-    --output /dev/null \
-    --write-out '%{http_code}' \
-    --header "Authorization: Bearer ${access_token}" \
-    --header "X-Goog-User-Project: ${project_id}" \
-    "https://firebase.googleapis.com/v1beta1/projects/${project_id}"
-)"; then
+
+task7_rest_request() {
+  local request_method="$1"
+  local request_url="$2"
+  local output_path="$3"
+  local request_body="${4-}"
+  local http_code
+
+  if [[ "${request_method}" == "POST" || "${request_method}" == "PATCH" ]]; then
+    if ! http_code="$(
+      curl --silent --show-error \
+        --request "${request_method}" \
+        --output "${output_path}" \
+        --write-out '%{http_code}' \
+        --header "Authorization: Bearer ${access_token}" \
+        --header "X-Goog-User-Project: ${project_id}" \
+        --header "Content-Type: application/json" \
+        --data "${request_body}" \
+        "${request_url}"
+    )"; then
+      return 1
+    fi
+  else
+    if ! http_code="$(
+      curl --silent --show-error \
+        --request "${request_method}" \
+        --output "${output_path}" \
+        --write-out '%{http_code}' \
+        --header "Authorization: Bearer ${access_token}" \
+        --header "X-Goog-User-Project: ${project_id}" \
+        "${request_url}"
+    )"; then
+      return 1
+    fi
+  fi
+  if ! [[ "${http_code}" =~ ^[0-9]{3}$ ]]; then
+    return 1
+  fi
+  TASK7_HTTP_CODE="${http_code}"
+  return 0
+}
+
+poll_firebase_operation() {
+  local operation_name="$1"
+  local operation_path="${security_tmp_dir}/firebase-operation.json"
+  local attempt=0
+
+  if ! [[ "${operation_name}" =~ ^operations/[A-Za-z0-9._~/-]+$ ]]; then
+    return 1
+  fi
+  while [[ "${attempt}" -lt 60 ]]; do
+    if ! task7_rest_request \
+      GET \
+      "https://firebase.googleapis.com/v1beta1/${operation_name}" \
+      "${operation_path}"
+    then
+      return 1
+    fi
+    if ! [[ "${TASK7_HTTP_CODE}" == "200" ]]; then
+      return 1
+    fi
+    if jq -e '.error != null' "${operation_path}" >/dev/null; then
+      return 1
+    fi
+    if jq -e '.done == true and .error == null' \
+      "${operation_path}" >/dev/null
+    then
+      return 0
+    fi
+    if ! jq -e \
+      '(.done == null or .done == false) and .error == null' \
+      "${operation_path}" >/dev/null
+    then
+      return 1
+    fi
+    attempt=$((attempt + 1))
+    sleep 2
+  done
+  return 1
+}
+
+firebase_project_path="${security_tmp_dir}/firebase-project.json"
+if ! task7_rest_request \
+  GET \
+  "https://firebase.googleapis.com/v1beta1/projects/${project_id}" \
+  "${firebase_project_path}"
+then
   exit 1
 fi
-if ! [[ "${firebase_project_http_code}" == "200" || \
-  "${firebase_project_http_code}" == "404" ]]
+if ! [[ "${TASK7_HTTP_CODE}" == "200" || \
+  "${TASK7_HTTP_CODE}" == "404" ]]
 then
   exit 1
 fi
 ```
 
-If and only if this returns a confirmed 404, call:
+If and only if that exact probe returned `404`, attach Firebase and poll the
+returned operation:
 
 ```bash
-if ! add_firebase_operation_json="$(
-  curl --fail-with-body --silent --show-error \
-    --request POST \
-    --header "Authorization: Bearer ${access_token}" \
-    --header "X-Goog-User-Project: ${project_id}" \
-    --header "Content-Type: application/json" \
-    --data '{}' \
-    "https://firebase.googleapis.com/v1beta1/projects/${project_id}:addFirebase"
-)"; then
+if [[ "${TASK7_HTTP_CODE}" == "404" ]]; then
+  if ! task7_rest_request \
+    POST \
+    "https://firebase.googleapis.com/v1beta1/projects/${project_id}:addFirebase" \
+    "${security_tmp_dir}/add-firebase-operation.json" \
+    '{}'
+  then
+    exit 1
+  fi
+  if ! [[ "${TASK7_HTTP_CODE}" == "200" ]]; then
+    exit 1
+  fi
+  if ! add_firebase_operation_name="$(
+    jq -er '.name | select(type == "string" and length > 0)' \
+      "${security_tmp_dir}/add-firebase-operation.json"
+  )"; then
+    exit 1
+  fi
+  if ! poll_firebase_operation "${add_firebase_operation_name}"; then
+    exit 1
+  fi
+fi
+
+if ! task7_rest_request \
+  GET \
+  "https://firebase.googleapis.com/v1beta1/projects/${project_id}" \
+  "${firebase_project_path}"
+then
+  exit 1
+fi
+if ! [[ "${TASK7_HTTP_CODE}" == "200" ]]; then
+  exit 1
+fi
+if ! jq -e \
+  --arg expected_project_id "${project_id}" \
+  --arg expected_project_number "${project_number}" \
+  '.projectId == $expected_project_id and
+   .projectNumber == $expected_project_number and
+   .state == "ACTIVE"' \
+  "${firebase_project_path}" >/dev/null
+then
   exit 1
 fi
 ```
 
-Poll the returned operation until `done=true`, then GET the project again and
-require `projectId=zhang23-23`, the expected project number, and
-`state=ACTIVE`. Every Firebase Management operation GET and the final project
-GET must repeat both the `Authorization` and
-`X-Goog-User-Project: ${project_id}` headers shown above. A 403 or any status
-other than the expected initial 200/404 is fatal; never treat it as absence.
+Only the exact initial `200` or `404` is accepted. A `404` is the sole state
+that authorizes `addFirebase`; POST must return `200` with a valid operation
+name, every poll GET must return `200`, and operation error, malformed state,
+or the 120-second timeout stops execution. The final project GET must return
+`200` and match the exact project ID, number, and `ACTIVE` state.
 
 - [ ] **Step 5: Reuse or create exactly one iOS app**
 
 List iOS apps:
 
 ```bash
-if ! ios_apps_json="$(
-  curl --fail-with-body --silent --show-error \
-    --header "Authorization: Bearer ${access_token}" \
-    --header "X-Goog-User-Project: ${project_id}" \
-    "https://firebase.googleapis.com/v1beta1/projects/${project_id}/iosApps"
-)"; then
+set -euo pipefail
+
+ios_apps_path="${security_tmp_dir}/ios-apps.json"
+
+list_ios_apps() {
+  if ! task7_rest_request \
+    GET \
+    "https://firebase.googleapis.com/v1beta1/projects/${project_id}/iosApps?pageSize=100" \
+    "${ios_apps_path}"
+  then
+    return 1
+  fi
+  if ! [[ "${TASK7_HTTP_CODE}" == "200" ]]; then
+    return 1
+  fi
+  if ! jq -e '(.nextPageToken // "") == ""' \
+    "${ios_apps_path}" >/dev/null
+  then
+    return 1
+  fi
+  if ! ios_apps_json="$(<"${ios_apps_path}")"; then
+    return 1
+  fi
+  return 0
+}
+
+classify_target_ios_app() {
+  if ! target_bundle_total="$(
+    jq '[.apps[]? |
+      select(.bundleId == "com.zll.lifesnapaction")
+    ] | length' <<<"${ios_apps_json}"
+  )"; then
+    return 1
+  fi
+  if ! target_active_count="$(
+    jq '[.apps[]? |
+      select(
+        .bundleId == "com.zll.lifesnapaction" and
+        .state == "ACTIVE"
+      )
+    ] | length' <<<"${ios_apps_json}"
+  )"; then
+    return 1
+  fi
+  if ! [[ "${target_bundle_total}" == "${target_active_count}" ]]; then
+    return 1
+  fi
+  if ! [[ "${target_active_count}" == "0" || \
+    "${target_active_count}" == "1" ]]
+  then
+    return 1
+  fi
+  return 0
+}
+
+if ! list_ios_apps; then
+  exit 1
+fi
+if ! classify_target_ios_app; then
   exit 1
 fi
 ```
 
-If one ACTIVE app has `bundleId=com.zll.lifesnapaction`, reuse it. If none exists, build the create body from the Team ID resolved in Step 2:
+If exactly one ACTIVE app has `bundleId=com.zll.lifesnapaction`, reuse it. If
+none exists and no non-ACTIVE app conflicts, create it from the Team ID resolved
+in Step 2:
 
 ```bash
-ios_app_body="$(
-  jq -n \
-    --arg display_name "よていスナップ" \
-    --arg bundle_id "com.zll.lifesnapaction" \
-    --arg team_id "${apple_team_id}" \
-    '{
-      displayName: $display_name,
-      bundleId: $bundle_id,
-      teamId: $team_id
-    }'
-)"
+if [[ "${target_active_count}" == "0" ]]; then
+  if ! ios_app_body="$(
+    jq -n \
+      --arg display_name "よていスナップ" \
+      --arg bundle_id "com.zll.lifesnapaction" \
+      --arg team_id "${apple_team_id}" \
+      '{
+        displayName: $display_name,
+        bundleId: $bundle_id,
+        teamId: $team_id
+      }'
+  )"; then
+    exit 1
+  fi
+  if ! task7_rest_request \
+    POST \
+    "https://firebase.googleapis.com/v1beta1/projects/${project_id}/iosApps" \
+    "${security_tmp_dir}/create-ios-app-operation.json" \
+    "${ios_app_body}"
+  then
+    exit 1
+  fi
+  if ! [[ "${TASK7_HTTP_CODE}" == "200" ]]; then
+    exit 1
+  fi
+  if ! create_ios_app_operation_name="$(
+    jq -er '.name | select(type == "string" and length > 0)' \
+      "${security_tmp_dir}/create-ios-app-operation.json"
+  )"; then
+    exit 1
+  fi
+  if ! poll_firebase_operation "${create_ios_app_operation_name}"; then
+    exit 1
+  fi
+  if ! list_ios_apps; then
+    exit 1
+  fi
+  if ! classify_target_ios_app; then
+    exit 1
+  fi
+  if ! [[ "${target_active_count}" == "1" ]]; then
+    exit 1
+  fi
+fi
 ```
 
-The unshown `iosApps.create` POST, every operation-poll GET, and any reused-app
-PATCH must repeat the `Authorization` and
-`X-Goog-User-Project: ${project_id}` headers; POST/PATCH must also include
-`Content-Type: application/json`. Poll the operation. Patch the reused app’s
-`displayName` and `teamId` only when the current values differ, using its
-current `etag`. Then list again and resolve the selected app fail-closed:
+Resolve the single app, patch only when its reviewed fields differ, and then
+perform one fresh complete list:
 
 ```bash
-if ! ios_apps_json="$(
-  curl --fail-with-body --silent --show-error \
-    --header "Authorization: Bearer ${access_token}" \
-    --header "X-Goog-User-Project: ${project_id}" \
-    "https://firebase.googleapis.com/v1beta1/projects/${project_id}/iosApps"
-)"; then
-  exit 1
-fi
-if ! matching_app_count="$(
-  jq '[.apps[] |
+if ! selected_app_json="$(
+  jq -c '.apps[] |
     select(
       .bundleId == "com.zll.lifesnapaction" and
       .state == "ACTIVE"
-    )
-  ] | length' <<<"${ios_apps_json}"
+    )' <<<"${ios_apps_json}"
 )"; then
   exit 1
 fi
-if ! test "${matching_app_count}" -eq 1; then
+if ! selected_app_name="$(
+  jq -er '.name | select(type == "string" and length > 0)' \
+    <<<"${selected_app_json}"
+)"; then
+  exit 1
+fi
+if ! [[ "${selected_app_name}" =~ \
+  ^projects/${project_id}/iosApps/[A-Za-z0-9:_-]+$ ]]
+then
+  exit 1
+fi
+if ! selected_app_etag="$(
+  jq -er '.etag | select(type == "string" and length > 0)' \
+    <<<"${selected_app_json}"
+)"; then
+  exit 1
+fi
+
+if ! jq -e \
+  --arg expected_team_id "${apple_team_id}" \
+  '.displayName == "よていスナップ" and
+   .teamId == $expected_team_id' \
+  <<<"${selected_app_json}" >/dev/null
+then
+  if ! ios_app_patch_body="$(
+    jq -n \
+      --arg name "${selected_app_name}" \
+      --arg display_name "よていスナップ" \
+      --arg team_id "${apple_team_id}" \
+      --arg etag "${selected_app_etag}" \
+      '{
+        name: $name,
+        displayName: $display_name,
+        teamId: $team_id,
+        etag: $etag
+      }'
+  )"; then
+    exit 1
+  fi
+  if ! task7_rest_request \
+    PATCH \
+    "https://firebase.googleapis.com/v1beta1/${selected_app_name}?updateMask=displayName,teamId" \
+    "${security_tmp_dir}/patched-ios-app.json" \
+    "${ios_app_patch_body}"
+  then
+    exit 1
+  fi
+  if ! [[ "${TASK7_HTTP_CODE}" == "200" ]]; then
+    exit 1
+  fi
+  if ! jq -e \
+    --arg expected_name "${selected_app_name}" \
+    --arg expected_team_id "${apple_team_id}" \
+    '.name == $expected_name and
+     .bundleId == "com.zll.lifesnapaction" and
+     .displayName == "よていスナップ" and
+     .teamId == $expected_team_id and
+     .state == "ACTIVE"' \
+    "${security_tmp_dir}/patched-ios-app.json" >/dev/null
+  then
+    exit 1
+  fi
+fi
+
+if ! list_ios_apps; then
+  exit 1
+fi
+if ! classify_target_ios_app; then
+  exit 1
+fi
+if ! [[ "${target_active_count}" == "1" ]]; then
   exit 1
 fi
 if ! firebase_app_id="$(
-  jq -r '.apps[] |
+  jq -er '.apps[] |
     select(
       .bundleId == "com.zll.lifesnapaction" and
       .state == "ACTIVE"
     ) |
-    .appId' <<<"${ios_apps_json}"
+    .appId | select(type == "string" and length > 0)' \
+    <<<"${ios_apps_json}"
 )"; then
   exit 1
 fi
-if ! test -n "${firebase_app_id}"; then
-  exit 1
-fi
-if ! test "${firebase_app_id}" != "null"; then
+if ! jq -e \
+  --arg expected_app_id "${firebase_app_id}" \
+  --arg expected_team_id "${apple_team_id}" \
+  '[.apps[] |
+    select(
+      .bundleId == "com.zll.lifesnapaction" and
+      .state == "ACTIVE"
+    )
+  ] as $apps |
+  ($apps | length) == 1 and
+  $apps[0].appId == $expected_app_id and
+  $apps[0].displayName == "よていスナップ" and
+  $apps[0].teamId == $expected_team_id' \
+  <<<"${ios_apps_json}" >/dev/null
+then
   exit 1
 fi
 ```
 
-If more than one ACTIVE app has that Bundle ID, stop and report the conflict.
+The target Bundle ID must classify as exactly zero or one ACTIVE app, with no
+non-ACTIVE conflict. Create runs only for zero; a successful partial create is
+recovered by the next list, while duplicate or transitional conflicts stop.
+The create operation uses the bounded poll from Step 4. The reused-app PATCH
+is synchronous, requires its current `etag`, accepts only HTTP `200`, and is
+followed by a fresh complete list.
 
 - [ ] **Step 6: Configure App Attest and download the app config**
 
@@ -1861,108 +2201,729 @@ Use `apply_patch` to add the reviewed XML plist to `ios/LifeSnapAction/GoogleSer
 
 - [ ] **Step 7: Create the named Firestore database and TTL policies**
 
-Only if absent:
+Classify the database as absent, one exact reusable resource, one exact
+transitional resource, or conflict. The list call must succeed before absence
+is accepted:
 
 ```bash
-gcloud firestore databases create \
-  --project="${project_id}" \
-  --database=lifesnap-quota \
-  --location=asia-northeast1 \
-  --type=firestore-native \
-  --edition=standard \
-  --delete-protection
-```
+set -euo pipefail
 
-Enable `expires_at` TTL for exactly these collection groups:
+read_target_database() {
+  if ! databases_json="$(
+    gcloud firestore databases list \
+      --project="${project_id}" \
+      --format=json
+  )"; then
+    return 1
+  fi
+  if ! target_database_count="$(
+    jq '[.[] |
+      select(.name == "projects/zhang23-23/databases/lifesnap-quota")
+    ] | length' <<<"${databases_json}"
+  )"; then
+    return 1
+  fi
+  if ! [[ "${target_database_count}" == "0" || \
+    "${target_database_count}" == "1" ]]
+  then
+    return 1
+  fi
+  return 0
+}
 
-```bash
-for collection_group in install_minute install_day service_day; do
-  gcloud firestore fields ttls update expires_at \
+database_identity_matches() {
+  jq -e \
+    '[.[] |
+      select(.name == "projects/zhang23-23/databases/lifesnap-quota")
+    ] as $databases |
+    ($databases | length) == 1 and
+    $databases[0].locationId == "asia-northeast1" and
+    $databases[0].type == "FIRESTORE_NATIVE" and
+    $databases[0].databaseEdition == "STANDARD" and
+    $databases[0].deleteProtectionState == "DELETE_PROTECTION_ENABLED"' \
+    <<<"${databases_json}" >/dev/null
+}
+
+database_is_exact_ready() {
+  jq -e \
+    '[.[] |
+      select(.name == "projects/zhang23-23/databases/lifesnap-quota")
+    ] as $databases |
+    ($databases | length) == 1 and
+    $databases[0].locationId == "asia-northeast1" and
+    $databases[0].type == "FIRESTORE_NATIVE" and
+    $databases[0].databaseEdition == "STANDARD" and
+    $databases[0].deleteProtectionState == "DELETE_PROTECTION_ENABLED" and
+    $databases[0].versionRetentionPeriod == "3600s" and
+    ($databases[0].reconciling // false) == false' \
+    <<<"${databases_json}" >/dev/null
+}
+
+if ! read_target_database; then
+  exit 1
+fi
+if [[ "${target_database_count}" == "0" ]]; then
+  if ! gcloud firestore databases create \
     --project="${project_id}" \
     --database=lifesnap-quota \
-    --collection-group="${collection_group}" \
-    --enable-ttl
+    --location=asia-northeast1 \
+    --type=firestore-native \
+    --edition=standard \
+    --delete-protection
+  then
+    exit 1
+  fi
+elif ! database_identity_matches; then
+  exit 1
+fi
+
+database_ready=false
+for attempt in $(seq 1 60); do
+  if ! read_target_database; then
+    exit 1
+  fi
+  if [[ "${target_database_count}" == "1" ]]; then
+    if ! database_identity_matches; then
+      exit 1
+    fi
+    if database_is_exact_ready; then
+      database_ready=true
+      break
+    fi
+  fi
+  sleep 2
+done
+if ! ${database_ready}; then
+  exit 1
+fi
+
+read_ttl_field() {
+  local collection_group="$1"
+  ttl_field_path="${security_tmp_dir}/ttl-${collection_group}.json"
+  if ! task7_rest_request \
+    GET \
+    "https://firestore.googleapis.com/v1/projects/${project_id}/databases/lifesnap-quota/collectionGroups/${collection_group}/fields/expires_at" \
+    "${ttl_field_path}"
+  then
+    return 1
+  fi
+  if ! [[ "${TASK7_HTTP_CODE}" == "200" || \
+    "${TASK7_HTTP_CODE}" == "404" ]]
+  then
+    return 1
+  fi
+  return 0
+}
+
+ensure_ttl_active() {
+  local collection_group="$1"
+  local ttl_state
+  local create_ttl=false
+  local ttl_ready=false
+
+  if ! read_ttl_field "${collection_group}"; then
+    return 1
+  fi
+  if [[ "${TASK7_HTTP_CODE}" == "404" ]]; then
+    create_ttl=true
+  else
+    if ! ttl_state="$(jq -r '.ttlConfig.state // "ABSENT"' \
+      "${ttl_field_path}")"; then
+      return 1
+    fi
+    case "${ttl_state}" in
+      ACTIVE)
+        return 0
+        ;;
+      CREATING)
+        ;;
+      ABSENT)
+        create_ttl=true
+        ;;
+      *)
+        return 1
+        ;;
+    esac
+  fi
+
+  if ${create_ttl}; then
+    if ! gcloud firestore fields ttls update expires_at \
+      --project="${project_id}" \
+      --database=lifesnap-quota \
+      --collection-group="${collection_group}" \
+      --enable-ttl
+    then
+      return 1
+    fi
+  fi
+
+  for attempt in $(seq 1 60); do
+    if ! read_ttl_field "${collection_group}"; then
+      return 1
+    fi
+    if [[ "${TASK7_HTTP_CODE}" == "404" ]]; then
+      sleep 2
+      continue
+    fi
+    if ! ttl_state="$(jq -r '.ttlConfig.state // "ABSENT"' \
+      "${ttl_field_path}")"; then
+      return 1
+    fi
+    case "${ttl_state}" in
+      ACTIVE)
+        ttl_ready=true
+        break
+        ;;
+      CREATING)
+        ;;
+      *)
+        return 1
+        ;;
+    esac
+    sleep 2
+  done
+  if ! ${ttl_ready}; then
+    return 1
+  fi
+  return 0
+}
+
+for collection_group in install_minute install_day service_day; do
+  if ! ensure_ttl_active "${collection_group}"; then
+    exit 1
+  fi
+done
+
+if ! read_target_database; then
+  exit 1
+fi
+if ! database_is_exact_ready; then
+  exit 1
+fi
+for collection_group in install_minute install_day service_day; do
+  if ! read_ttl_field "${collection_group}"; then
+    exit 1
+  fi
+  if ! [[ "${TASK7_HTTP_CODE}" == "200" ]]; then
+    exit 1
+  fi
+  if ! jq -e '.ttlConfig.state == "ACTIVE"' \
+    "${ttl_field_path}" >/dev/null
+  then
+    exit 1
+  fi
 done
 ```
 
-Describe the database afterward and require exact ID, location, type, edition, and delete protection.
+An existing database is reused only when every immutable property matches;
+`reconciling=true` is the sole transitional database state and receives a
+bounded 120-second poll. Each TTL is created only when absent, reuses `ACTIVE`,
+polls `CREATING`, and stops on every other state. All three TTLs and the exact
+database are read back before continuing.
 
 - [ ] **Step 8: Create the independent HMAC Secret**
 
-If the Secret resource is absent:
+Classify both the Secret resource and all version states before deciding
+whether a mutation is safe:
 
 ```bash
-gcloud secrets create lifesnap-installation-hmac-key \
-  --project="${project_id}" \
-  --replication-policy=automatic
-openssl rand -base64 48 |
-  gcloud secrets versions add lifesnap-installation-hmac-key \
+set -euo pipefail
+
+hmac_secret="lifesnap-installation-hmac-key"
+if ! secret_resources_json="$(
+  gcloud secrets list \
     --project="${project_id}" \
-    --data-file=-
+    --format=json
+)"; then
+  exit 1
+fi
+if ! hmac_secret_count="$(
+  jq \
+    --arg secret_id "${hmac_secret}" \
+    --arg resource_name \
+      "projects/${project_id}/secrets/${hmac_secret}" \
+    '[.[] |
+      select(.name == $secret_id or .name == $resource_name)
+    ] | length' <<<"${secret_resources_json}"
+)"; then
+  exit 1
+fi
+if ! [[ "${hmac_secret_count}" == "0" || \
+  "${hmac_secret_count}" == "1" ]]
+then
+  exit 1
+fi
+
+if [[ "${hmac_secret_count}" == "0" ]]; then
+  if ! gcloud secrets create "${hmac_secret}" \
+    --project="${project_id}" \
+    --replication-policy=automatic
+  then
+    exit 1
+  fi
+fi
+
+if ! hmac_secret_json="$(
+  gcloud secrets describe "${hmac_secret}" \
+    --project="${project_id}" \
+    --format=json
+)"; then
+  exit 1
+fi
+if ! jq -e '.replication.automatic != null' \
+  <<<"${hmac_secret_json}" >/dev/null
+then
+  exit 1
+fi
+
+if ! hmac_versions_json="$(
+  gcloud secrets versions list "${hmac_secret}" \
+    --project="${project_id}" \
+    --format=json
+)"; then
+  exit 1
+fi
+if ! hmac_version_total="$(jq 'length' <<<"${hmac_versions_json}")"; then
+  exit 1
+fi
+if ! [[ "${hmac_version_total}" =~ ^[0-9]+$ ]]; then
+  exit 1
+fi
+
+if [[ "${hmac_version_total}" == "0" ]]; then
+  if ! hmac_material="$(openssl rand -base64 48)"; then
+    exit 1
+  fi
+  if ! [[ -n "${hmac_material}" ]]; then
+    unset hmac_material
+    exit 1
+  fi
+  if ! [[ "${#hmac_material}" -eq 64 ]]; then
+    unset hmac_material
+    exit 1
+  fi
+  if ! [[ "${hmac_material}" =~ ^[A-Za-z0-9+/]{64}$ ]]; then
+    unset hmac_material
+    exit 1
+  fi
+  if ! gcloud secrets versions add "${hmac_secret}" \
+    --project="${project_id}" \
+    --data-file=- <<<"${hmac_material}"
+  then
+    unset hmac_material
+    exit 1
+  fi
+  unset hmac_material
+elif [[ "${hmac_version_total}" == "1" ]]; then
+  if ! jq -e \
+    'length == 1 and .[0].state == "ENABLED"' \
+    <<<"${hmac_versions_json}" >/dev/null
+  then
+    exit 1
+  fi
+  if ! hmac_latest_json="$(
+    gcloud secrets versions describe latest \
+      --secret="${hmac_secret}" \
+      --project="${project_id}" \
+      --format=json
+  )"; then
+    exit 1
+  fi
+  if ! jq -e '.state == "ENABLED"' \
+    <<<"${hmac_latest_json}" >/dev/null
+  then
+    exit 1
+  fi
+else
+  exit 1
+fi
+
+if ! hmac_versions_json="$(
+  gcloud secrets versions list "${hmac_secret}" \
+    --project="${project_id}" \
+    --format=json
+)"; then
+  exit 1
+fi
+if ! jq -e \
+  'length == 1 and .[0].state == "ENABLED"' \
+  <<<"${hmac_versions_json}" >/dev/null
+then
+  exit 1
+fi
+if ! hmac_latest_json="$(
+  gcloud secrets versions describe latest \
+    --secret="${hmac_secret}" \
+    --project="${project_id}" \
+    --format=json
+)"; then
+  exit 1
+fi
+if ! jq -e '.state == "ENABLED"' \
+  <<<"${hmac_latest_json}" >/dev/null
+then
+  exit 1
+fi
 ```
 
-Require one enabled latest version. Never print, compare suffixes, or record the payload. Do not modify the existing Gemini Secret payload.
+The only recoverable partial state is an automatically replicated Secret with
+zero versions. Exactly one enabled version whose `latest` state is enabled is
+reused; every other total or state stops. Random material exists only in the
+shell variable, must be exactly 64 Base64 characters for 48 random bytes, is
+passed through a here-string, and is immediately unset. It is never written,
+printed, read back, or compared. Do not modify the existing Gemini Secret.
 
 - [ ] **Step 9: Create and bind the least-privilege runtime identity**
 
-Create the account if absent:
+Classify the exact service-account count before creation and poll the successful
+create through the same list API. Then preflight every IAM binding before an
+idempotent add:
 
 ```bash
-gcloud iam service-accounts create lifesnap-runtime \
-  --project="${project_id}" \
-  --display-name="LifeSnap production runtime"
-```
+set -euo pipefail
 
-Grant Secret access at each Secret resource:
-
-```bash
-for secret_name in \
-  lifesnap-gemini-api-key \
+runtime_sa="lifesnap-runtime@${project_id}.iam.gserviceaccount.com"
+runtime_member="serviceAccount:${runtime_sa}"
+deploy_sa="apps-cloud-build@${project_id}.iam.gserviceaccount.com"
+deploy_member="serviceAccount:${deploy_sa}"
+secret_names=(
+  lifesnap-gemini-api-key
   lifesnap-installation-hmac-key
-do
-  gcloud secrets add-iam-policy-binding "${secret_name}" \
+)
+
+read_runtime_sa_inventory() {
+  if ! service_accounts_json="$(
+    gcloud iam service-accounts list \
+      --project="${project_id}" \
+      --format=json
+  )"; then
+    return 1
+  fi
+  if ! runtime_sa_count="$(
+    jq \
+      --arg expected_email "${runtime_sa}" \
+      '[.[] | select(.email == $expected_email)] | length' \
+      <<<"${service_accounts_json}"
+  )"; then
+    return 1
+  fi
+  if ! [[ "${runtime_sa_count}" == "0" || "${runtime_sa_count}" == "1" ]]; then
+    return 1
+  fi
+  return 0
+}
+
+if ! read_runtime_sa_inventory; then
+  exit 1
+fi
+if [[ "${runtime_sa_count}" == "0" ]]; then
+  if ! gcloud iam service-accounts create lifesnap-runtime \
     --project="${project_id}" \
-    --member="serviceAccount:lifesnap-runtime@${project_id}.iam.gserviceaccount.com" \
-    --role=roles/secretmanager.secretAccessor
+    --display-name="LifeSnap production runtime"
+  then
+    exit 1
+  fi
+fi
+
+runtime_sa_ready=false
+for attempt in $(seq 1 30); do
+  if ! read_runtime_sa_inventory; then
+    exit 1
+  fi
+  if [[ "${runtime_sa_count}" == "1" ]]; then
+    if ! jq -e \
+      --arg expected_email "${runtime_sa}" \
+      '[.[] | select(.email == $expected_email)] |
+       length == 1 and (.[0].disabled // false) == false' \
+      <<<"${service_accounts_json}" >/dev/null
+    then
+      exit 1
+    fi
+    runtime_sa_ready=true
+    break
+  fi
+  sleep 2
 done
+if ! ${runtime_sa_ready}; then
+  exit 1
+fi
+
+if ! deployment_principals="$(
+  rg -o \
+    'apps-cloud-build@zhang23-23[.]iam[.]gserviceaccount[.]com' \
+    cloudbuild.yaml | sort -u
+)"; then
+  exit 1
+fi
+if ! [[ "${deployment_principals}" == "${deploy_sa}" ]]; then
+  exit 1
+fi
+
+read_project_policy() {
+  if ! project_policy_json="$(
+    gcloud projects get-iam-policy "${project_id}" --format=json
+  )"; then
+    return 1
+  fi
+  return 0
+}
+
+if ! read_project_policy; then
+  exit 1
+fi
+if ! existing_runtime_project_bindings="$(
+  jq -c \
+    --arg member "${runtime_member}" \
+    '[.bindings[] | select(any(.members[]?; . == $member))]' \
+    <<<"${project_policy_json}"
+)"; then
+  exit 1
+fi
+if ! jq -e \
+  'all(.[];
+    (.role == "roles/firebaseappcheck.tokenVerifier" and
+     (.condition == null)) or
+    (.role == "roles/datastore.user" and
+     .condition.title == "LifeSnapQuotaDatabase" and
+     .condition.description == "LifeSnap quota database only" and
+     .condition.expression ==
+       "resource.name==\"projects/zhang23-23/databases/lifesnap-quota\""))' \
+  <<<"${existing_runtime_project_bindings}" >/dev/null
+then
+  exit 1
+fi
+if ! jq -e \
+  --arg member "${deploy_member}" \
+  '[.bindings[] |
+    select(.role == "roles/iam.serviceAccountUser") |
+    select(any(.members[]?; . == $member))
+  ] | length == 0' \
+  <<<"${project_policy_json}" >/dev/null
+then
+  exit 1
+fi
+
+if ! token_binding_count="$(
+  jq \
+    --arg member "${runtime_member}" \
+    '[.bindings[] |
+      select(
+        .role == "roles/firebaseappcheck.tokenVerifier" and
+        any(.members[]?; . == $member)
+      )
+    ] | length' <<<"${project_policy_json}"
+)"; then
+  exit 1
+fi
+if [[ "${token_binding_count}" == "0" ]]; then
+  if ! gcloud projects add-iam-policy-binding "${project_id}" \
+    --member="${runtime_member}" \
+    --role=roles/firebaseappcheck.tokenVerifier \
+    --condition=None
+  then
+    exit 1
+  fi
+elif ! [[ "${token_binding_count}" == "1" ]]; then
+  exit 1
+fi
+
+if ! read_project_policy; then
+  exit 1
+fi
+if ! datastore_binding_count="$(
+  jq \
+    --arg member "${runtime_member}" \
+    '[.bindings[] |
+      select(
+        .role == "roles/datastore.user" and
+        any(.members[]?; . == $member)
+      )
+    ] | length' <<<"${project_policy_json}"
+)"; then
+  exit 1
+fi
+if [[ "${datastore_binding_count}" == "0" ]]; then
+  if ! gcloud projects add-iam-policy-binding "${project_id}" \
+    --member="${runtime_member}" \
+    --role=roles/datastore.user \
+    --condition='title=LifeSnapQuotaDatabase,description=LifeSnap quota database only,expression=resource.name=="projects/zhang23-23/databases/lifesnap-quota"'
+  then
+    exit 1
+  fi
+elif ! [[ "${datastore_binding_count}" == "1" ]]; then
+  exit 1
+fi
+
+for secret_name in "${secret_names[@]}"; do
+  if ! secret_policy_json="$(
+    gcloud secrets get-iam-policy "${secret_name}" \
+      --project="${project_id}" \
+      --format=json
+  )"; then
+    exit 1
+  fi
+  if ! runtime_secret_bindings="$(
+    jq -c \
+      --arg member "${runtime_member}" \
+      '[.bindings[] | select(any(.members[]?; . == $member))]' \
+      <<<"${secret_policy_json}"
+  )"; then
+    exit 1
+  fi
+  if ! jq -e \
+    'length <= 1 and
+     all(.[]; .role == "roles/secretmanager.secretAccessor")' \
+    <<<"${runtime_secret_bindings}" >/dev/null
+  then
+    exit 1
+  fi
+  if ! runtime_secret_binding_count="$(
+    jq 'length' <<<"${runtime_secret_bindings}"
+  )"; then
+    exit 1
+  fi
+  if [[ "${runtime_secret_binding_count}" == "0" ]]; then
+    if ! gcloud secrets add-iam-policy-binding "${secret_name}" \
+      --project="${project_id}" \
+      --member="${runtime_member}" \
+      --role=roles/secretmanager.secretAccessor
+    then
+      exit 1
+    fi
+  elif ! [[ "${runtime_secret_binding_count}" == "1" ]]; then
+    exit 1
+  fi
+done
+
+if ! runtime_policy_json="$(
+  gcloud iam service-accounts get-iam-policy "${runtime_sa}" \
+    --project="${project_id}" \
+    --format=json
+)"; then
+  exit 1
+fi
+if ! sa_user_members_json="$(
+  jq -c \
+    '[.bindings[] |
+      select(.role == "roles/iam.serviceAccountUser") |
+      .members[]?
+    ]' <<<"${runtime_policy_json}"
+)"; then
+  exit 1
+fi
+if ! sa_user_member_count="$(jq 'length' <<<"${sa_user_members_json}")"; then
+  exit 1
+fi
+if [[ "${sa_user_member_count}" == "0" ]]; then
+  if ! gcloud iam service-accounts add-iam-policy-binding \
+    "${runtime_sa}" \
+    --project="${project_id}" \
+    --member="${deploy_member}" \
+    --role=roles/iam.serviceAccountUser
+  then
+    exit 1
+  fi
+elif [[ "${sa_user_member_count}" == "1" ]]; then
+  if ! jq -e --arg expected_member "${deploy_member}" \
+    '.[0] == $expected_member' \
+    <<<"${sa_user_members_json}" >/dev/null
+  then
+    exit 1
+  fi
+else
+  exit 1
+fi
+
+if ! read_project_policy; then
+  exit 1
+fi
+if ! runtime_project_bindings_json="$(
+  jq -c \
+    --arg member "${runtime_member}" \
+    '[.bindings[] | select(any(.members[]?; . == $member))]' \
+    <<<"${project_policy_json}"
+)"; then
+  exit 1
+fi
+if ! jq -e \
+  'length == 2 and
+   ([.[] |
+      select(
+        .role == "roles/firebaseappcheck.tokenVerifier" and
+        (.condition == null)
+      )
+    ] | length) == 1 and
+   ([.[] |
+      select(
+        .role == "roles/datastore.user" and
+        .condition.title == "LifeSnapQuotaDatabase" and
+        .condition.description == "LifeSnap quota database only" and
+        .condition.expression ==
+          "resource.name==\"projects/zhang23-23/databases/lifesnap-quota\""
+      )
+    ] | length) == 1' \
+  <<<"${runtime_project_bindings_json}" >/dev/null
+then
+  exit 1
+fi
+if ! jq -e \
+  --arg member "${deploy_member}" \
+  '[.bindings[] |
+    select(.role == "roles/iam.serviceAccountUser") |
+    select(any(.members[]?; . == $member))
+  ] | length == 0' \
+  <<<"${project_policy_json}" >/dev/null
+then
+  exit 1
+fi
+
+for secret_name in "${secret_names[@]}"; do
+  if ! secret_policy_json="$(
+    gcloud secrets get-iam-policy "${secret_name}" \
+      --project="${project_id}" \
+      --format=json
+  )"; then
+    exit 1
+  fi
+  if ! jq -e \
+    --arg member "${runtime_member}" \
+    '[.bindings[] |
+      select(.role == "roles/secretmanager.secretAccessor") |
+      .members[]? |
+      select(. == $member)
+    ] | length == 1' \
+    <<<"${secret_policy_json}" >/dev/null
+  then
+    exit 1
+  fi
+done
+
+if ! runtime_policy_json="$(
+  gcloud iam service-accounts get-iam-policy "${runtime_sa}" \
+    --project="${project_id}" \
+    --format=json
+)"; then
+  exit 1
+fi
+if ! jq -e \
+  --arg expected_member "${deploy_member}" \
+  '[.bindings[] |
+    select(.role == "roles/iam.serviceAccountUser") |
+    .members[]?
+  ] as $members |
+  ($members | length) == 1 and $members[0] == $expected_member' \
+  <<<"${runtime_policy_json}" >/dev/null
+then
+  exit 1
+fi
 ```
 
-Grant token verification:
-
-```bash
-gcloud projects add-iam-policy-binding "${project_id}" \
-  --member="serviceAccount:lifesnap-runtime@${project_id}.iam.gserviceaccount.com" \
-  --role=roles/firebaseappcheck.tokenVerifier \
-  --condition=None
-```
-
-Grant Firestore access only to the named database:
-
-```bash
-gcloud projects add-iam-policy-binding "${project_id}" \
-  --member="serviceAccount:lifesnap-runtime@${project_id}.iam.gserviceaccount.com" \
-  --role=roles/datastore.user \
-  --condition='title=LifeSnapQuotaDatabase,description=LifeSnap quota database only,expression=resource.name=="projects/zhang23-23/databases/lifesnap-quota"'
-```
-
-Allow only the already configured Cloud Build deployment identity to attach the
-runtime account:
-
-```bash
-gcloud iam service-accounts add-iam-policy-binding \
-  "lifesnap-runtime@${project_id}.iam.gserviceaccount.com" \
-  --project="${project_id}" \
-  --member="serviceAccount:apps-cloud-build@${project_id}.iam.gserviceaccount.com" \
-  --role=roles/iam.serviceAccountUser
-```
-
-Before adding this binding, require `cloudbuild.yaml` to name exactly
-`apps-cloud-build@zhang23-23.iam.gserviceaccount.com`; if it differs, stop and
-inventory the actual deployment principal. This resource-level binding grants
-that deployment identity `actAs` only on `lifesnap-runtime`; do not add
-project-level Service Account User.
-
-Do not grant Editor, Run Admin, Service Account User, Storage Admin, Artifact Registry Writer, Cloud Build Builder, Owner, or Secret Manager Admin to the runtime identity.
+Every IAM add is authorized only by an exact zero-count preflight and is
+followed by the complete read-back. Existing exact bindings are reused;
+duplicates, unexpected runtime roles, altered conditions, other Secret roles,
+another resource-level actor, or any project-level Service Account User for
+the deploy principal stop execution. Do not grant broad runtime roles or a
+service-account key.
 
 - [ ] **Step 10: Reconcile the observed automatic service expansion exactly once**
 
@@ -2069,10 +3030,16 @@ service_is_enabled() {
 
 service_is_disabled() {
   local service_name="$1"
+  local grep_status
   if grep -Fxq "${service_name}" <<<"${enabled_services}"; then
     return 1
+  else
+    grep_status=$?
   fi
-  return 0
+  if [[ "${grep_status}" -eq 1 ]]; then
+    return 0
+  fi
+  return "${grep_status}"
 }
 
 verify_reconciliation_invariants() {
@@ -2139,6 +3106,11 @@ verify_reconciliation_invariants() {
   if ! ios_apps_json="$(
     api_get "https://firebase.googleapis.com/v1beta1/projects/${project_id}/iosApps?pageSize=100"
   )"; then
+    return 1
+  fi
+  if ! jq -e '(.nextPageToken // "") == ""' \
+    <<<"${ios_apps_json}" >/dev/null
+  then
     return 1
   fi
   if ! jq -e \
@@ -2588,10 +3560,16 @@ task7_service_is_enabled() {
 
 task7_service_is_disabled() {
   local service_name="$1"
+  local grep_status
   if grep -Fxq "${service_name}" <<<"${enabled_services}"; then
     return 1
+  else
+    grep_status=$?
   fi
-  return 0
+  if [[ "${grep_status}" -eq 1 ]]; then
+    return 0
+  fi
+  return "${grep_status}"
 }
 
 if ! enabled_services="$(
@@ -2639,6 +3617,11 @@ if ! ios_apps_json="$(
   task7_api_get \
     "https://firebase.googleapis.com/v1beta1/projects/${project_id}/iosApps?pageSize=100"
 )"; then
+  exit 1
+fi
+if ! jq -e '(.nextPageToken // "") == ""' \
+  <<<"${ios_apps_json}" >/dev/null
+then
   exit 1
 fi
 if ! jq -e \
@@ -2918,6 +3901,38 @@ stage all three explicit paths and reject any other cached path:
 ```bash
 set -euo pipefail
 
+plist_path="ios/LifeSnapAction/GoogleService-Info.plist"
+if [[ -z "${firebase_app_id:-}" ]]; then
+  exit 1
+fi
+if ! /usr/bin/plutil -lint "${plist_path}" >/dev/null; then
+  exit 1
+fi
+if ! plist_bundle_id="$(
+  /usr/libexec/PlistBuddy -c 'Print :BUNDLE_ID' "${plist_path}"
+)"; then
+  exit 1
+fi
+if ! plist_project_id="$(
+  /usr/libexec/PlistBuddy -c 'Print :PROJECT_ID' "${plist_path}"
+)"; then
+  exit 1
+fi
+if ! plist_google_app_id="$(
+  /usr/libexec/PlistBuddy -c 'Print :GOOGLE_APP_ID' "${plist_path}"
+)"; then
+  exit 1
+fi
+if [[ "${plist_bundle_id}" != "com.zll.lifesnapaction" ]]; then
+  exit 1
+fi
+if [[ "${plist_project_id}" != "zhang23-23" ]]; then
+  exit 1
+fi
+if [[ "${plist_google_app_id}" != "${firebase_app_id}" ]]; then
+  exit 1
+fi
+
 if ! PATH=/Users/zhanglonglong/.nvm/versions/node/v24.16.0/bin:$PATH \
   npm test
 then
@@ -2959,8 +3974,12 @@ fi
 Expected: 9 of 9 approved automatic services are disabled; all 8 retained
 dependencies and all 4 core APIs are enabled; every protected resource read
 passes; Cloud Run is unchanged; the cached diff contains exactly the three
-Task 7 files; and no token, Secret payload, client API key, personal account,
-or unrelated IAM member appears in the commit.
+Task 7 files; and no token, Secret payload, personal account, or unrelated IAM
+member appears in the commit. A client API key must not enter evidence, logs,
+temporary plan output, or any other file; the reviewed
+`ios/LifeSnapAction/GoogleService-Info.plist` is the sole normal
+client-configuration exception. Never print or compare that key during this
+gate.
 
 ### Task 8: Bootstrap Firebase App Check and the production entitlement on iOS
 
