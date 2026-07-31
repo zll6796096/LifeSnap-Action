@@ -3,8 +3,11 @@ import {
   chmod,
   mkdir,
   mkdtemp,
+  readdir,
   readFile,
+  realpath,
   rm,
+  symlink,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -37,6 +40,7 @@ type ServiceState = {
     labels: Record<string, string>;
     name: string;
     namespace: string;
+    generation: number;
     resourceVersion: string;
   };
   spec: {
@@ -46,6 +50,7 @@ type ServiceState = {
         name: string;
       };
       spec: {
+        containerConcurrency?: number;
         containers: Array<{
           env?: Array<Record<string, unknown>>;
           image: string;
@@ -64,6 +69,7 @@ type ServiceState = {
     conditions: Array<{ status: string; type: string }>;
     latestCreatedRevisionName: string;
     latestReadyRevisionName: string;
+    observedGeneration: number;
     traffic: Array<{
       latestRevision?: boolean;
       percent?: number;
@@ -482,6 +488,176 @@ describe("Cloud Build release contract", () => {
     ]);
   });
 
+  it("waits for rollback traffic, readiness, and observed generation before PASS", async () => {
+    const fixture = await createReleaseFixture({
+      delayRollbackReconciliation: true,
+      failProductionValidation: true,
+    });
+    expect(runReleaseScript(fixture).status).toBe(0);
+    const evidence = await writeDeviceEvidence(fixture);
+
+    const result = runPromotionScript(fixture, evidence);
+    const state = await readServiceState(fixture);
+    const calls = await readFile(fixture.curlLog, "utf8");
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain(
+      `promotion_rollback=PASS revision=${fixture.rollbackRevision}`,
+    );
+    expect(
+      calls.match(/rollback-reconciliation-read/g) ?? [],
+      calls,
+    ).toHaveLength(2);
+    expect(state.status.conditions).toContainEqual({
+      status: "True",
+      type: "Ready",
+    });
+    expect(state.status.observedGeneration).toBe(state.metadata.generation);
+    expect(
+      state.status.traffic.map(({ url: _url, ...target }) => target),
+    ).toEqual([
+      { percent: 100, revisionName: fixture.rollbackRevision },
+      {
+        percent: 0,
+        revisionName: fixture.candidateRevision,
+        tag: fixture.candidateTag,
+      },
+    ]);
+  });
+
+  it("fails visibly without a rollback PASS when reconciliation times out", async () => {
+    const fixture = await createReleaseFixture({
+      delayRollbackReconciliation: true,
+      failProductionValidation: true,
+      neverRollbackReconciliation: true,
+    });
+    fixture.env.ROLLBACK_MAX_ATTEMPTS = "2";
+    expect(runReleaseScript(fixture).status).toBe(0);
+    const evidence = await writeDeviceEvidence(fixture);
+
+    const result = runPromotionScript(fixture, evidence);
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain(
+      "promotion_rollback_reconciliation=TIMEOUT attempts=2",
+    );
+    expect(result.stderr).not.toContain("promotion_rollback=PASS");
+    expect(result.stderr).toContain("promotion_rollback=FAILED code=1");
+  });
+
+  it("rolls back only traffic and promotion-owned provenance fields", async () => {
+    const fixture = await createReleaseFixture({
+      concurrentOwnedSpecChangeOnFailure: true,
+      failProductionValidation: true,
+    });
+    expect(runReleaseScript(fixture).status).toBe(0);
+    const evidence = await writeDeviceEvidence(fixture);
+
+    const result = runPromotionScript(fixture, evidence);
+    const state = await readServiceState(fixture);
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("promotion_rollback=PASS");
+    expect(state.metadata.labels).toEqual({
+      ...fixture.initialLabels,
+      "concurrent-label": "preserve-me",
+    });
+    expect(state.spec.template.spec.containerConcurrency).toBe(17);
+    expect(state.spec.traffic).toEqual([
+      { percent: 100, revisionName: fixture.rollbackRevision },
+      {
+        latestRevision: true,
+        percent: 0,
+        tag: fixture.candidateTag,
+      },
+    ]);
+  });
+
+  it("uses the script location as the evidence and asset trust root", async () => {
+    const fixture = await createReleaseFixture();
+    expect(runReleaseScript(fixture).status).toBe(0);
+    const evidence = await writeDeviceEvidence(fixture);
+    const foreignCwd = await mkdtemp(join(tmpdir(), "lifesnap-foreign-cwd-"));
+    temporaryDirectories.push(foreignCwd);
+
+    const result = runPromotionScript(fixture, evidence, { cwd: foreignCwd });
+
+    expect(result.status, result.stderr).toBe(0);
+    expect((await readServiceState(fixture)).spec.traffic).toEqual([
+      { percent: 100, revisionName: fixture.candidateRevision },
+    ]);
+  });
+
+  it("rejects lookalike relative evidence from a foreign cwd before PUT", async () => {
+    const fixture = await createReleaseFixture();
+    expect(runReleaseScript(fixture).status).toBe(0);
+    const approvedEvidence = await writeDeviceEvidence(fixture);
+    const foreignCwd = await mkdtemp(join(tmpdir(), "lifesnap-lookalike-"));
+    temporaryDirectories.push(foreignCwd);
+    const relativeEvidence = "docs/verification/yotei-snap-security/device.txt";
+    const lookalike = join(foreignCwd, relativeEvidence);
+    await mkdir(join(lookalike, ".."), { recursive: true });
+    await writeFile(lookalike, await readFile(approvedEvidence));
+    const callsBefore = await readFile(fixture.curlLog, "utf8");
+
+    const result = runPromotionScript(fixture, relativeEvidence, {
+      cwd: foreignCwd,
+    });
+    const callsAfter = await readFile(fixture.curlLog, "utf8");
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toMatch(/approved directory|No such file or directory/);
+    expect(mutationCalls(callsAfter)).toEqual(mutationCalls(callsBefore));
+  });
+
+  it("creates a unique private scratch directory for every invocation", async () => {
+    const fixture = await createReleaseFixture();
+    expect(runReleaseScript(fixture).status).toBe(0);
+    const evidence = await writeDeviceEvidence(fixture);
+
+    expect(runPromotionScript(fixture, evidence).status).toBe(0);
+    runPromotionScript(fixture, evidence);
+    const calls = await readFile(fixture.curlLog, "utf8");
+    const scratchEntries = calls
+      .split("\n")
+      .filter((line) => line.startsWith("promotion-scratch "))
+      .map((line) => Object.fromEntries(
+        line.slice("promotion-scratch ".length)
+          .split(" ")
+          .map((entry) => entry.split("=")),
+      ));
+    const scratchDirectories = [...new Set(scratchEntries.map(({ dir }) => dir))];
+
+    expect(scratchDirectories).toHaveLength(2);
+    const canonicalWorkspace = await realpath(fixture.workspace);
+    expect(scratchDirectories.every((path) =>
+      path.startsWith(`${canonicalWorkspace}/lifesnap-promotion.`),
+    )).toBe(true);
+    expect(scratchEntries.every(({ mode }) => mode === "700")).toBe(true);
+    expect(
+      (await readdir(fixture.workspace)).filter((name) =>
+        name.startsWith("lifesnap-promotion."),
+      ),
+    ).toEqual([]);
+  });
+
+  it("does not follow precreated predictable scratch symlinks", async () => {
+    const fixture = await createReleaseFixture();
+    expect(runReleaseScript(fixture).status).toBe(0);
+    const evidence = await writeDeviceEvidence(fixture);
+    const sentinel = join(fixture.workspace, "sentinel.txt");
+    await writeFile(sentinel, "do-not-overwrite\n");
+    await symlink(
+      sentinel,
+      join(fixture.workspace, "lifesnap-promotion-initial.json"),
+    );
+
+    const result = runPromotionScript(fixture, evidence);
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(await readFile(sentinel, "utf8")).toBe("do-not-overwrite\n");
+  });
+
   it("cleans a failed candidate validation and restores prior provenance", async () => {
     const fixture = await createReleaseFixture({
       failCandidateValidation: true,
@@ -581,10 +757,13 @@ type ReleaseFixture = {
 
 type ReleaseFixtureOptions = {
   concurrentCandidateOnFailure?: boolean;
+  concurrentOwnedSpecChangeOnFailure?: boolean;
+  delayRollbackReconciliation?: boolean;
   failCandidateValidation?: boolean;
   failProductionValidation?: boolean;
   injectStalePromotion?: boolean;
   mutateCandidateProvenance?: boolean;
+  neverRollbackReconciliation?: boolean;
   termAfterPromotion?: boolean;
   termWithNewerOwner?: boolean;
 };
@@ -605,6 +784,8 @@ async function createReleaseFixture(
   const candidateSnapshot = join(root, "candidate-snapshot.json");
   const curlLog = join(root, "curl.log");
   const staleInjectionFlag = join(root, "stale-injected");
+  const rollbackPendingFlag = join(root, "rollback-pending");
+  const rollbackReadCount = join(root, "rollback-read-count");
   const imageDigest =
     `asia-northeast1-docker.pkg.dev/test-project/apps/lifesnap-action@` +
     `sha256:${"d".repeat(64)}`;
@@ -625,6 +806,7 @@ async function createReleaseFixture(
       labels: initialLabels,
       name: "lifesnap-action",
       namespace: "123456789",
+      generation: 1,
       resourceVersion: "rv-1",
     },
     spec: {
@@ -666,6 +848,7 @@ async function createReleaseFixture(
       conditions: [{ status: "True", type: "Ready" }],
       latestCreatedRevisionName: rollbackRevision,
       latestReadyRevisionName: rollbackRevision,
+      observedGeneration: 1,
       traffic: [
         {
           percent: 100,
@@ -750,6 +933,7 @@ if (text === "auth print-access-token") {
     join(binDirectory, "curl"),
     `#!/usr/bin/env node
 const fs = require("node:fs");
+const path = require("node:path");
 const args = process.argv.slice(2);
 let method = "GET";
 let output = "";
@@ -806,7 +990,38 @@ const serviceUrl =
   "https://asia-northeast1-run.googleapis.com/apis/serving.knative.dev/" +
   "v1/namespaces/test-project/services/lifesnap-action";
 if (url === serviceUrl && method === "GET") {
-  respond(JSON.stringify(readState()) + "\\n");
+  let state = readState();
+  if (output && output.includes("lifesnap-promotion")) {
+    const directory = path.dirname(output);
+    const mode = (fs.statSync(directory).mode & 0o777).toString(8);
+    log("promotion-scratch dir=" + directory + " mode=" + mode);
+  }
+  if (fs.existsSync(process.env.ROLLBACK_PENDING_FLAG)) {
+    const count = fs.existsSync(process.env.ROLLBACK_READ_COUNT)
+      ? Number(fs.readFileSync(process.env.ROLLBACK_READ_COUNT, "utf8")) + 1
+      : 1;
+    fs.writeFileSync(process.env.ROLLBACK_READ_COUNT, String(count));
+    log("rollback-reconciliation-read count=" + count);
+    if (
+      count >= 2 &&
+      process.env.NEVER_ROLLBACK_RECONCILIATION !== "1"
+    ) {
+      state.status.traffic = state.spec.traffic.map((target) => ({
+        ...(target.latestRevision
+          ? {
+              percent: target.percent,
+              revisionName: process.env.CANDIDATE_REVISION,
+              tag: target.tag,
+            }
+          : target),
+        ...(target.tag ? { url: "https://candidate.example" } : {}),
+      }));
+      state.status.observedGeneration = state.metadata.generation;
+      fs.unlinkSync(process.env.ROLLBACK_PENDING_FLAG);
+      writeState(state);
+    }
+  }
+  respond(JSON.stringify(state) + "\\n");
 } else if (url === serviceUrl && method === "PUT") {
   const state = readState();
   const payload = JSON.parse(fs.readFileSync(dataFile, "utf8"));
@@ -820,6 +1035,7 @@ if (url === serviceUrl && method === "GET") {
   const revisionLabels = payload.spec.template.metadata.labels || {};
   const isCandidateCreation =
     source !== process.env.COMMIT_SHA &&
+    !state.metadata.labels["promotion-owner"] &&
     revisionLabels["source-commit"] === process.env.COMMIT_SHA &&
     revisionLabels["release-build"] === process.env.BUILD_ID &&
     Boolean(candidateTarget);
@@ -882,6 +1098,7 @@ if (url === serviceUrl && method === "GET") {
     state.metadata.resourceVersion = bumpResourceVersion(
       state.metadata.resourceVersion,
     );
+    state.metadata.generation += 1;
     state.status.latestCreatedRevisionName = process.env.CANDIDATE_REVISION;
     state.status.latestReadyRevisionName = process.env.CANDIDATE_REVISION;
     state.status.traffic = state.spec.traffic.map((target) => {
@@ -895,6 +1112,7 @@ if (url === serviceUrl && method === "GET") {
       }
       return target;
     });
+    state.status.observedGeneration = state.metadata.generation;
     writeState(state);
     log(
       "PUT candidate source=" + revisionLabels["source-commit"] +
@@ -905,16 +1123,33 @@ if (url === serviceUrl && method === "GET") {
     respond(JSON.stringify(state) + "\\n");
     process.exit(0);
   }
+  const isRollback =
+    source !== process.env.COMMIT_SHA &&
+    payload.spec.traffic.some(
+      (target) => target.revisionName === process.env.ROLLBACK_REVISION,
+    );
   state.metadata.labels = payload.metadata.labels;
   state.metadata.annotations = payload.metadata.annotations;
   state.spec = payload.spec;
   state.metadata.resourceVersion = bumpResourceVersion(
     state.metadata.resourceVersion,
   );
-  state.status.traffic = state.spec.traffic.map((target) => ({
-    ...target,
-    ...(target.tag ? { url: "https://candidate.example" } : {}),
-  }));
+  state.metadata.generation += 1;
+  if (isRollback && process.env.DELAY_ROLLBACK_RECONCILIATION === "1") {
+    fs.writeFileSync(process.env.ROLLBACK_PENDING_FLAG, "pending\\n");
+  } else {
+    state.status.traffic = state.spec.traffic.map((target) => ({
+      ...(target.latestRevision
+        ? {
+            percent: target.percent,
+            revisionName: process.env.CANDIDATE_REVISION,
+            tag: target.tag,
+          }
+        : target),
+      ...(target.tag ? { url: "https://candidate.example" } : {}),
+    }));
+    state.status.observedGeneration = state.metadata.generation;
+  }
   const production = state.spec.traffic.find(
     (target) => target.percent === 100,
   );
@@ -976,6 +1211,21 @@ if (url === serviceUrl && method === "GET") {
     );
   }
 } else if (url.startsWith("https://service.example")) {
+  if (
+    process.env.CONCURRENT_OWNED_SPEC_CHANGE_ON_FAILURE === "1" &&
+    url.endsWith("/health")
+  ) {
+    const state = readState();
+    state.metadata.labels["concurrent-label"] = "preserve-me";
+    state.spec.template.spec.containerConcurrency = 17;
+    state.metadata.resourceVersion = bumpResourceVersion(
+      state.metadata.resourceVersion,
+    );
+    state.metadata.generation += 1;
+    state.status.observedGeneration = state.metadata.generation;
+    writeState(state);
+    log("concurrent-owned-update=applied");
+  }
   if (
     process.env.FAIL_PRODUCTION_VALIDATION === "1" &&
     url.endsWith("/health")
@@ -1047,7 +1297,11 @@ if (url === serviceUrl && method === "GET") {
       COMMIT_SHA: commitSha,
       CONCURRENT_CANDIDATE_ON_FAILURE:
         options.concurrentCandidateOnFailure ? "1" : "0",
+      CONCURRENT_OWNED_SPEC_CHANGE_ON_FAILURE:
+        options.concurrentOwnedSpecChangeOnFailure ? "1" : "0",
       CURL_LOG: curlLog,
+      DELAY_ROLLBACK_RECONCILIATION:
+        options.delayRollbackReconciliation ? "1" : "0",
       DEPLOY_REGION: "asia-northeast1",
       FAIL_CANDIDATE_VALIDATION: options.failCandidateValidation ? "1" : "0",
       FAIL_PRODUCTION_VALIDATION: options.failProductionValidation ? "1" : "0",
@@ -1056,9 +1310,16 @@ if (url === serviceUrl && method === "GET") {
       MUTATE_CANDIDATE_PROVENANCE: options.mutateCandidateProvenance
         ? "1"
         : "0",
+      NEVER_ROLLBACK_RECONCILIATION:
+        options.neverRollbackReconciliation ? "1" : "0",
       PATH: `${binDirectory}:${process.env.PATH}`,
       PROJECT_ID: "test-project",
       RELEASE_WORKSPACE: workspace,
+      ROLLBACK_MAX_ATTEMPTS: "5",
+      ROLLBACK_PENDING_FLAG: rollbackPendingFlag,
+      ROLLBACK_POLL_INTERVAL_SECONDS: "0",
+      ROLLBACK_READ_COUNT: rollbackReadCount,
+      ROLLBACK_REVISION: rollbackRevision,
       REMOTE_MAIN_SHA: commitSha,
       REPOSITORY_URL: "https://github.com/zll6796096/LifeSnap-Action.git",
       SERVICE_NAME: "lifesnap-action",
@@ -1085,9 +1346,13 @@ function runReleaseScript(fixture: ReleaseFixture) {
   });
 }
 
-function runPromotionScript(fixture: ReleaseFixture, evidence: string) {
+function runPromotionScript(
+  fixture: ReleaseFixture,
+  evidence: string,
+  options: { cwd?: string } = {},
+) {
   return spawnSync("bash", [promotionScriptPath], {
-    cwd: repoRoot,
+    cwd: options.cwd ?? repoRoot,
     encoding: "utf8",
     env: {
       ...fixture.env,
