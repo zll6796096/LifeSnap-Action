@@ -107,15 +107,15 @@ final class KeychainInstallationIdentifierStore:
     private let service = "com.zll.lifesnapaction.security"
     private let account = "app-check-installation-id-v1"
     private let keychain: KeychainPersisting
-    private let lock = NSLock()
+    private static let lock = NSLock()
 
     init(keychain: KeychainPersisting = SystemKeychain()) {
         self.keychain = keychain
     }
 
     func identifier() throws -> String {
-        lock.lock()
-        defer { lock.unlock() }
+        Self.lock.lock()
+        defer { Self.lock.unlock() }
 
         if let data = try keychain.read(service: service, account: account),
            let stored = String(data: data, encoding: .utf8),
