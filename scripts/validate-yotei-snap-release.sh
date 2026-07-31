@@ -124,7 +124,42 @@ assert_contains "$project_yml" 'MARKETING_VERSION: "1.1"' 'project.yml marketing
 assert_contains "$project_yml" 'CURRENT_PROJECT_VERSION: "4"' 'project.yml build version'
 assert_contains "$project_yml" 'exactVersion: 12.17.0' 'Firebase iOS SDK exact version'
 assert_contains "$api_client" '/api/v2/extract' 'APIClient uses the attested v2 extract route'
-assert_not_contains "$api_client" 'X-Firebase-AppCheck", "' 'APIClient has no hard-coded App Check token'
+
+if node --input-type=module - "$api_client" <<'NODE'
+import fs from 'node:fs';
+
+const apiClientPath = process.argv[2];
+const source = fs.readFileSync(apiClientPath, 'utf8');
+const normalized = source.replace(/\s+/g, ' ').trim();
+const headerName = '"X-Firebase-AppCheck"';
+const headerOccurrences = normalized.split(headerName).length - 1;
+const assignments = [...source.matchAll(
+  /request\.setValue\(\s*([^,]+?)\s*,\s*forHTTPHeaderField:\s*"X-Firebase-AppCheck"\s*\)/gs,
+)];
+
+const tokenSource =
+  'let token: String do { token = try await tokenProvider.token() } catch {';
+const trimmedTokenSource =
+  'let trimmedToken = token.trimmingCharacters( in: .whitespacesAndNewlines )';
+const validatedToken =
+  'guard !trimmedToken.isEmpty, trimmedToken == token else {';
+
+if (
+  headerOccurrences !== 1 ||
+  assignments.length !== 1 ||
+  assignments[0][1].replace(/\s+/g, ' ').trim() !== 'trimmedToken' ||
+  !normalized.includes(tokenSource) ||
+  !normalized.includes(trimmedTokenSource) ||
+  !normalized.includes(validatedToken)
+) {
+  process.exit(1);
+}
+NODE
+then
+  pass 'APIClient derives and validates a fresh token for its sole App Check header assignment'
+else
+  fail 'APIClient derives and validates a fresh token for its sole App Check header assignment'
+fi
 
 app_attest_environment=$(/usr/libexec/PlistBuddy -c 'Print :com.apple.developer.devicecheck.appattest-environment' "$entitlements" 2>/dev/null || true)
 assert_equal "$app_attest_environment" 'production' 'App Attest production entitlement'
@@ -133,7 +168,6 @@ google_bundle_id=$(/usr/libexec/PlistBuddy -c 'Print :BUNDLE_ID' "$google_servic
 google_project_id=$(/usr/libexec/PlistBuddy -c 'Print :PROJECT_ID' "$google_service_plist" 2>/dev/null || true)
 google_app_id=$(/usr/libexec/PlistBuddy -c 'Print :GOOGLE_APP_ID' "$google_service_plist" 2>/dev/null || true)
 google_sender_id=$(/usr/libexec/PlistBuddy -c 'Print :GCM_SENDER_ID' "$google_service_plist" 2>/dev/null || true)
-google_api_key=$(/usr/libexec/PlistBuddy -c 'Print :API_KEY' "$google_service_plist" 2>/dev/null || true)
 
 assert_equal "$google_bundle_id" 'com.zll.lifesnapaction' 'Firebase plist bundle ID'
 assert_equal "$google_project_id" 'zhang23-23' 'Firebase plist project ID'
@@ -142,7 +176,8 @@ case "$google_app_id" in
   "1:${google_sender_id}:ios:"*) pass 'Firebase app ID matches sender ID' ;;
   *) fail 'Firebase app ID matches sender ID' ;;
 esac
-if [ -n "$google_api_key" ]; then
+if /usr/libexec/PlistBuddy -c 'Print :API_KEY' "$google_service_plist" 2>/dev/null \
+  | grep -q '[^[:space:]]'; then
   pass 'Firebase plist API key is present (value redacted)'
 else
   fail 'Firebase plist API key is present (value redacted)'

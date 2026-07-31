@@ -77,4 +77,4 @@ Google states that Paid Service inputs and outputs are not used to improve Googl
 
 ## Calendar
 
-Do not report existing calendar contents as collected by LifeSnap. The app uses Calendar permission to add user-confirmed events locally to the iOS system calendar and does not upload existing calendar contents.
+Do not report existing calendar contents as collected by よていスナップ. The app uses Calendar permission to add user-confirmed events locally to the iOS system calendar and does not upload existing calendar contents.

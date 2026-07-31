@@ -51,7 +51,7 @@ Before each image upload, including retries, よていスナップ shows a dedic
 - The purpose is only to extract schedule or task information.
 - よていスナップ processes the image in request-time memory and does not persist uploaded images, base64 payloads, OCR text, raw Gemini output, titles, names, addresses, amounts, or summaries.
 - Google does not use Gemini Paid Service inputs or outputs to improve Google products, but may process limited logs for safety, security, abuse prevention, and legal obligations.
-- Users can refuse. If the user taps `キャンセル`, no `/api/extract` request is made, the pending image is cleared, and no calendar event is created.
+- Users can refuse. If the user taps `キャンセル`, no `/api/v2/extract` request is made, the pending image is cleared, and no calendar event is created.
 
 ## Reviewer Test Steps
 
