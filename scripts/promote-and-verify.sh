@@ -690,11 +690,6 @@ traffic = current.get("spec", {}).get("traffic", [])
 candidate_targets = [
     item for item in traffic if item.get("tag") == candidate_tag
 ]
-production = [
-    item
-    for item in traffic
-    if item.get("percent", 0) == 100 and item.get("revisionName")
-]
 owned_labels = (
     labels.get("release-build") == build_id
     and labels.get("source-commit") == commit_sha
@@ -702,26 +697,61 @@ owned_labels = (
     and labels.get("product") == "lifesnap-action"
     and labels.get("environment") == "production"
 )
-owned_promotion = (
-    owned_labels
-    and candidate_revision
-    and len(production) == 1
-    and production[0]["revisionName"] == candidate_revision
-)
-owned_candidate_provenance = (
+owned_provenance = (
     labels == initial.get("metadata", {}).get("labels", {})
     or owned_labels
 )
-owned_candidate = (
-    owned_candidate_provenance
-    and len(candidate_targets) == 1
+status_candidates = [
+    item
+    for item in current.get("status", {}).get("traffic", [])
+    if item.get("tag") == candidate_tag
+]
+resolved_revision = ""
+if len(status_candidates) == 1:
+    resolved_revision = status_candidates[0].get("revisionName", "")
+exact_status_target = (
+    len(status_candidates) == 1
+    and status_candidates[0].get("percent", 0) == 0
+    and resolved_revision
+    and (not candidate_revision or resolved_revision == candidate_revision)
 )
-if owned_promotion:
+exact_spec_target = (
+    len(candidate_targets) == 1
+    and candidate_targets[0].get("percent", 0) == 0
+    and (
+        candidate_targets[0].get("revisionName") == resolved_revision
+        or candidate_targets[0].get("latestRevision") is True
+    )
+)
+template_labels = (
+    current.get("spec", {})
+    .get("template", {})
+    .get("metadata", {})
+    .get("labels", {})
+)
+template_owned = (
+    template_labels.get("release-build") == build_id
+    and template_labels.get("source-commit") == commit_sha
+)
+safe_owned_target = (
+    owned_provenance
+    and template_owned
+    and exact_status_target
+    and exact_spec_target
+)
+traffic_without_owned_target = [
+    item for item in traffic if item.get("tag") != candidate_tag
+]
+exact_candidate_delta = (
+    safe_owned_target
+    and traffic_without_owned_target == initial.get("spec", {}).get("traffic", [])
+)
+if exact_candidate_delta:
     print("restore")
-elif owned_candidate:
-    print("restore")
-elif candidate_targets:
+elif safe_owned_target:
     print("remove-tag")
+elif candidate_targets or status_candidates:
+    print("conflict")
 else:
     print("none")
 PY
@@ -766,23 +796,83 @@ prepare_tag_cleanup_payload() {
   python3 - \
     "${current_json}" \
     "${payload}" \
-    "${candidate_tag}" <<'PY'
+    "${initial_service_json}" \
+    "${BUILD_ID}" \
+    "${COMMIT_SHA}" \
+    "${candidate_tag}" \
+    "${candidate_revision}" <<'PY'
 import json
 import sys
 from pathlib import Path
 
-current_path, payload_path, candidate_tag = sys.argv[1:]
+(
+    current_path,
+    payload_path,
+    initial_path,
+    build_id,
+    commit_sha,
+    candidate_tag,
+    candidate_revision,
+) = sys.argv[1:]
 current = json.loads(Path(current_path).read_text())
+initial = json.loads(Path(initial_path).read_text())
 metadata = current["metadata"]
-traffic = []
-for target in current.get("spec", {}).get("traffic", []):
-    if target.get("tag") != candidate_tag:
-        traffic.append(target)
-        continue
-    if target.get("percent", 0) > 0:
-        untagged = dict(target)
-        untagged.pop("tag", None)
-        traffic.append(untagged)
+labels = metadata.get("labels", {})
+owned_labels = (
+    labels.get("release-build") == build_id
+    and labels.get("source-commit") == commit_sha
+    and labels.get("managed-by") == "cloud-build"
+    and labels.get("product") == "lifesnap-action"
+    and labels.get("environment") == "production"
+)
+if not (
+    labels == initial.get("metadata", {}).get("labels", {})
+    or owned_labels
+):
+    raise SystemExit("Selective cleanup provenance is not owned")
+template_labels = (
+    current.get("spec", {})
+    .get("template", {})
+    .get("metadata", {})
+    .get("labels", {})
+)
+if (
+    template_labels.get("release-build") != build_id
+    or template_labels.get("source-commit") != commit_sha
+):
+    raise SystemExit("Selective cleanup template is not owned")
+candidate_targets = [
+    item
+    for item in current.get("spec", {}).get("traffic", [])
+    if item.get("tag") == candidate_tag
+]
+status_candidates = [
+    item
+    for item in current.get("status", {}).get("traffic", [])
+    if item.get("tag") == candidate_tag
+]
+if (
+    len(candidate_targets) != 1
+    or len(status_candidates) != 1
+    or candidate_targets[0].get("percent", 0) != 0
+    or status_candidates[0].get("percent", 0) != 0
+    or not status_candidates[0].get("revisionName")
+    or (
+        candidate_revision
+        and status_candidates[0].get("revisionName") != candidate_revision
+    )
+    or not (
+        candidate_targets[0].get("revisionName")
+        == status_candidates[0].get("revisionName")
+        or candidate_targets[0].get("latestRevision") is True
+    )
+):
+    raise SystemExit("Selective cleanup candidate target is ambiguous")
+traffic = [
+    target
+    for target in current.get("spec", {}).get("traffic", [])
+    if target.get("tag") != candidate_tag
+]
 spec = current["spec"]
 spec["traffic"] = traffic
 payload = {
@@ -863,6 +953,10 @@ cleanup_failed_release() {
         printf 'cleanup_result=CONFLICT mode=remove-tag\n' >&2
         return 1
       fi
+      ;;
+    conflict)
+      printf 'cleanup_result=CONFLICT ambiguous_candidate_ownership\n' >&2
+      return 1
       ;;
     none)
       printf 'cleanup_result=SKIPPED newer_owner_or_no_candidate\n' >&2

@@ -49,15 +49,27 @@ fi
 validate_device_evidence() {
   local validation
   validation="$(
-    python3 - "${DEVICE_SMOKE_EVIDENCE}" <<'PY'
+    python3 - \
+      "${DEVICE_SMOKE_EVIDENCE}" \
+      "${CANDIDATE_REVISION}" \
+      "${CANDIDATE_TAG}" \
+      "${EXPECTED_IMAGE_DIGEST}" \
+      "${EXPECTED_SOURCE_COMMIT}" <<'PY'
 import hashlib
 import re
 import sys
 from pathlib import Path
 
+(
+    evidence_argument,
+    expected_candidate_revision,
+    expected_candidate_tag,
+    expected_image_digest,
+    expected_source_commit,
+) = sys.argv[1:]
 repo_root = Path.cwd().resolve()
 allowed_root = (repo_root / "docs/verification/yotei-snap-security").resolve()
-evidence = Path(sys.argv[1])
+evidence = Path(evidence_argument)
 if not evidence.is_absolute():
     evidence = repo_root / evidence
 evidence = evidence.resolve(strict=True)
@@ -70,31 +82,37 @@ if not evidence.is_file():
 
 raw = evidence.read_bytes()
 text = raw.decode("utf-8")
-for required in (
-    "app_attest_provider=PASS",
-    "v2_extract=PASS",
-    "replay_rejected=PASS",
-    "gemini_valid_request_count=1",
-    "gemini_replay_request_count=0",
-):
-    if text.splitlines().count(required) != 1:
-        raise SystemExit(f"Missing or duplicate required evidence field: {required}")
+expected = {
+    "app_attest_provider": "PASS",
+    "v2_extract": "PASS",
+    "replay_rejected": "PASS",
+    "gemini_valid_request_count": "1",
+    "gemini_replay_request_count": "0",
+    "candidate_revision": expected_candidate_revision,
+    "candidate_tag": expected_candidate_tag,
+    "image_digest": expected_image_digest,
+    "source_commit": expected_source_commit,
+}
+allowed_keys = {*expected, "production_revision_before_device_smoke"}
+fields = {}
+for line in text.splitlines():
+    if not line or "=" not in line:
+        raise SystemExit("Evidence must contain only non-empty key=value lines")
+    key, value = line.split("=", 1)
+    if key not in allowed_keys:
+        raise SystemExit("Evidence field is not allowed")
+    if key in fields:
+        raise SystemExit("Evidence field is duplicated")
+    fields[key] = value
+if set(fields) != allowed_keys:
+    raise SystemExit("Evidence required field is missing")
+for key, expected_value in expected.items():
+    if fields[key] != expected_value:
+        if key in {"candidate_revision", "candidate_tag", "image_digest", "source_commit"}:
+            raise SystemExit("Evidence candidate identity mismatch")
+        raise SystemExit("Evidence required value mismatch")
 
-forbidden = re.compile(
-    r"(?i)(app.?check.?token|x-firebase-appcheck|authorization|bearer|"
-    r"installation.?(id|uuid|hmac)|image.?(data|content|bytes)|base64|"
-    r"request.?(body|header)|response.?body|extracted.?(json|field)|gemini.?(raw|response))"
-)
-if forbidden.search(text):
-    raise SystemExit("Device smoke evidence contains a forbidden field")
-
-production_lines = [
-    line for line in text.splitlines()
-    if line.startswith("production_revision_before_device_smoke=")
-]
-if len(production_lines) != 1:
-    raise SystemExit("Evidence must identify one pre-smoke production revision")
-production_revision = production_lines[0].split("=", 1)[1]
+production_revision = fields["production_revision_before_device_smoke"]
 if not re.fullmatch(r"[a-z][a-z0-9-]{0,62}", production_revision):
     raise SystemExit("Pre-smoke production revision is invalid")
 

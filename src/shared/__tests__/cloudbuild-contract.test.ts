@@ -333,9 +333,9 @@ describe("Cloud Build release contract", () => {
       expect(script).toContain(`:\x20"\${${name}:?${name} is required}"`);
     }
     expect(script).toContain("docs/verification/yotei-snap-security");
-    expect(script).toContain("app_attest_provider=PASS");
-    expect(script).toContain("v2_extract=PASS");
-    expect(script).toContain("replay_rejected=PASS");
+    expect(script).toContain('"app_attest_provider": "PASS"');
+    expect(script).toContain('"v2_extract": "PASS"');
+    expect(script).toContain('"replay_rejected": "PASS"');
     expect(script).toContain("evidence_sha256=");
     expect(script).toContain('labels.get("api-contract") != "v2-app-check"');
     expect(script).toContain(
@@ -373,10 +373,9 @@ describe("Cloud Build release contract", () => {
     const fixture = await createReleaseFixture();
     const candidateResult = runReleaseScript(fixture);
     expect(candidateResult.status, candidateResult.stderr).toBe(0);
-    const evidence = await writeDeviceEvidence(
-      fixture,
-      "lifesnap-action-00097-stale",
-    );
+    const evidence = await writeDeviceEvidence(fixture, {
+      productionRevision: "lifesnap-action-00097-stale",
+    });
     const callsBefore = await readFile(fixture.curlLog, "utf8");
 
     const result = runPromotionScript(fixture, evidence);
@@ -387,6 +386,71 @@ describe("Cloud Build release contract", () => {
     const mutationCalls = (calls: string) =>
       calls.split("\n").filter((line) => line.startsWith("PUT "));
     expect(mutationCalls(callsAfter)).toEqual(mutationCalls(callsBefore));
+  });
+
+  it.each([
+    ["candidate revision", { candidateRevision: "lifesnap-action-00097-other" }],
+    ["candidate tag", { candidateTag: "candidate-bbbbbbb-other" }],
+    [
+      "image digest",
+      {
+        imageDigest:
+          "asia-northeast1-docker.pkg.dev/test-project/apps/lifesnap-action@" +
+          `sha256:${"e".repeat(64)}`,
+      },
+    ],
+    ["source commit", { sourceCommit: "c".repeat(40) }],
+  ])(
+    "rejects mismatched %s evidence before promotion mutation",
+    async (_label, overrides) => {
+      const fixture = await createReleaseFixture();
+      const candidateResult = runReleaseScript(fixture);
+      expect(candidateResult.status, candidateResult.stderr).toBe(0);
+      const evidence = await writeDeviceEvidence(fixture, overrides);
+      const callsBefore = await readFile(fixture.curlLog, "utf8");
+
+      const result = runPromotionScript(fixture, evidence);
+      const callsAfter = await readFile(fixture.curlLog, "utf8");
+
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain("Evidence candidate identity mismatch");
+      expect(mutationCalls(callsAfter)).toEqual(mutationCalls(callsBefore));
+    },
+  );
+
+  it("rejects all non-allowlisted sensitive and unknown evidence fields", async () => {
+    const fixture = await createReleaseFixture();
+    const candidateResult = runReleaseScript(fixture);
+    expect(candidateResult.status, candidateResult.stderr).toBe(0);
+    const callsBefore = await readFile(fixture.curlLog, "utf8");
+    const forbiddenLines = [
+      "token=credential-value",
+      "request_body=private-value",
+      "response_body=private-value",
+      "request_headers=private-value",
+      "base64=private-value",
+      "installation_uuid=private-value",
+      "installation_hmac=private-value",
+      "image_content=private-value",
+      "ocr_text=private-value",
+      "secret=private-value",
+      "credential=private-value",
+      "calendar_title=private-value",
+    ];
+
+    for (const extraLine of forbiddenLines) {
+      const evidence = await writeDeviceEvidence(fixture, {
+        extraLines: [extraLine],
+      });
+      const result = runPromotionScript(fixture, evidence);
+      const callsAfter = await readFile(fixture.curlLog, "utf8");
+
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain("Evidence field is not allowed");
+      expect(result.stderr).not.toContain(extraLine);
+      expect(result.stdout).not.toContain(extraLine);
+      expect(mutationCalls(callsAfter)).toEqual(mutationCalls(callsBefore));
+    }
   });
 
   it("restores the prior traffic when owned promotion smoke fails", async () => {
@@ -448,6 +512,35 @@ describe("Cloud Build release contract", () => {
     });
   });
 
+  it("preserves a concurrent candidate while cleaning its failed candidate", async () => {
+    const fixture = await createReleaseFixture({
+      concurrentCandidateOnFailure: true,
+      failCandidateValidation: true,
+    });
+
+    const result = runReleaseScript(fixture);
+    const state = await readServiceState(fixture);
+
+    expect(result.status).not.toBe(0);
+    expect(state.metadata.labels).toEqual(fixture.initialLabels);
+    expect(state.spec.traffic).toEqual([
+      {
+        percent: 100,
+        revisionName: fixture.rollbackRevision,
+      },
+      {
+        percent: 0,
+        revisionName: "lifesnap-action-00100-concurrent",
+        tag: "candidate-concurrent-build",
+      },
+    ]);
+    expect(state.spec.traffic).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ tag: fixture.candidateTag }),
+      ]),
+    );
+  });
+
   it("rejects and restores candidate deployment provenance mutation", async () => {
     const fixture = await createReleaseFixture({
       mutateCandidateProvenance: true,
@@ -487,6 +580,7 @@ type ReleaseFixture = {
 };
 
 type ReleaseFixtureOptions = {
+  concurrentCandidateOnFailure?: boolean;
   failCandidateValidation?: boolean;
   failProductionValidation?: boolean;
   injectStalePromotion?: boolean;
@@ -839,6 +933,24 @@ if (url === serviceUrl && method === "GET") {
     process.env.FAIL_CANDIDATE_VALIDATION === "1" &&
     url.endsWith("/health")
   ) {
+    if (process.env.CONCURRENT_CANDIDATE_ON_FAILURE === "1") {
+      const state = readState();
+      const concurrent = {
+        percent: 0,
+        revisionName: "lifesnap-action-00100-concurrent",
+        tag: "candidate-concurrent-build",
+      };
+      state.spec.traffic.push(concurrent);
+      state.status.traffic.push({
+        ...concurrent,
+        url: "https://concurrent.example",
+      });
+      state.metadata.resourceVersion = bumpResourceVersion(
+        state.metadata.resourceVersion,
+      );
+      writeState(state);
+      log("concurrent-candidate=added");
+    }
     log("candidate-validation=failed");
     process.exit(22);
   }
@@ -933,6 +1045,8 @@ if (url === serviceUrl && method === "GET") {
       CANDIDATE_SNAPSHOT: candidateSnapshot,
       CANDIDATE_TAG: candidateTag,
       COMMIT_SHA: commitSha,
+      CONCURRENT_CANDIDATE_ON_FAILURE:
+        options.concurrentCandidateOnFailure ? "1" : "0",
       CURL_LOG: curlLog,
       DEPLOY_REGION: "asia-northeast1",
       FAIL_CANDIDATE_VALIDATION: options.failCandidateValidation ? "1" : "0",
@@ -987,9 +1101,22 @@ function runPromotionScript(fixture: ReleaseFixture, evidence: string) {
   });
 }
 
+type DeviceEvidenceOverrides = {
+  candidateRevision?: string;
+  candidateTag?: string;
+  extraLines?: string[];
+  imageDigest?: string;
+  productionRevision?: string;
+  sourceCommit?: string;
+};
+
+function mutationCalls(calls: string) {
+  return calls.split("\n").filter((line) => line.startsWith("PUT "));
+}
+
 async function writeDeviceEvidence(
   fixture: ReleaseFixture,
-  productionRevision = fixture.rollbackRevision,
+  overrides: DeviceEvidenceOverrides = {},
 ) {
   const evidenceDirectory = await mkdtemp(
     join(
@@ -1007,7 +1134,12 @@ async function writeDeviceEvidence(
       "replay_rejected=PASS",
       "gemini_valid_request_count=1",
       "gemini_replay_request_count=0",
-      `production_revision_before_device_smoke=${productionRevision}`,
+      `production_revision_before_device_smoke=${overrides.productionRevision ?? fixture.rollbackRevision}`,
+      `candidate_revision=${overrides.candidateRevision ?? fixture.candidateRevision}`,
+      `candidate_tag=${overrides.candidateTag ?? fixture.candidateTag}`,
+      `image_digest=${overrides.imageDigest ?? fixture.imageDigest}`,
+      `source_commit=${overrides.sourceCommit ?? fixture.commitSha}`,
+      ...(overrides.extraLines ?? []),
       "",
     ].join("\n"),
   );
