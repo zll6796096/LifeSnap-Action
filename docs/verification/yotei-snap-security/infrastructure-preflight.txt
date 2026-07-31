@@ -1,0 +1,98 @@
+Yotei Snap security infrastructure evidence
+Captured: 2026-07-31 21:27 JST
+Project: zhang23-23
+Project number: 788259830737
+Region: asia-northeast1
+
+Scope and safety
+- This record covers Task 7 Firebase, App Check, Firestore, Secret Manager, and IAM provisioning only.
+- No Cloud Run deployment, revision, traffic, environment, or service-identity change was performed.
+- No App Store action, iOS source change, Dockerfile change, default-service-account role change, or unrelated IAM change was performed.
+- No access token, Secret payload, private key, personal account, raw IAM policy, image, or extraction content was recorded.
+
+Approved Apple identity resolution
+- Team ID: YMUG864233.
+- Provenance: explicitly approved by the user from project-specific prior release evidence on 2026-07-31.
+- The global installed-certificate inventory returned two Team IDs, so it was not used to guess the project Team ID.
+
+API boundary
+- firebase.googleapis.com: ENABLED by this task.
+- firebaseappcheck.googleapis.com: ENABLED by this task.
+- firestore.googleapis.com: ENABLED by this task.
+- secretmanager.googleapis.com: already ENABLED and left enabled.
+- Firebase Authentication, Analytics, Cloud Armor, and load-balancing-related APIs inspected by this task remained disabled.
+
+Firebase project and iOS app
+- Firebase project: zhang23-23 / 788259830737 / ACTIVE.
+- Firebase was attached only after the target-project GET returned HTTP 404.
+- ACTIVE iOS apps matching com.zll.lifesnapaction: exactly 1.
+- Firebase App ID: 1:788259830737:ios:a2f98135f554376697bef0.
+- Display name: よていスナップ.
+- Bundle ID: com.zll.lifesnapaction.
+- Team ID: YMUG864233.
+- State: ACTIVE; etag present.
+- App Attest resource: projects/788259830737/apps/1:788259830737:ios:a2f98135f554376697bef0/appAttestConfig.
+- App Attest token TTL: 3600s.
+- The App Attest resource already had the exact TTL after app registration, so no corrective patch was needed.
+
+Reviewed Firebase plist
+- Repository path: ios/LifeSnapAction/GoogleService-Info.plist.
+- BUNDLE_ID, PROJECT_ID, and GOOGLE_APP_ID match the selected Firebase app exactly.
+- Analytics and Ads flags are false.
+- OAuth client, reversed client, tracking, and Ads app identifiers are absent.
+- Firebase-generated legacy GCM and Sign-In flags are present, but this task did not enable their APIs or add Messaging, Authentication, Analytics, Ads, or Sign-In SDKs.
+- The plist API key exists as required by Firebase client configuration; its value is intentionally omitted from this evidence.
+
+Firestore
+- Database: projects/zhang23-23/databases/lifesnap-quota.
+- Location: asia-northeast1.
+- Type: FIRESTORE_NATIVE.
+- Edition: STANDARD.
+- Delete protection: ENABLED.
+- Version retention period reported by the service: 3600s.
+- expires_at TTL on install_minute: ACTIVE.
+- expires_at TTL on install_day: ACTIVE.
+- expires_at TTL on service_day: ACTIVE.
+
+Secrets
+- lifesnap-gemini-api-key: automatic replication; 1 enabled version; latest state ENABLED.
+- Existing Gemini Secret payload and versions were not accessed or modified.
+- lifesnap-installation-hmac-key: created with automatic replication and exactly 1 enabled random version; latest state ENABLED.
+- The HMAC payload was piped directly from openssl to Secret Manager and was never printed, persisted locally, read back, or compared.
+
+Runtime identity and IAM
+- Runtime service account: lifesnap-runtime@zhang23-23.iam.gserviceaccount.com; enabled.
+- Project role: roles/firebaseappcheck.tokenVerifier; unconditional.
+- Project role: roles/datastore.user.
+- Datastore condition title: LifeSnapQuotaDatabase.
+- Datastore condition description: LifeSnap quota database only.
+- Datastore condition expression: resource.name=="projects/zhang23-23/databases/lifesnap-quota".
+- No other project role is bound to the runtime principal.
+- roles/secretmanager.secretAccessor is bound to the runtime principal separately on lifesnap-gemini-api-key and lifesnap-installation-hmac-key only.
+- Deployment principal: apps-cloud-build@zhang23-23.iam.gserviceaccount.com.
+- roles/iam.serviceAccountUser is bound to that deployment principal only on the lifesnap-runtime service-account resource.
+- The deployment principal has no project-level roles/iam.serviceAccountUser binding.
+
+Cloud Run non-mutation proof
+- Service: lifesnap-action in asia-northeast1.
+- Runtime remains 788259830737-compute@developer.gserviceaccount.com.
+- Latest ready revision remains lifesnap-action-00039-rwn.
+- Traffic remains 100 percent on lifesnap-action-00039-rwn.
+- No deployment or traffic mutation occurred in this task.
+
+Read-back acceptance
+- Required APIs: 4 of 4 enabled.
+- Forbidden related APIs inspected: 0 of 8 enabled.
+- Firebase project, unique iOS app, and App Attest GET: PASS.
+- Firestore database properties and 3 of 3 TTL policies: PASS.
+- Secret metadata and enabled-version-state checks: PASS; payload access was not used.
+- Runtime project roles: exactly 2 planned roles; unexpected roles: 0.
+- Secret accessor resources: exactly 2 planned Secrets.
+- Runtime resource actAs binding: exactly 1 expected deployment principal.
+- Cloud Run identity, revision, and traffic unchanged: PASS.
+- Plist syntax and identity fields: PASS.
+
+Remaining release gates
+- Cloud Run still uses the default Compute service account until the separately reviewed zero-traffic deployment task attaches lifesnap-runtime.
+- Infrastructure provisioning does not prove a real-device Release App Attest request.
+- No production traffic cutover or App Store release authorization is implied by this record.
