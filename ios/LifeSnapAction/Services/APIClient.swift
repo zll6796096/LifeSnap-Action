@@ -1,99 +1,299 @@
 import Foundation
-import UIKit
 
-// MARK: - API Client
+protocol URLSessioning {
+    func data(for request: URLRequest) async throws -> (Data, URLResponse)
+}
 
-/// Handles communication with the LifeSnap Action Cloud Run backend.
+extension URLSession: URLSessioning {}
+
+/// Sends attested image-extraction requests to the configured backend origin.
 final class APIClient {
-    /// Base URL for the API. Set via environment or defaults to production.
-    static let baseURL: String = {
-        if let url = ProcessInfo.processInfo.environment["API_BASE_URL"] {
-            return url
-        }
-        return "https://lifesnap-action-sxielk4wua-an.a.run.app"
-    }()
+    static let productionBaseURL =
+        "https://lifesnap-action-sxielk4wua-an.a.run.app"
 
     static var privacyPolicyURL: URL {
-        guard let url = URL(string: "\(baseURL)/privacy") else {
-            preconditionFailure("Invalid privacy policy URL")
+        URL(string: "\(productionBaseURL)/privacy")!
+    }
+
+    private static let timeoutInterval: TimeInterval = 30
+
+    private let baseURL: URL
+    private let session: URLSessioning
+    private let tokenProvider: AppCheckTokenProviding
+    private let installationStore: InstallationIdentifierProviding
+
+    convenience init(
+        bundle: Bundle = .main,
+        session: URLSessioning = URLSession.shared,
+        tokenProvider: AppCheckTokenProviding =
+            FirebaseLimitedUseTokenProvider(),
+        installationStore: InstallationIdentifierProviding =
+            KeychainInstallationIdentifierStore()
+    ) throws {
+        try self.init(
+            configuration: bundle.infoDictionary ?? [:],
+            session: session,
+            tokenProvider: tokenProvider,
+            installationStore: installationStore
+        )
+    }
+
+    convenience init(
+        configuration: [String: Any],
+        session: URLSessioning,
+        tokenProvider: AppCheckTokenProviding,
+        installationStore: InstallationIdentifierProviding
+    ) throws {
+        guard let value = configuration["APIBaseURL"] as? String,
+              let url = Self.validatedOrigin(from: value)
+        else {
+            throw APIError.invalidConfiguration
+        }
+
+        self.init(
+            validatedBaseURL: url,
+            session: session,
+            tokenProvider: tokenProvider,
+            installationStore: installationStore
+        )
+    }
+
+    init(
+        baseURL: URL,
+        session: URLSessioning,
+        tokenProvider: AppCheckTokenProviding,
+        installationStore: InstallationIdentifierProviding
+    ) {
+        guard Self.isValidOrigin(baseURL) else {
+            preconditionFailure("APIClient requires a validated HTTPS origin")
+        }
+        self.baseURL = baseURL
+        self.session = session
+        self.tokenProvider = tokenProvider
+        self.installationStore = installationStore
+    }
+
+    private init(
+        validatedBaseURL: URL,
+        session: URLSessioning,
+        tokenProvider: AppCheckTokenProviding,
+        installationStore: InstallationIdentifierProviding
+    ) {
+        baseURL = validatedBaseURL
+        self.session = session
+        self.tokenProvider = tokenProvider
+        self.installationStore = installationStore
+    }
+
+    func extractEvent(from imageData: Data) async throws -> ExtractionResponse {
+        var invalidTokenRetryCount = 0
+
+        while true {
+            let request = try await makeRequest(imageData: imageData)
+            let data: Data
+            let response: URLResponse
+
+            do {
+                (data, response) = try await session.data(for: request)
+            } catch {
+                throw APIError.networkUnavailable
+            }
+
+            do {
+                return try decode(data: data, response: response)
+            } catch let failure as ServerFailure {
+                if failure.code == "APP_CHECK_INVALID",
+                   invalidTokenRetryCount == 0
+                {
+                    invalidTokenRetryCount += 1
+                    continue
+                }
+                throw failure.publicError
+            }
+        }
+    }
+
+    private func makeRequest(imageData: Data) async throws -> URLRequest {
+        let installationID: String
+        do {
+            installationID = try installationStore.identifier()
+        } catch {
+            throw APIError.securityVerificationUnavailable
+        }
+
+        guard let uuid = UUID(uuidString: installationID),
+              !installationID.isEmpty
+        else {
+            throw APIError.securityVerificationUnavailable
+        }
+
+        let token: String
+        do {
+            token = try await tokenProvider.token()
+        } catch {
+            throw APIError.securityVerificationUnavailable
+        }
+
+        let trimmedToken = token.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        guard !trimmedToken.isEmpty, trimmedToken == token else {
+            throw APIError.securityVerificationUnavailable
+        }
+
+        guard let url = URL(
+            string: "/api/v2/extract",
+            relativeTo: baseURL
+        )?.absoluteURL else {
+            throw APIError.invalidConfiguration
+        }
+
+        let boundary = UUID().uuidString
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = Self.timeoutInterval
+        request.setValue(
+            "multipart/form-data; boundary=\(boundary)",
+            forHTTPHeaderField: "Content-Type"
+        )
+        request.setValue(
+            trimmedToken,
+            forHTTPHeaderField: "X-Firebase-AppCheck"
+        )
+        request.setValue(
+            uuid.uuidString.lowercased(),
+            forHTTPHeaderField: "X-LifeSnap-Install-ID"
+        )
+
+        var body = Data()
+        body.appendUTF8("--\(boundary)\r\n")
+        body.appendUTF8(
+            "Content-Disposition: form-data; "
+                + "name=\"image\"; filename=\"photo.jpg\"\r\n"
+        )
+        body.appendUTF8("Content-Type: image/jpeg\r\n\r\n")
+        body.append(imageData)
+        body.appendUTF8("\r\n--\(boundary)--\r\n")
+        request.httpBody = body
+
+        return request
+    }
+
+    private func decode(
+        data: Data,
+        response: URLResponse
+    ) throws -> ExtractionResponse {
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw ServerFailure(code: nil, publicError: .invalidResponse)
+        }
+
+        if httpResponse.statusCode == 200 {
+            do {
+                return try JSONDecoder().decode(
+                    ExtractionResponse.self,
+                    from: data
+                )
+            } catch {
+                throw ServerFailure(code: nil, publicError: .invalidResponse)
+            }
+        }
+
+        let code = (try? JSONDecoder().decode(
+            APIErrorResponse.self,
+            from: data
+        ))?.code
+        throw ServerFailure(
+            code: code,
+            publicError: Self.publicError(
+                for: code,
+                statusCode: httpResponse.statusCode
+            )
+        )
+    }
+
+    private static func publicError(
+        for code: String?,
+        statusCode: Int
+    ) -> APIError {
+        switch code {
+        case "APP_CHECK_REQUIRED", "APP_CHECK_INVALID":
+            return .appCheckInvalid
+        case "APP_CHECK_REPLAYED":
+            return .appCheckReplayed
+        case "APP_ID_FORBIDDEN":
+            return .appIDForbidden
+        case "INSTALL_RATE_LIMITED":
+            return .installationRateLimited
+        case "INSTALL_DAILY_LIMITED":
+            return .installationDailyLimited
+        case "SERVICE_DAILY_LIMITED":
+            return .serviceDailyLimited
+        case "SECURITY_SERVICE_UNAVAILABLE":
+            return .securityVerificationUnavailable
+        default:
+            switch statusCode {
+            case 400:
+                return .badRequest
+            case 503:
+                return .serviceUnavailable
+            default:
+                return .serverError(statusCode: statusCode)
+            }
+        }
+    }
+
+    static func validatedOrigin(from value: String) -> URL? {
+        guard !value.isEmpty, let url = URL(string: value),
+              isValidOrigin(url)
+        else {
+            return nil
         }
         return url
     }
 
-    /// Request timeout in seconds
-    private static let timeoutInterval: TimeInterval = 30
-
-    // MARK: - Extract Event from Image
-
-    /// Sends an image to the backend for Gemini extraction.
-    /// - Parameter imageData: JPEG-compressed image data
-    /// - Returns: Parsed ExtractionResponse
-    static func extractEvent(from imageData: Data) async throws -> ExtractionResponse {
-        guard let url = URL(string: "\(baseURL)/api/extract") else {
-            throw APIError.invalidURL
+    private static func isValidOrigin(_ url: URL) -> Bool {
+        guard let components = URLComponents(
+            url: url,
+            resolvingAgainstBaseURL: false
+        ),
+        components.scheme?.lowercased() == "https",
+        let host = components.host,
+        isValidHost(host),
+        components.user == nil,
+        components.password == nil,
+        components.query == nil,
+        components.fragment == nil,
+        components.port.map({ (1...65_535).contains($0) }) ?? true,
+        components.path.isEmpty || components.path == "/"
+        else {
+            return false
         }
-
-        // Build multipart/form-data request
-        let boundary = UUID().uuidString
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
-        request.timeoutInterval = timeoutInterval
-
-        // Construct multipart body
-        var body = Data()
-        body.append("--\(boundary)\r\n")
-        body.append("Content-Disposition: form-data; name=\"image\"; filename=\"photo.jpg\"\r\n")
-        body.append("Content-Type: image/jpeg\r\n\r\n")
-        body.append(imageData)
-        body.append("\r\n--\(boundary)--\r\n")
-
-        request.httpBody = body
-
-        // Send request
-        let (data, response) = try await URLSession.shared.data(for: request)
-
-        guard let httpResponse = response as? HTTPURLResponse else {
-            throw APIError.invalidResponse
-        }
-
-        // Handle error status codes
-        switch httpResponse.statusCode {
-        case 200:
-            break
-        case 400:
-            let errorResponse = try? JSONDecoder().decode(APIErrorResponse.self, from: data)
-            throw APIError.badRequest(errorResponse?.error ?? "Invalid request")
-        case 503:
-            throw APIError.serviceUnavailable
-        default:
-            let errorResponse = try? JSONDecoder().decode(APIErrorResponse.self, from: data)
-            throw APIError.serverError(
-                statusCode: httpResponse.statusCode,
-                message: errorResponse?.error ?? "Unknown error"
-            )
-        }
-
-        // Decode response
-        let decoder = JSONDecoder()
-        return try decoder.decode(ExtractionResponse.self, from: data)
+        return true
     }
 
-    // MARK: - Health Check
-
-    /// Checks if the backend is reachable.
-    static func healthCheck() async -> Bool {
-        guard let url = URL(string: "\(baseURL)/health") else { return false }
-        do {
-            let (_, response) = try await URLSession.shared.data(from: url)
-            return (response as? HTTPURLResponse)?.statusCode == 200
-        } catch {
+    private static func isValidHost(_ host: String) -> Bool {
+        guard !host.isEmpty, host.utf8.count <= 253 else {
             return false
+        }
+
+        let labels = host.split(
+            separator: ".",
+            omittingEmptySubsequences: false
+        )
+        return labels.allSatisfy { label in
+            guard !label.isEmpty,
+                  label.utf8.count <= 63,
+                  label.first?.isASCIIAlphaNumeric == true,
+                  label.last?.isASCIIAlphaNumeric == true
+            else {
+                return false
+            }
+            return label.allSatisfy {
+                $0.isASCIIAlphaNumeric || $0 == "-"
+            }
         }
     }
 }
-
-// MARK: - Extraction Client Injection
 
 protocol ImageExtractionClient {
     func extractEvent(from imageData: Data) async throws -> ExtractionResponse
@@ -101,41 +301,29 @@ protocol ImageExtractionClient {
 
 struct BackendImageExtractionClient: ImageExtractionClient {
     func extractEvent(from imageData: Data) async throws -> ExtractionResponse {
-        try await APIClient.extractEvent(from: imageData)
+        let client = try APIClient()
+        return try await client.extractEvent(from: imageData)
     }
 }
 
-// MARK: - API Errors
-
-enum APIError: LocalizedError {
-    case invalidURL
-    case invalidResponse
-    case badRequest(String)
-    case serviceUnavailable
-    case serverError(statusCode: Int, message: String)
-
-    var errorDescription: String? {
-        switch self {
-        case .invalidURL:
-            return "APIのURLが無効です。"
-        case .invalidResponse:
-            return "サーバーからの応答が無効です。"
-        case .badRequest(let message):
-            return message
-        case .serviceUnavailable:
-            return "サービスが一時的に利用できません。しばらくしてからもう一度お試しください。"
-        case .serverError(let statusCode, let message):
-            return "サーバーエラー (\(statusCode)): \(message)"
-        }
-    }
+private struct ServerFailure: Error {
+    let code: String?
+    let publicError: APIError
 }
-
-// MARK: - Data Extension for Multipart
 
 private extension Data {
-    mutating func append(_ string: String) {
-        if let data = string.data(using: .utf8) {
-            append(data)
-        }
+    mutating func appendUTF8(_ string: String) {
+        append(Data(string.utf8))
+    }
+}
+
+private extension Character {
+    var isASCIIAlphaNumeric: Bool {
+        unicodeScalars.count == 1
+            && unicodeScalars.first.map {
+                ("a"..."z").contains(Character($0))
+                    || ("A"..."Z").contains(Character($0))
+                    || ("0"..."9").contains(Character($0))
+            } == true
     }
 }

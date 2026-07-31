@@ -21,6 +21,7 @@ targets:
         product: FirebaseAppCheck
       - sdk: Security.framework
     settings:
+      API_BASE_URL: https://lifesnap-action-sxielk4wua-an.a.run.app
       PRODUCT_BUNDLE_IDENTIFIER: com.zll.lifesnapaction
       INFOPLIST_FILE: LifeSnapAction/Info.plist
       GENERATE_INFOPLIST_FILE: "NO"
