@@ -17,6 +17,10 @@ const repoRoot = fileURLToPath(new URL("../../../", import.meta.url));
 const configPath = join(repoRoot, "cloudbuild.yaml");
 const packagePath = join(repoRoot, "package.json");
 const releaseScriptPath = join(repoRoot, "scripts/promote-and-verify.sh");
+const promotionScriptPath = join(
+  repoRoot,
+  "scripts/promote-verified-candidate.sh",
+);
 const temporaryDirectories: string[] = [];
 
 type BuildStep = {
@@ -42,7 +46,10 @@ type ServiceState = {
         name: string;
       };
       spec: {
-        containers: Array<{ image: string }>;
+        containers: Array<{
+          env?: Array<Record<string, unknown>>;
+          image: string;
+        }>;
         serviceAccountName: string;
       };
     };
@@ -94,7 +101,7 @@ describe("Cloud Build release contract", () => {
       "docker-build",
       "docker-push",
       "resolve-image-digest",
-      "orchestrate-candidate-release",
+      "deploy-and-verify-candidate",
     ]);
     expect(config.serviceAccount).toBe(
       "projects/zhang23-23/serviceAccounts/apps-cloud-build@zhang23-23.iam.gserviceaccount.com",
@@ -107,7 +114,7 @@ describe("Cloud Build release contract", () => {
       ({ id }) => id === "resolve-image-digest",
     );
     const release = config.steps.find(
-      ({ id }) => id === "orchestrate-candidate-release",
+      ({ id }) => id === "deploy-and-verify-candidate",
     );
     expect(dockerPush?.args?.join("\n")).toContain(
       "tee /workspace/lifesnap-docker-push.log",
@@ -131,7 +138,7 @@ describe("Cloud Build release contract", () => {
     );
   });
 
-  it("installs traps before deploy and uses resourceVersion-conditional replacement", async () => {
+  it("ends Cloud Build after validating a tagged zero-traffic candidate", async () => {
     const script = await readFile(releaseScriptPath, "utf8");
     const installTraps = script.indexOf("\ninstall_release_traps\n");
     const deploy = script.indexOf("\ndeploy_candidate\n", installTraps);
@@ -143,13 +150,9 @@ describe("Cloud Build release contract", () => {
       "\nverify_candidate_endpoints\n",
       candidateRuntime,
     );
-    const conditionalPromotion = script.indexOf(
-      "\nconditionally_promote_candidate\n",
+    const candidateGate = script.indexOf(
+      "candidate_gate=PASS revision=%s url=%s promotion=BLOCKED_BY_DEVICE_SMOKE",
       candidateEndpoints,
-    );
-    const productionEndpoints = script.indexOf(
-      "\nverify_production_endpoints ",
-      conditionalPromotion,
     );
     const deployFunction = script.slice(
       script.indexOf("\ndeploy_candidate()"),
@@ -180,8 +183,13 @@ describe("Cloud Build release contract", () => {
     expect(deploy).toBeGreaterThan(installTraps);
     expect(candidateRuntime).toBeGreaterThan(deploy);
     expect(candidateEndpoints).toBeGreaterThan(candidateRuntime);
-    expect(conditionalPromotion).toBeGreaterThan(candidateEndpoints);
-    expect(productionEndpoints).toBeGreaterThan(conditionalPromotion);
+    expect(candidateGate).toBeGreaterThan(candidateEndpoints);
+    expect(script.slice(candidateEndpoints)).not.toContain(
+      "\nconditionally_promote_candidate\n",
+    );
+    expect(script.slice(candidateEndpoints)).not.toContain(
+      "\nverify_production_endpoints ",
+    );
   });
 
   it("uses a non-vulnerable direct yaml parser version", async () => {
@@ -192,42 +200,49 @@ describe("Cloud Build release contract", () => {
     expect(packageJson.devDependencies.yaml).toBe("2.9.0");
   });
 
-  it("promotes only the exact validated candidate and removes its tag atomically", async () => {
+  it("keeps production unchanged after candidate validation", async () => {
     const fixture = await createReleaseFixture();
     const result = runReleaseScript(fixture);
     const state = await readServiceState(fixture);
     const calls = await readFile(fixture.curlLog, "utf8");
 
     expect(result.status, result.stderr).toBe(0);
-    expect(state.metadata.labels).toMatchObject({
-      "environment": "production",
-      "managed-by": "cloud-build",
-      "product": "lifesnap-action",
-      "release-build": fixture.buildId,
-      "source-commit": fixture.commitSha,
-    });
+    expect(state.metadata.labels).toEqual(fixture.initialLabels);
     expect(state.spec.traffic).toEqual([
       {
         percent: 100,
-        revisionName: fixture.candidateRevision,
+        revisionName: fixture.rollbackRevision,
+      },
+      {
+        latestRevision: true,
+        percent: 0,
+        tag: fixture.candidateTag,
       },
     ]);
-    expect(calls).toContain(
+    expect(result.stdout).toContain(
+      `candidate_gate=PASS revision=${fixture.candidateRevision} url=https://candidate.example promotion=BLOCKED_BY_DEVICE_SMOKE`,
+    );
+    expect(calls).not.toContain(
       `PUT source=${fixture.commitSha} resourceVersion=rv-2 result=applied`,
     );
   });
 
   it("stamps the candidate revision without changing old service provenance or traffic", async () => {
+    const script = await readFile(releaseScriptPath, "utf8");
     const fixture = await createReleaseFixture();
     const result = runReleaseScript(fixture);
 
     expect(result.status, result.stderr).toBe(0);
+    expect(script).toContain("/usr/libexec/PlistBuddy");
+    expect(script).toContain("plistlib.load");
 
     const candidateSnapshot = JSON.parse(
       await readFile(fixture.candidateSnapshot, "utf8"),
     ) as {
+      environment: Array<Record<string, unknown>>;
       image: string;
       revisionLabels: Record<string, string>;
+      serviceAccountName: string;
       serviceLabels: Record<string, string>;
       traffic: ServiceState["spec"]["traffic"];
     };
@@ -243,8 +258,40 @@ describe("Cloud Build release contract", () => {
       product: "lifesnap-action",
       "release-build": fixture.buildId,
       "source-commit": fixture.commitSha,
+      "api-contract": "v2-app-check",
     });
     expect(candidateSnapshot.image).toBe(fixture.imageDigest);
+    expect(candidateSnapshot.serviceAccountName).toBe(
+      "lifesnap-runtime@zhang23-23.iam.gserviceaccount.com",
+    );
+    expect(candidateSnapshot.environment).toEqual(
+      expect.arrayContaining([
+        {
+          name: "GEMINI_API_KEY",
+          valueFrom: {
+            secretKeyRef: {
+              key: "latest",
+              name: "lifesnap-gemini-api-key",
+            },
+          },
+        },
+        {
+          name: "INSTALLATION_HMAC_KEY",
+          valueFrom: {
+            secretKeyRef: {
+              key: "latest",
+              name: "lifesnap-installation-hmac-key",
+            },
+          },
+        },
+        { name: "FIREBASE_PROJECT_ID", value: "zhang23-23" },
+        {
+          name: "FIREBASE_APP_ID",
+          value: "1:788259830737:ios:a2f98135f554376697bef0",
+        },
+        { name: "FIRESTORE_DATABASE_ID", value: "lifesnap-quota" },
+      ]),
+    );
     expect(candidateSnapshot.traffic).toEqual([
       {
         percent: 100,
@@ -256,27 +303,117 @@ describe("Cloud Build release contract", () => {
         tag: fixture.candidateTag,
       },
     ]);
-    expect(revisionChecks).toHaveLength(2);
+    expect(revisionChecks).toHaveLength(1);
   });
 
-  it("rejects a stale resourceVersion without clobbering the newer owner", async () => {
-    const fixture = await createReleaseFixture({
-      injectStalePromotion: true,
-    });
-    const result = runReleaseScript(fixture);
+  it("smokes legacy success and stable no-store v2 rejections", async () => {
+    const script = await readFile(releaseScriptPath, "utf8");
+
+    expect(script).toContain('"${candidate_url}/health"');
+    expect(script).toContain('"${candidate_url}/privacy"');
+    expect(script).toContain('"${candidate_url}/api/extract"');
+    expect(script.match(/  verify_negative_v2_response \\$/gm)).toHaveLength(2);
+    expect(script).toContain('"missing-token"');
+    expect(script).toContain('"invalid-token"');
+    expect(script).toContain('expected_code="APP_CHECK_REQUIRED"');
+    expect(script).toContain('expected_code="APP_CHECK_INVALID"');
+    expect(script).toContain("cache-control: no-store");
+  });
+
+  it("keeps promotion in an evidence-gated exact-candidate script", async () => {
+    const script = await readFile(promotionScriptPath, "utf8");
+
+    for (const name of [
+      "CANDIDATE_REVISION",
+      "CANDIDATE_TAG",
+      "EXPECTED_IMAGE_DIGEST",
+      "EXPECTED_SOURCE_COMMIT",
+      "DEVICE_SMOKE_EVIDENCE",
+    ]) {
+      expect(script).toContain(`:\x20"\${${name}:?${name} is required}"`);
+    }
+    expect(script).toContain("docs/verification/yotei-snap-security");
+    expect(script).toContain("app_attest_provider=PASS");
+    expect(script).toContain("v2_extract=PASS");
+    expect(script).toContain("replay_rejected=PASS");
+    expect(script).toContain("evidence_sha256=");
+    expect(script).toContain('labels.get("api-contract") != "v2-app-check"');
+    expect(script).toContain(
+      "RUNTIME_SERVICE_ACCOUNT=lifesnap-runtime@zhang23-23.iam.gserviceaccount.com",
+    );
+    expect(script).toContain('"resourceVersion": metadata["resourceVersion"]');
+    expect(script).toContain('"percent": 100');
+    expect(script).toContain("promotion_rollback_revision=");
+    expect(script).not.toContain("APP_CHECK_TOKEN");
+  });
+
+  it("promotes only the exact candidate named by sanitized device evidence", async () => {
+    const fixture = await createReleaseFixture();
+    const candidateResult = runReleaseScript(fixture);
+    expect(candidateResult.status, candidateResult.stderr).toBe(0);
+    const evidence = await writeDeviceEvidence(fixture);
+
+    const result = runPromotionScript(fixture, evidence);
     const state = await readServiceState(fixture);
-    const calls = await readFile(fixture.curlLog, "utf8");
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toMatch(/^evidence_sha256=[0-9a-f]{64}$/m);
+    expect(result.stdout).not.toContain("app_attest_provider");
+    expect(result.stdout).not.toContain("replay_rejected");
+    expect(state.spec.traffic).toEqual([
+      { percent: 100, revisionName: fixture.candidateRevision },
+    ]);
+    expect(state.metadata.labels).toMatchObject({
+      "managed-by": "verified-device-promotion",
+      "source-commit": fixture.commitSha,
+    });
+  });
+
+  it("blocks promotion when production changed after device smoke began", async () => {
+    const fixture = await createReleaseFixture();
+    const candidateResult = runReleaseScript(fixture);
+    expect(candidateResult.status, candidateResult.stderr).toBe(0);
+    const evidence = await writeDeviceEvidence(
+      fixture,
+      "lifesnap-action-00097-stale",
+    );
+    const callsBefore = await readFile(fixture.curlLog, "utf8");
+
+    const result = runPromotionScript(fixture, evidence);
+    const callsAfter = await readFile(fixture.curlLog, "utf8");
 
     expect(result.status).not.toBe(0);
-    expect(calls).toContain(
-      `PUT source=${fixture.commitSha} resourceVersion=rv-2 result=precondition-failed`,
+    expect(result.stderr).toContain("Production changed after device smoke began");
+    const mutationCalls = (calls: string) =>
+      calls.split("\n").filter((line) => line.startsWith("PUT "));
+    expect(mutationCalls(callsAfter)).toEqual(mutationCalls(callsBefore));
+  });
+
+  it("restores the prior traffic when owned promotion smoke fails", async () => {
+    const fixture = await createReleaseFixture({
+      failProductionValidation: true,
+    });
+    const candidateResult = runReleaseScript(fixture);
+    expect(candidateResult.status, candidateResult.stderr).toBe(0);
+    const evidence = await writeDeviceEvidence(fixture);
+
+    const result = runPromotionScript(fixture, evidence);
+    const state = await readServiceState(fixture);
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain(
+      `promotion_rollback=PASS revision=${fixture.rollbackRevision}`,
     );
-    expect(state.metadata.labels["release-build"]).toBe("newer-build-456");
-    expect(state.metadata.labels["source-commit"]).toBe("c".repeat(40));
+    expect(state.metadata.labels).toEqual(fixture.initialLabels);
     expect(state.spec.traffic).toEqual([
       {
         percent: 100,
         revisionName: fixture.rollbackRevision,
+      },
+      {
+        latestRevision: true,
+        percent: 0,
+        tag: fixture.candidateTag,
       },
     ]);
   });
@@ -331,37 +468,6 @@ describe("Cloud Build release contract", () => {
     ]);
   });
 
-  it("rolls back a TERM after promotion when this build still owns the service", async () => {
-    const fixture = await createReleaseFixture({
-      termAfterPromotion: true,
-    });
-    const result = runReleaseScript(fixture);
-    const state = await readServiceState(fixture);
-
-    expect(result.status).toBe(143);
-    expect(state.metadata.labels).toEqual(fixture.initialLabels);
-    expect(state.spec.traffic[0]).toMatchObject({
-      percent: 100,
-      revisionName: fixture.rollbackRevision,
-    });
-  });
-
-  it("does not roll back a TERM after promotion when a newer build owns the service", async () => {
-    const fixture = await createReleaseFixture({
-      termAfterPromotion: true,
-      termWithNewerOwner: true,
-    });
-    const result = runReleaseScript(fixture);
-    const state = await readServiceState(fixture);
-
-    expect(result.status).toBe(143);
-    expect(state.metadata.labels["release-build"]).toBe("newer-build-456");
-    expect(state.metadata.labels["source-commit"]).toBe("c".repeat(40));
-    expect(state.spec.traffic[0]).toMatchObject({
-      percent: 100,
-      revisionName: fixture.candidateRevision,
-    });
-  });
 });
 
 type ReleaseFixture = {
@@ -382,6 +488,7 @@ type ReleaseFixture = {
 
 type ReleaseFixtureOptions = {
   failCandidateValidation?: boolean;
+  failProductionValidation?: boolean;
   injectStalePromotion?: boolean;
   mutateCandidateProvenance?: boolean;
   termAfterPromotion?: boolean;
@@ -433,7 +540,23 @@ async function createReleaseFixture(
           name: rollbackRevision,
         },
         spec: {
-          containers: [{ image: "rollback-image@sha256:safe" }],
+          containers: [
+            {
+              env: [
+                { name: "MOCK_MODE", value: "false" },
+                {
+                  name: "GEMINI_API_KEY",
+                  valueFrom: {
+                    secretKeyRef: {
+                      key: "latest",
+                      name: "lifesnap-gemini-api-key",
+                    },
+                  },
+                },
+              ],
+              image: "rollback-image@sha256:safe",
+            },
+          ],
           serviceAccountName:
             "runtime-service-account@test-project.iam.gserviceaccount.com",
         },
@@ -493,6 +616,8 @@ const value = (prefix) => {
 };
 if (text === "auth print-access-token") {
   process.stdout.write("fake-access-token\\n");
+} else if (text.includes("run services describe ")) {
+  process.stdout.write(JSON.stringify(readState()) + "\\n");
 } else if (text.includes("run revisions describe ")) {
   const state = readState();
   fs.appendFileSync(
@@ -512,19 +637,12 @@ if (text === "auth print-access-token") {
     },
     spec: {
       containers: [{
-        env: [
-          { name: "MOCK_MODE", value: "false" },
-          {
-            name: "GEMINI_API_KEY",
-            valueFrom: {
-              secretKeyRef: { name: "test-secret", key: "latest" },
-            },
-          },
-        ],
+        env: state.spec.template.spec.containers[0].env,
       }],
-      serviceAccountName: "runtime-service-account@test-project.iam.gserviceaccount.com",
+      serviceAccountName: state.spec.template.spec.serviceAccountName,
     },
     status: {
+      conditions: [{ status: "True", type: "Ready" }],
       imageDigest: state.spec.template.spec.containers[0].image,
     },
   }) + "\\n");
@@ -542,6 +660,9 @@ const args = process.argv.slice(2);
 let method = "GET";
 let output = "";
 let dataFile = "";
+let headerOutput = "";
+let writeOut = "";
+const requestHeaders = [];
 let url = "";
 for (let index = 0; index < args.length; index += 1) {
   const argument = args[index];
@@ -551,6 +672,12 @@ for (let index = 0; index < args.length; index += 1) {
     output = args[++index];
   } else if (argument === "--data-binary") {
     dataFile = args[++index].replace(/^@/, "");
+  } else if (argument === "--dump-header") {
+    headerOutput = args[++index];
+  } else if (argument === "--write-out") {
+    writeOut = args[++index];
+  } else if (argument === "--header") {
+    requestHeaders.push(args[++index]);
   } else if (argument.startsWith("http")) {
     url = argument;
   }
@@ -558,11 +685,21 @@ for (let index = 0; index < args.length; index += 1) {
 const readState = () => JSON.parse(fs.readFileSync(process.env.SERVICE_STATE, "utf8"));
 const writeState = (state) =>
   fs.writeFileSync(process.env.SERVICE_STATE, JSON.stringify(state) + "\\n");
-const respond = (contents) => {
+const respond = (contents, status = 200, headers = []) => {
   if (output) {
     fs.writeFileSync(output, contents);
   } else {
     process.stdout.write(contents);
+  }
+  if (headerOutput) {
+    fs.writeFileSync(
+      headerOutput,
+      "HTTP/1.1 " + status + " Fixture\\r\\n" +
+        headers.join("\\r\\n") + "\\r\\n\\r\\n",
+    );
+  }
+  if (writeOut) {
+    process.stdout.write(String(status));
   }
 };
 const log = (line) =>
@@ -629,8 +766,10 @@ if (url === serviceUrl && method === "GET") {
     fs.writeFileSync(
       process.env.CANDIDATE_SNAPSHOT,
       JSON.stringify({
+        environment: payload.spec.template.spec.containers[0].env,
         image: payload.spec.template.spec.containers[0].image,
         revisionLabels,
+        serviceAccountName: payload.spec.template.spec.serviceAccountName,
         serviceLabels: payload.metadata.labels,
         traffic: payload.spec.traffic,
       }) + "\\n",
@@ -712,8 +851,26 @@ if (url === serviceUrl && method === "GET") {
       '{"title":"test","summary":"test","route":"calendar_action",' +
       '"confidence":90,"evidence":[],"risk_flags":[]}',
     );
+  } else if (url.endsWith("/api/v2/extract")) {
+    const invalid = requestHeaders.includes("X-Firebase-AppCheck: invalid");
+    respond(
+      JSON.stringify({
+        error: {
+          code: invalid ? "APP_CHECK_INVALID" : "APP_CHECK_REQUIRED",
+        },
+      }),
+      401,
+      ["Cache-Control: no-store"],
+    );
   }
 } else if (url.startsWith("https://service.example")) {
+  if (
+    process.env.FAIL_PRODUCTION_VALIDATION === "1" &&
+    url.endsWith("/health")
+  ) {
+    log("production-validation=failed");
+    process.exit(22);
+  }
   if (
     process.env.TERM_AFTER_PROMOTION === "1" &&
     url.endsWith("/health")
@@ -742,6 +899,17 @@ if (url === serviceUrl && method === "GET") {
       '{"title":"test","summary":"test","route":"calendar_action",' +
       '"confidence":90,"evidence":[],"risk_flags":[]}',
     );
+  } else if (url.endsWith("/api/v2/extract")) {
+    const invalid = requestHeaders.includes("X-Firebase-AppCheck: invalid");
+    respond(
+      JSON.stringify({
+        error: {
+          code: invalid ? "APP_CHECK_INVALID" : "APP_CHECK_REQUIRED",
+        },
+      }),
+      401,
+      ["Cache-Control: no-store"],
+    );
   }
 } else {
   process.stderr.write("unexpected curl call: " + method + " " + url + "\\n");
@@ -768,6 +936,7 @@ if (url === serviceUrl && method === "GET") {
       CURL_LOG: curlLog,
       DEPLOY_REGION: "asia-northeast1",
       FAIL_CANDIDATE_VALIDATION: options.failCandidateValidation ? "1" : "0",
+      FAIL_PRODUCTION_VALIDATION: options.failProductionValidation ? "1" : "0",
       IMAGE_DIGEST: imageDigest,
       INJECT_STALE_PROMOTION: options.injectStalePromotion ? "1" : "0",
       MUTATE_CANDIDATE_PROVENANCE: options.mutateCandidateProvenance
@@ -800,6 +969,49 @@ function runReleaseScript(fixture: ReleaseFixture) {
     env: fixture.env,
     timeout: 5_000,
   });
+}
+
+function runPromotionScript(fixture: ReleaseFixture, evidence: string) {
+  return spawnSync("bash", [promotionScriptPath], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    env: {
+      ...fixture.env,
+      CANDIDATE_REVISION: fixture.candidateRevision,
+      CANDIDATE_TAG: fixture.candidateTag,
+      DEVICE_SMOKE_EVIDENCE: evidence,
+      EXPECTED_IMAGE_DIGEST: fixture.imageDigest,
+      EXPECTED_SOURCE_COMMIT: fixture.commitSha,
+    },
+    timeout: 5_000,
+  });
+}
+
+async function writeDeviceEvidence(
+  fixture: ReleaseFixture,
+  productionRevision = fixture.rollbackRevision,
+) {
+  const evidenceDirectory = await mkdtemp(
+    join(
+      repoRoot,
+      "docs/verification/yotei-snap-security/task12-contract-",
+    ),
+  );
+  temporaryDirectories.push(evidenceDirectory);
+  const evidence = join(evidenceDirectory, "device-smoke.txt");
+  await writeFile(
+    evidence,
+    [
+      "app_attest_provider=PASS",
+      "v2_extract=PASS",
+      "replay_rejected=PASS",
+      "gemini_valid_request_count=1",
+      "gemini_replay_request_count=0",
+      `production_revision_before_device_smoke=${productionRevision}`,
+      "",
+    ].join("\n"),
+  );
+  return evidence;
 }
 
 async function readServiceState(

@@ -77,7 +77,7 @@ steps:
         print(f"image_digest={immutable_image}")
         PY
 
-  - id: orchestrate-candidate-release
+  - id: deploy-and-verify-candidate
     name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
     entrypoint: bash
     args:

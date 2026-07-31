@@ -10,21 +10,42 @@ set -Eeuo pipefail
 
 release_workspace="${RELEASE_WORKSPACE:-/workspace}"
 repository_url="${REPOSITORY_URL:-https://github.com/zll6796096/LifeSnap-Action.git}"
+if [[ -x /usr/libexec/PlistBuddy ]]; then
+  firebase_app_id="$(
+    /usr/libexec/PlistBuddy \
+      -c 'Print :GOOGLE_APP_ID' \
+      ios/LifeSnapAction/GoogleService-Info.plist
+  )"
+else
+  firebase_app_id="$(
+    python3 - ios/LifeSnapAction/GoogleService-Info.plist <<'PY'
+import plistlib
+import sys
+from pathlib import Path
+
+with Path(sys.argv[1]).open("rb") as plist_file:
+    print(plistlib.load(plist_file).get("GOOGLE_APP_ID", ""))
+PY
+  )"
+fi
+test -n "${firebase_app_id}"
+
+RUNTIME_SERVICE_ACCOUNT=lifesnap-runtime@zhang23-23.iam.gserviceaccount.com
+FIREBASE_PROJECT_ID=zhang23-23
+FIREBASE_APP_ID="${firebase_app_id}"
+FIRESTORE_DATABASE_ID=lifesnap-quota
+INSTALLATION_HMAC_SECRET=lifesnap-installation-hmac-key
 build_token="${BUILD_ID%%-*}"
 candidate_tag="candidate-${SHORT_SHA}-${build_token}"
 service_api="https://${DEPLOY_REGION}-run.googleapis.com/apis/serving.knative.dev/v1/namespaces/${PROJECT_ID}/services/${SERVICE_NAME}"
 initial_service_json="${release_workspace}/lifesnap-service-initial.json"
 candidate_service_json="${release_workspace}/lifesnap-service-candidate.json"
-prepromotion_service_json="${release_workspace}/lifesnap-service-prepromotion.json"
-promoted_service_json="${release_workspace}/lifesnap-service-promoted.json"
-final_service_json="${release_workspace}/lifesnap-service-final.json"
 image_digest="$(
   tr -d '\n' < "${release_workspace}/lifesnap-image-digest.txt"
 )"
 candidate_revision=""
 candidate_url=""
 rollback_revision=""
-runtime_service_account=""
 access_token=""
 candidate_mutation_started=0
 release_error=0
@@ -166,8 +187,11 @@ assert_current_main() {
 }
 
 capture_initial_state() {
-  api_get_service "${initial_service_json}"
-  read -r rollback_revision runtime_service_account < <(
+  gcloud run services describe "${SERVICE_NAME}" \
+    --project="${PROJECT_ID}" \
+    --region="${DEPLOY_REGION}" \
+    --format=json > "${initial_service_json}"
+  rollback_revision="$(
     python3 - "${initial_service_json}" <<'PY'
 import json
 import sys
@@ -195,17 +219,9 @@ labels = metadata.get("labels", {})
 source_commit = labels.get("source-commit", "")
 if len(source_commit) != 40:
     raise SystemExit("Initial production source provenance is missing")
-runtime_service_account = (
-    service.get("spec", {})
-    .get("template", {})
-    .get("spec", {})
-    .get("serviceAccountName", "")
-)
-if not runtime_service_account:
-    raise SystemExit("Initial runtime service account is missing")
-print(production[0]["revisionName"], runtime_service_account)
+print(production[0]["revisionName"])
 PY
-  )
+  )"
 }
 
 prepare_candidate_payload() {
@@ -216,7 +232,12 @@ prepare_candidate_payload() {
     "${BUILD_ID}" \
     "${COMMIT_SHA}" \
     "${candidate_tag}" \
-    "${image_digest}" <<'PY'
+    "${image_digest}" \
+    "${RUNTIME_SERVICE_ACCOUNT}" \
+    "${FIREBASE_PROJECT_ID}" \
+    "${FIREBASE_APP_ID}" \
+    "${FIRESTORE_DATABASE_ID}" \
+    "${INSTALLATION_HMAC_SECRET}" <<'PY'
 import copy
 import json
 import sys
@@ -229,6 +250,11 @@ from pathlib import Path
     commit_sha,
     candidate_tag,
     image_digest,
+    runtime_service_account,
+    firebase_project_id,
+    firebase_app_id,
+    firestore_database_id,
+    installation_hmac_secret,
 ) = sys.argv[1:]
 current = json.loads(Path(initial_path).read_text())
 metadata = current.get("metadata", {})
@@ -253,6 +279,7 @@ template_labels.update(
         "product": "lifesnap-action",
         "environment": "production",
         "release-build": build_id,
+        "api-contract": "v2-app-check",
     }
 )
 template["metadata"] = {
@@ -262,7 +289,44 @@ template["metadata"] = {
 containers = template.get("spec", {}).get("containers", [])
 if len(containers) != 1:
     raise SystemExit("Expected one service container for candidate")
-containers[0]["image"] = image_digest
+container = containers[0]
+container["image"] = image_digest
+existing_env = container.get("env", [])
+gemini_entries = [
+    item for item in existing_env if item.get("name") == "GEMINI_API_KEY"
+]
+if len(gemini_entries) != 1:
+    raise SystemExit("Expected one existing Gemini Secret Manager reference")
+gemini_secret = (
+    gemini_entries[0]
+    .get("valueFrom", {})
+    .get("secretKeyRef", {})
+)
+if not gemini_secret.get("name") or gemini_secret.get("key") != "latest":
+    raise SystemExit("Gemini key is not pinned to a latest Secret Manager reference")
+managed_names = {
+    "FIREBASE_PROJECT_ID",
+    "FIREBASE_APP_ID",
+    "FIRESTORE_DATABASE_ID",
+    "INSTALLATION_HMAC_KEY",
+}
+container["env"] = [
+    item for item in existing_env if item.get("name") not in managed_names
+] + [
+    {
+        "name": "INSTALLATION_HMAC_KEY",
+        "valueFrom": {
+            "secretKeyRef": {
+                "name": installation_hmac_secret,
+                "key": "latest",
+            }
+        },
+    },
+    {"name": "FIREBASE_PROJECT_ID", "value": firebase_project_id},
+    {"name": "FIREBASE_APP_ID", "value": firebase_app_id},
+    {"name": "FIRESTORE_DATABASE_ID", "value": firestore_database_id},
+]
+template.setdefault("spec", {})["serviceAccountName"] = runtime_service_account
 traffic = copy.deepcopy(current.get("spec", {}).get("traffic", []))
 if any(item.get("tag") == candidate_tag for item in traffic):
     raise SystemExit("Unique candidate tag already exists")
@@ -430,9 +494,13 @@ verify_candidate_runtime() {
   python3 - \
     "${revision_json}" \
     "${image_digest}" \
-    "${runtime_service_account}" \
+    "${RUNTIME_SERVICE_ACCOUNT}" \
     "${BUILD_ID}" \
-    "${COMMIT_SHA}" <<'PY'
+    "${COMMIT_SHA}" \
+    "${FIREBASE_PROJECT_ID}" \
+    "${FIREBASE_APP_ID}" \
+    "${FIRESTORE_DATABASE_ID}" \
+    "${INSTALLATION_HMAC_SECRET}" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -443,6 +511,10 @@ from pathlib import Path
     expected_service_account,
     build_id,
     commit_sha,
+    firebase_project_id,
+    firebase_app_id,
+    firestore_database_id,
+    installation_hmac_secret,
 ) = sys.argv[1:]
 revision = json.loads(Path(path).read_text())
 if revision.get("status", {}).get("imageDigest") != expected_image_digest:
@@ -454,6 +526,7 @@ expected_labels = {
     "managed-by": "cloud-build",
     "product": "lifesnap-action",
     "environment": "production",
+    "api-contract": "v2-app-check",
 }
 for key, value in expected_labels.items():
     if labels.get(key) != value:
@@ -467,25 +540,91 @@ for key in (
     if key in labels:
         raise SystemExit(f"Legacy candidate revision label remains: {key}")
 if revision.get("spec", {}).get("serviceAccountName") != expected_service_account:
-    raise SystemExit("Candidate runtime service account changed")
+    raise SystemExit("Candidate runtime service account is not dedicated")
+conditions = revision.get("status", {}).get("conditions", [])
+if not any(
+    item.get("type") == "Ready" and item.get("status") == "True"
+    for item in conditions
+):
+    raise SystemExit("Candidate revision is not ready")
 containers = revision.get("spec", {}).get("containers", [])
 if len(containers) != 1:
     raise SystemExit("Expected one candidate container")
 env = {item["name"]: item for item in containers[0].get("env", [])}
 if env.get("MOCK_MODE", {}).get("value") != "false":
     raise SystemExit("Candidate must run with MOCK_MODE=false")
-secret_ref = (
+gemini_secret_ref = (
     env.get("GEMINI_API_KEY", {})
     .get("valueFrom", {})
     .get("secretKeyRef", {})
 )
-if not secret_ref.get("name"):
+if not gemini_secret_ref.get("name") or gemini_secret_ref.get("key") != "latest":
     raise SystemExit("Gemini key is not injected from Secret Manager")
+installation_secret_ref = (
+    env.get("INSTALLATION_HMAC_KEY", {})
+    .get("valueFrom", {})
+    .get("secretKeyRef", {})
+)
+if installation_secret_ref != {
+    "name": installation_hmac_secret,
+    "key": "latest",
+}:
+    raise SystemExit("Installation HMAC key is not injected from Secret Manager")
+expected_values = {
+    "FIREBASE_PROJECT_ID": firebase_project_id,
+    "FIREBASE_APP_ID": firebase_app_id,
+    "FIRESTORE_DATABASE_ID": firestore_database_id,
+}
+for name, value in expected_values.items():
+    if env.get(name, {}).get("value") != value:
+        raise SystemExit(f"Candidate environment mismatch: {name}")
 print("candidate_runtime=PASS")
 PY
 }
 
+verify_negative_v2_response() {
+  local name="$1"
+  local expected_status="$2"
+  local expected_code="$3"
+  shift 3
+  local headers="${release_workspace}/lifesnap-candidate-${name}-headers.txt"
+  local body="${release_workspace}/lifesnap-candidate-${name}.json"
+  local actual_status
+
+  actual_status="$(
+    curl --silent --show-error \
+      --dump-header "${headers}" \
+      --output "${body}" \
+      --write-out '%{http_code}' \
+      --form "image=@test-assets/service_notice.png;type=image/png" \
+      "$@" \
+      "${candidate_url}/api/v2/extract"
+  )"
+  python3 - \
+    "${headers}" "${body}" \
+    "${actual_status}" "${expected_status}" "${expected_code}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+headers_path, body_path, actual_status, expected_status, expected_code = sys.argv[1:]
+if actual_status != expected_status:
+    raise SystemExit(
+        f"Negative v2 status mismatch: expected {expected_status}, got {actual_status}"
+    )
+headers = Path(headers_path).read_text().lower()
+if "cache-control: no-store" not in headers:
+    raise SystemExit("Negative v2 response is cacheable")
+body = json.loads(Path(body_path).read_text())
+if body.get("error", {}).get("code") != expected_code:
+    raise SystemExit("Negative v2 response code is unstable")
+PY
+}
+
 verify_candidate_endpoints() {
+  local expected_status="401"
+  local expected_code="APP_CHECK_REQUIRED"
+
   curl --fail --silent --show-error \
     --retry 6 --retry-all-errors --retry-delay 5 \
     --output "${release_workspace}/lifesnap-candidate-health.json" \
@@ -501,6 +640,16 @@ verify_candidate_endpoints() {
     --form "image=@test-assets/service_notice.png;type=image/png" \
     --output "${release_workspace}/lifesnap-candidate-extract.json" \
     "${candidate_url}/api/extract"
+  verify_negative_v2_response \
+    "missing-token" \
+    "${expected_status}" \
+    "${expected_code}"
+  expected_code="APP_CHECK_INVALID"
+  verify_negative_v2_response \
+    "invalid-token" \
+    "${expected_status}" \
+    "${expected_code}" \
+    --header "X-Firebase-AppCheck: invalid"
   python3 - "${release_workspace}" <<'PY'
 import json
 import sys
@@ -515,230 +664,6 @@ required = {"title", "summary", "route", "confidence", "evidence", "risk_flags"}
 if not isinstance(extract, dict) or not required.issubset(extract):
     raise SystemExit("Candidate extraction response is incomplete")
 print(f"candidate_smoke=PASS route={extract['route']}")
-PY
-}
-
-prepare_promotion_payload() {
-  local payload="$1"
-  python3 - \
-    "${prepromotion_service_json}" \
-    "${initial_service_json}" \
-    "${payload}" \
-    "${BUILD_ID}" \
-    "${COMMIT_SHA}" \
-    "${candidate_tag}" \
-    "${candidate_revision}" \
-    "${rollback_revision}" <<'PY'
-import copy
-import json
-import sys
-from pathlib import Path
-
-(
-    current_path,
-    initial_path,
-    payload_path,
-    build_id,
-    commit_sha,
-    candidate_tag,
-    candidate_revision,
-    rollback_revision,
-) = sys.argv[1:]
-current = json.loads(Path(current_path).read_text())
-initial = json.loads(Path(initial_path).read_text())
-metadata = current.get("metadata", {})
-initial_metadata = initial.get("metadata", {})
-if not metadata.get("resourceVersion"):
-    raise SystemExit("Pre-promotion service resourceVersion is missing")
-if metadata.get("labels", {}) != initial_metadata.get("labels", {}):
-    raise SystemExit("Service provenance changed before promotion")
-traffic = current.get("spec", {}).get("traffic", [])
-candidate = [
-    item
-    for item in traffic
-    if item.get("tag") == candidate_tag
-]
-if (
-    len(candidate) != 1
-    or candidate[0].get("percent", 0) != 0
-    or not (
-        candidate[0].get("latestRevision") is True
-        or candidate[0].get("revisionName") == candidate_revision
-    )
-):
-    raise SystemExit("Candidate target changed before promotion")
-status_candidate = [
-    item
-    for item in current.get("status", {}).get("traffic", [])
-    if item.get("tag") == candidate_tag
-]
-if (
-    len(status_candidate) != 1
-    or status_candidate[0].get("revisionName") != candidate_revision
-    or status_candidate[0].get("percent", 0) != 0
-):
-    raise SystemExit("Candidate status target changed before promotion")
-production = [
-    item
-    for item in traffic
-    if item.get("percent", 0) == 100 and item.get("revisionName")
-]
-if len(production) != 1 or production[0]["revisionName"] != rollback_revision:
-    raise SystemExit("Production traffic changed before promotion")
-without_candidate = [
-    item
-    for item in traffic
-    if item.get("tag") != candidate_tag
-]
-if without_candidate != initial.get("spec", {}).get("traffic", []):
-    raise SystemExit("Another service traffic mutation overlaps promotion")
-labels = dict(metadata.get("labels", {}))
-for key in (
-    "commit-sha",
-    "gcb-build-id",
-    "gcb-trigger-id",
-    "gcb-trigger-region",
-):
-    labels.pop(key, None)
-labels.update(
-    {
-        "source-commit": commit_sha,
-        "managed-by": "cloud-build",
-        "product": "lifesnap-action",
-        "environment": "production",
-        "release-build": build_id,
-    }
-)
-spec = copy.deepcopy(current["spec"])
-spec["traffic"] = [
-    {
-        "revisionName": candidate_revision,
-        "percent": 100,
-    }
-]
-payload = {
-    "apiVersion": current["apiVersion"],
-    "kind": current["kind"],
-    "metadata": {
-        "name": metadata["name"],
-        "namespace": metadata["namespace"],
-        "labels": labels,
-        "annotations": metadata.get("annotations", {}),
-        "resourceVersion": metadata["resourceVersion"],
-    },
-    "spec": spec,
-}
-Path(payload_path).write_text(json.dumps(payload) + "\n")
-PY
-}
-
-conditionally_promote_candidate() {
-  local payload="${release_workspace}/lifesnap-promotion-payload.json"
-  local response="${release_workspace}/lifesnap-promotion-response.json"
-  local verified="${release_workspace}/lifesnap-promotion-verified.json"
-
-  api_get_service "${prepromotion_service_json}"
-  prepare_promotion_payload "${payload}"
-  assert_current_main
-  conditional_replace "${payload}" "${response}" "${verified}"
-}
-
-assert_promoted_service() {
-  local service_json="$1"
-  python3 - \
-    "${service_json}" \
-    "${BUILD_ID}" \
-    "${COMMIT_SHA}" \
-    "${candidate_revision}" \
-    "${image_digest}" <<'PY'
-import json
-import sys
-from pathlib import Path
-
-path, build_id, commit_sha, candidate_revision, image_digest = sys.argv[1:]
-service = json.loads(Path(path).read_text())
-labels = service.get("metadata", {}).get("labels", {})
-expected = {
-    "source-commit": commit_sha,
-    "managed-by": "cloud-build",
-    "product": "lifesnap-action",
-    "environment": "production",
-    "release-build": build_id,
-}
-for key, value in expected.items():
-    if labels.get(key) != value:
-        raise SystemExit(f"Promoted service label mismatch: {key}")
-for key in (
-    "commit-sha",
-    "gcb-build-id",
-    "gcb-trigger-id",
-    "gcb-trigger-region",
-):
-    if key in labels:
-        raise SystemExit(f"Legacy provenance label remains: {key}")
-template = service.get("spec", {}).get("template", {})
-template_labels = template.get("metadata", {}).get("labels", {})
-for key, value in expected.items():
-    if template_labels.get(key) != value:
-        raise SystemExit(f"Promoted template label mismatch: {key}")
-containers = template.get("spec", {}).get("containers", [])
-if (
-    len(containers) != 1
-    or containers[0].get("image") != image_digest
-):
-    raise SystemExit("Promoted template digest does not match pushed image")
-traffic = service.get("spec", {}).get("traffic", [])
-if traffic != [
-    {
-        "revisionName": candidate_revision,
-        "percent": 100,
-    }
-]:
-    raise SystemExit("Verified candidate does not exclusively receive traffic")
-conditions = service.get("status", {}).get("conditions", [])
-if not any(
-    item.get("type") == "Ready" and item.get("status") == "True"
-    for item in conditions
-):
-    raise SystemExit("Promoted service is not ready")
-service_url = service.get("status", {}).get("url")
-if not service_url:
-    raise SystemExit("Promoted service URL is missing")
-print(service_url)
-PY
-}
-
-verify_production_endpoints() {
-  local service_url="$1"
-  curl --fail --silent --show-error \
-    --retry 3 --retry-all-errors --retry-delay 5 \
-    --output "${release_workspace}/lifesnap-production-health.json" \
-    "${service_url}/health"
-  curl --fail --silent --show-error \
-    --retry 3 --retry-all-errors --retry-delay 5 \
-    --output "${release_workspace}/lifesnap-production-privacy.html" \
-    "${service_url}/privacy"
-  grep -qi privacy \
-    "${release_workspace}/lifesnap-production-privacy.html"
-  curl --fail --silent --show-error \
-    --retry 2 --retry-all-errors --retry-delay 5 --max-time 120 \
-    --form "image=@test-assets/service_notice.png;type=image/png" \
-    --output "${release_workspace}/lifesnap-production-extract.json" \
-    "${service_url}/api/extract"
-  python3 - "${release_workspace}" <<'PY'
-import json
-import sys
-from pathlib import Path
-
-workspace = Path(sys.argv[1])
-health = json.loads((workspace / "lifesnap-production-health.json").read_text())
-extract = json.loads((workspace / "lifesnap-production-extract.json").read_text())
-if health.get("status") != "ok":
-    raise SystemExit("Production health response is not ok")
-required = {"title", "summary", "route", "confidence", "evidence", "risk_flags"}
-if not isinstance(extract, dict) or not required.issubset(extract):
-    raise SystemExit("Production extraction response is incomplete")
-print(f"production_smoke=PASS route={extract['route']}")
 PY
 }
 
@@ -958,28 +883,13 @@ cleanup_failed_release() {
 }
 
 install_release_traps
-access_token="$(gcloud auth print-access-token)"
 assert_current_main
 capture_initial_state
-
+access_token="$(gcloud auth print-access-token)"
 deploy_candidate
 resolve_candidate
 verify_candidate_runtime
 verify_candidate_endpoints
-
-conditionally_promote_candidate
-api_get_service "${promoted_service_json}"
-service_url="$(assert_promoted_service "${promoted_service_json}")"
-verify_production_endpoints "${service_url}"
-
-assert_current_main
-api_get_service "${final_service_json}"
-assert_promoted_service "${final_service_json}" >/dev/null
-verify_candidate_runtime
-
-trap - ERR INT TERM EXIT
-printf 'promotion_result=PASS\n'
-printf 'source_commit=%s\n' "${COMMIT_SHA}"
-printf 'production_revision=%s\n' "${candidate_revision}"
-printf 'rollback_revision=%s\n' "${rollback_revision}"
-printf 'service_url=%s\n' "${service_url}"
+printf 'candidate_gate=PASS revision=%s url=%s promotion=BLOCKED_BY_DEVICE_SMOKE\n' \
+  "${candidate_revision}" "${candidate_url}"
+candidate_mutation_started=0
