@@ -70,7 +70,27 @@ describe("privacy and extraction API behavior", () => {
       expect(body).toContain("HTTPS");
       expect(body).toContain("キャンセルした場合、画像は送信されず");
       expect(body).toContain("削除");
-      expect(body).toContain("2026-07-30");
+      expect(body).toContain("2026-08-01");
+    });
+  });
+
+  it("discloses App Check integrity, installation quota, and retention boundaries", async () => {
+    await withServer(createApp({ env: testEnv() }), async (baseUrl) => {
+      const response = await fetch(`${baseUrl}/privacy`);
+      const body = await response.text();
+
+      expect(response.status).toBe(200);
+      expect(body).toContain("Firebase App Check（Apple App Attest）");
+      expect(body).toContain("アプリの完全性");
+      expect(body).toContain("Keychain");
+      expect(body).toContain("ランダムなインストール UUID");
+      expect(body).toContain("HMAC ダイジェスト");
+      expect(body).toContain("Firestore");
+      expect(body).toContain("24 時間後に論理的に期限切れ");
+      expect(body).toContain("クォータ記録は最長 30 日");
+      expect(body).toContain("使用済みの App Check トークン");
+      expect(body).toContain("Firebase が最長 30 日保持");
+      expect(body).toContain("アップロード画像、Gemini の生レスポンス、抽出内容を永続保存しません");
     });
   });
 

@@ -131,7 +131,7 @@ const PRIVACY_POLICY_HTML = `<!doctype html>
 <body>
   <main>
     <h1>よていスナップ プライバシーポリシー</h1>
-    <p class="updated">Last updated: 2026-07-30</p>
+    <p class="updated">Last updated: 2026-08-01</p>
 
     <h2>日本語</h2>
     <p>よていスナップ（紙の案内を予定に変える）は、ユーザーが選択した書類画像から予定やタスク候補を抽出し、ユーザーが確認した場合だけ iOS カレンダーへ追加するアプリです。</p>
@@ -142,8 +142,13 @@ const PRIVACY_POLICY_HTML = `<!doctype html>
     <h2>処理の流れと目的</h2>
     <p>よていスナップ のバックエンドは、予定やタスク候補を抽出する目的だけで画像を Google Gemini（Google LLC）へ送信します。Gemini API キーはバックエンドだけに保存され、iOS アプリには含まれません。</p>
 
+    <h2>アプリの完全性確認と不正利用防止</h2>
+    <p>よていスナップ は、正規のアプリからのリクエストであることを確認するため、Firebase App Check（Apple App Attest）を使用します。この処理では、アプリの完全性確認に必要な attestation / assertion オブジェクトが Apple と Firebase により処理され、使用済みトークンの再利用を防ぎます。</p>
+    <p>アプリは初回利用時にランダムなインストール UUID を生成し、端末の Keychain にだけ保存します。この UUID はクォータ管理用のリクエストヘッダーとしてバックエンドへ送られます。バックエンドは直ちに HMAC ダイジェストへ変換し、Firestore には HMAC ダイジェストとクォータのカウンターだけを保存します。元の UUID は Firestore に保存しません。このユーザーにリンクされない識別子は、App Functionality と Fraud Prevention の目的だけに使用します。</p>
+
     <h2>保存期間</h2>
-    <p>よていスナップ は、アップロードされた画像、base64 データ、Gemini の生レスポンス、OCR 内容、抽出されたタイトル、氏名、住所、金額、要約をデータベース、オブジェクトストレージ、ファイルへ永続保存しません。画像はリクエスト処理中のメモリ上で扱われ、処理後に破棄されます。</p>
+    <p>よていスナップ は、アップロード画像、Gemini の生レスポンス、抽出内容を永続保存しません。これには base64 データ、OCR 内容、抽出されたタイトル、氏名、住所、金額、要約が含まれます。画像はリクエスト処理中のメモリ上で扱われ、処理後に破棄されます。</p>
+    <p>Firestore のクォータ記録では、短時間枠のカウンターは 24 時間後に論理的に期限切れとなり、日次カウンターを含むクォータ記録は最長 30 日で期限切れとなります。これは書類内容の保存ではありません。これとは別に、再利用防止のため使用済みの App Check トークンを Firebase が最長 30 日保持する場合があります。</p>
 
     <h2>Google Gemini Paid Service</h2>
     <p>本番環境の Gemini API キーは active billing が有効な Google Cloud Project に属する Paid Service として運用されます。Google は Paid Service の入力・出力を Google 製品の改善には使用しないと説明しています。ただし、安全性、セキュリティ、不正利用防止、法的義務のために、Google が限定された期間ログを処理する場合があります。また、Google の処理は国や地域をまたぐ場合があります。</p>
@@ -158,13 +163,13 @@ const PRIVACY_POLICY_HTML = `<!doctype html>
     <p>本番アプリケーションログは、request_id、MIME type、画像サイズ、処理時間、モデル名、HTTP status、抽出ルートなどの運用メタデータに限定します。画像、base64、リクエスト本文、Gemini の生レスポンス、OCR 内容、タイトル、氏名、住所、金額、要約は記録しません。</p>
 
     <h2>削除と撤回</h2>
-    <p>よていスナップ はアカウント、サーバー上の書類アーカイブ、履歴保存を提供していないため、アップロード済み画像のサーバー側削除依頼対象となる よていスナップ の永続データはありません。アップロードしない場合は、確認画面で「キャンセル」を選んでください。</p>
+    <p>よていスナップ はアカウント、サーバー上の書類アーカイブ、履歴保存を提供していません。アップロード済み画像や抽出内容のサーバー側記録はありません。クォータ用 HMAC ダイジェストとカウンターは上記の期限で失効し、元の UUID はバックエンドに保存されません。アップロードしない場合は、確認画面で「キャンセル」を選んでください。</p>
 
     <h2>連絡先と更新</h2>
     <p>プライバシーに関する問い合わせは App Store のサポート連絡先から行ってください。このポリシーを更新する場合は、このページの更新日を変更します。</p>
 
     <h2>English Summary</h2>
-    <p>Yotei Snap (よていスナップ) sends a selected document image to its Google Cloud Run backend and Google Gemini only after the user explicitly taps the upload consent button. Yotei Snap does not persist uploaded images or extracted document contents. Google Gemini is used as a Paid Service under an active-billing Google Cloud project; Google does not use Paid Service inputs or outputs to improve Google products, but may process limited logs for safety, abuse prevention, security, and legal obligations.</p>
+    <p>Yotei Snap (よていスナップ) sends a selected document image to its Google Cloud Run backend and Google Gemini only after the user explicitly taps the upload consent button. It uses Firebase App Check with Apple App Attest for app-integrity and replay protection. A random installation UUID remains in the device Keychain; the backend receives it in a request header and stores only an HMAC digest and quota counters in Firestore. Quota records expire within 24 hours or 30 days depending on the counter, while Firebase may retain consumed App Check tokens for replay protection for up to 30 days. Yotei Snap does not persist uploaded images, raw Gemini output, or extracted document contents.</p>
   </main>
 </body>
 </html>`;

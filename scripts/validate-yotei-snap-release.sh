@@ -68,6 +68,9 @@ upload_consent="$project_root/ios/LifeSnapAction/Views/UploadConsentView.swift"
 project_yml="$project_root/ios/project.yml"
 pbxproj="$project_root/ios/LifeSnapAction.xcodeproj/project.pbxproj"
 icon_dir="$project_root/ios/LifeSnapAction/Resources/Assets.xcassets/AppIcon.appiconset"
+entitlements="$project_root/ios/LifeSnapAction/LifeSnapAction.entitlements"
+api_client="$project_root/ios/LifeSnapAction/Services/APIClient.swift"
+google_service_plist="$project_root/ios/LifeSnapAction/GoogleService-Info.plist"
 
 if plutil -lint "$info_plist" >/dev/null 2>&1; then
   pass 'Info.plist syntax'
@@ -119,6 +122,31 @@ assert_contains "$upload_consent" 'よていスナップ' 'Upload consent brand'
 assert_not_contains "$upload_consent" 'LifeSnap' 'Upload consent old brand removed'
 assert_contains "$project_yml" 'MARKETING_VERSION: "1.1"' 'project.yml marketing version'
 assert_contains "$project_yml" 'CURRENT_PROJECT_VERSION: "4"' 'project.yml build version'
+assert_contains "$project_yml" 'exactVersion: 12.17.0' 'Firebase iOS SDK exact version'
+assert_contains "$api_client" '/api/v2/extract' 'APIClient uses the attested v2 extract route'
+assert_not_contains "$api_client" 'X-Firebase-AppCheck", "' 'APIClient has no hard-coded App Check token'
+
+app_attest_environment=$(/usr/libexec/PlistBuddy -c 'Print :com.apple.developer.devicecheck.appattest-environment' "$entitlements" 2>/dev/null || true)
+assert_equal "$app_attest_environment" 'production' 'App Attest production entitlement'
+
+google_bundle_id=$(/usr/libexec/PlistBuddy -c 'Print :BUNDLE_ID' "$google_service_plist" 2>/dev/null || true)
+google_project_id=$(/usr/libexec/PlistBuddy -c 'Print :PROJECT_ID' "$google_service_plist" 2>/dev/null || true)
+google_app_id=$(/usr/libexec/PlistBuddy -c 'Print :GOOGLE_APP_ID' "$google_service_plist" 2>/dev/null || true)
+google_sender_id=$(/usr/libexec/PlistBuddy -c 'Print :GCM_SENDER_ID' "$google_service_plist" 2>/dev/null || true)
+google_api_key=$(/usr/libexec/PlistBuddy -c 'Print :API_KEY' "$google_service_plist" 2>/dev/null || true)
+
+assert_equal "$google_bundle_id" 'com.zll.lifesnapaction' 'Firebase plist bundle ID'
+assert_equal "$google_project_id" 'zhang23-23' 'Firebase plist project ID'
+assert_equal "$google_app_id" '1:788259830737:ios:a2f98135f554376697bef0' 'Firebase plist app ID'
+case "$google_app_id" in
+  "1:${google_sender_id}:ios:"*) pass 'Firebase app ID matches sender ID' ;;
+  *) fail 'Firebase app ID matches sender ID' ;;
+esac
+if [ -n "$google_api_key" ]; then
+  pass 'Firebase plist API key is present (value redacted)'
+else
+  fail 'Firebase plist API key is present (value redacted)'
+fi
 
 marketing_count=$(grep -cF 'MARKETING_VERSION = 1.1;' "$pbxproj" 2>/dev/null || true)
 build_count=$(grep -cF 'CURRENT_PROJECT_VERSION = 4;' "$pbxproj" 2>/dev/null || true)

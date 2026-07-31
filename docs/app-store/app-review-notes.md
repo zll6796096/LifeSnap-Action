@@ -1,5 +1,7 @@
 # よていスナップ (Yotei Snap) App Review Notes Draft
 
+Prepared for the 1.1 Build 4 release candidate on 2026-08-01 JST. These notes describe the Build 4 App Check data flow and must not be submitted until the matching backend has independently passed its deployment and production acceptance gates. This document update does not change App Store Connect or production state.
+
 ## App Summary
 
 よていスナップ helps users turn selected document images into calendar events. The core flow is:
@@ -30,6 +32,15 @@
 - The zero-traffic candidate and unchanged production URL both passed strict `/health`, current `/privacy`, and synthetic `/api/extract` smoke checks. The extraction response was schema-complete with `Cache-Control: no-store`; no document contents or raw AI output were recorded.
 - Production traffic is one untagged `100%` target to `lifesnap-action-00039-rwn`; rollback revision `lifesnap-action-00037-89l` is at `0%`.
 - `MOCK_MODE` is development-only and forbidden in production.
+
+## App Integrity and Quota Protection
+
+- Build 4 sends extraction requests to `/api/v2/extract` with a fresh Firebase App Check token backed by Apple App Attest. Apple and Firebase process the attestation/assertion objects needed to validate app integrity and reject replayed tokens.
+- The app generates a random installation UUID on first use and stores it only in the device Keychain. It sends that UUID in the extraction request header for quota enforcement.
+- The backend immediately derives an HMAC digest. Firestore stores only the HMAC digest and quota counters, never the original UUID.
+- This unlinked identifier is used only for App Functionality and Fraud Prevention. It is not used for advertising, cross-app tracking, or user profiling.
+- Short-window Firestore quota counters expire logically after 24 hours. Daily quota records expire within 30 days.
+- Separately, Firebase may retain consumed App Check tokens for replay protection for up to 30 days. This is not the Firestore quota-record retention.
 
 ## AI Upload Consent
 
@@ -63,4 +74,6 @@ Before each image upload, including retries, よていスナップ shows a dedic
 
 ## Privacy Notes
 
-よていスナップ does not persist uploaded images or extracted document contents. Existing calendar contents are not uploaded. Production application logs are structured operational metadata only and do not include image bytes, request bodies, raw Gemini output, OCR text, titles, names, addresses, amounts, or summaries.
+よていスナップ does not persist uploaded images, raw Gemini output, or extracted document contents. Existing calendar contents are not uploaded. Production application logs are structured operational metadata only and do not include image bytes, request bodies, raw Gemini output, OCR text, titles, names, addresses, amounts, or summaries.
+
+The only application-persisted server data introduced for quota enforcement is the HMAC digest/counter record described above, retained for no longer than its 24-hour or 30-day expiry window. The original random UUID remains only in the device Keychain; the backend receives it in a request header but does not persist it. The app does not use Firebase Analytics, Firebase Authentication, Crashlytics, advertising services, tracking, or profiling.

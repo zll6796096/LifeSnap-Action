@@ -36,6 +36,23 @@ This is a conservative draft for App Store Connect. It is based on the implement
 - Used for tracking: No.
 - Linked status: Not intended to be linked to the user by よていスナップ.
 
+### Identifiers: Device ID (App-Generated Installation Identifier)
+
+- Collected/transmitted: Yes. The app generates a random installation UUID and stores it only in the device Keychain. It sends the UUID to the backend in a request header for quota enforcement.
+- Server storage: The backend immediately derives an HMAC digest. Firestore stores only the HMAC digest and quota counters, not the original UUID.
+- Purpose: App Functionality and Fraud Prevention.
+- Used for tracking: No.
+- Linked status: No. The identifier is not associated with an account, uploaded document content, advertising identity, or user profile.
+- Retention: Short-window Firestore quota counters expire logically after 24 hours; daily quota records expire within 30 days.
+
+### App Integrity Data
+
+- Firebase App Check with Apple App Attest processes attestation and assertion objects to confirm app integrity and reject replayed tokens.
+- Purpose: App Functionality and Fraud Prevention.
+- Used for tracking: No.
+- Linked status: Not linked by よていスナップ.
+- Separate retention boundary: Firebase may retain consumed App Check tokens for replay protection for up to 30 days. This is separate from Firestore quota-record retention.
+
 ## Data Not Used
 
 - Contact information: Not requested by the app.
@@ -44,7 +61,7 @@ This is a conservative draft for App Store Connect. It is based on the implement
 - Browsing history: Not collected.
 - Search history: Not collected.
 - Purchases/payment information: Not collected.
-- Tracking identifiers: Not used.
+- Advertising or cross-app tracking identifiers: Not used.
 
 ## Calendar Data
 
@@ -54,4 +71,6 @@ The app requests Calendar permission only after the user reviews the extracted f
 
 Apple's "Data Not Collected" exception may apply only when data is processed on-device or transmitted solely for immediate request fulfillment and discarded in a way that satisfies Apple's definition. よていスナップ itself does not persist the uploaded image, but the request is sent to Google Gemini Paid Service, and Google may process limited logs for safety, security, abuse prevention, and legal obligations for a limited period.
 
-Because a third party may process limited logs after the real-time request, the conservative App Store Connect answer should not be `Data Not Collected`. Use the User Content categories above unless Apple Support or legal review confirms the real-time processing exception applies.
+Because third parties may process limited Gemini logs and App Check integrity objects after the real-time request, the conservative App Store Connect answer should not be `Data Not Collected`. Use the User Content and unlinked Identifier categories above unless Apple Support or legal review confirms a different form classification.
+
+The app does not use Firebase Analytics, Firebase Authentication, Crashlytics, advertising services, cross-app tracking, or user profiling. App Check and Firestore quota enforcement must not be described as any of those products or uses.

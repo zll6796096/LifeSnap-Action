@@ -6,7 +6,9 @@
 - Apple-native page-turn AppIcon
 - User-visible rename to よていスナップ
 - App Store Japanese name and subtitle refresh
-- No bundle ID, backend, data-flow, or privacy-behavior change
+- App Check/App Attest integrity verification and per-installation quota protection
+- Privacy disclosures for the unlinked installation identifier, HMAC quota records, and replay protection
+- No bundle ID change
 
 ## Immutable Identity
 
@@ -23,12 +25,14 @@
 
 | Gate | Status | Evidence |
 |---|---|---|
-| Release contract | PASS | `npm run validate:ios-release` exited 0; identity, semantic launch screen, version/build, and the exact 17 opaque AppIcon descriptors passed |
+| Release contract | PASS | `npm run validate:ios-release` exited 0; identity, App Attest production entitlement, Firebase 12.17.0 pin, v2 endpoint, Firebase plist identity, semantic launch screen, version/build, and the exact 17 opaque AppIcon descriptors passed |
+| Privacy disclosures | LOCAL PASS | Runtime `/privacy` source and five App Store/release drafts disclose App Check/App Attest, the unlinked installation UUID/HMAC, quota retention, and no application persistence of document content |
 | iOS tests | PASS | 12/12 passed, 0 failed, 0 skipped on `LifeSnap iPhone 15` (`56C4DC85-0732-49CF-8389-10D16B2BBDC3`), iOS 26.5 (23F77) |
 | Simulator visual acceptance | PASS | Exact normally signed Release bundle verified on clean light and dark iPhone 15 simulators; five evidence paths are listed below |
-| Backend regression | PASS | `npm test`: 3 files and 30/30 tests passed; `npm run lint` and `npm run build` exited 0 |
+| Backend regression | PASS | `npm test`: 9 files and 230/230 tests passed; `npm run lint` and `npm run build` exited 0 |
 | Gemini Paid Plan | VERIFIED | AI Studio displayed `Paid 1`; the LifeSnap key in project `zhang23-23` displayed `Tier 1` / prepaid; masked identity comparison with Secret Manager passed |
-| Production backend | PASS | Revision `lifesnap-action-00039-rwn` is the sole untagged `100%` target; candidate and live strict smoke checks passed |
+| Prior production backend | PASS | Revision `lifesnap-action-00039-rwn` is the sole untagged `100%` target; this is retained historical evidence and is not Build 4 App Check acceptance |
+| Build 4 App Check backend | PENDING | This local disclosure task did not deploy, invoke, tag, or promote a backend; candidate and production acceptance remain separate future gates |
 | Signing identity | PENDING | Distribution identity not checked; local simulator ad-hoc signature verification is not App Store signing evidence |
 | Archive | PENDING | Not run |
 | Export validation | PENDING | Not run |
@@ -44,7 +48,16 @@
 npm run validate:ios-release
 ```
 
-Result: `PASS` (exit 0). The contract reported `All よていスナップ release-contract checks passed`, including the exact 17 expected icon descriptors.
+Result: `PASS` (exit 0). The contract reported `All よていスナップ release-contract checks passed`, including the App Attest production entitlement, exact Firebase iOS SDK version `12.17.0`, `/api/v2/extract`, absence of a hard-coded App Check token, consistent Firebase bundle/project/app identifiers, and the exact 17 expected icon descriptors. The Firebase API key value was not printed.
+
+### Current privacy disclosure contract
+
+- App-generated random installation UUID: stored only in the device Keychain and sent to the backend in a request header.
+- Server quota identity: the original UUID is not persisted; Firestore stores only an HMAC digest and counters. The identifier is unlinked and used for App Functionality and Fraud Prevention.
+- Firestore quota retention: short-window counters expire logically after 24 hours; daily quota records expire within 30 days.
+- Firebase replay protection: consumed App Check token handling may be retained by Firebase for up to 30 days, separately from Firestore quota records.
+- Document processing: uploaded images, raw Gemini output, and extracted document content have no よていスナップ application persistence.
+- App Check/App Attest: Apple and Firebase process the attestation/assertion objects required for app-integrity and replay checks.
 
 ### iOS tests
 
@@ -99,7 +112,7 @@ npm run lint
 npm run build
 ```
 
-Result: `PASS`. Vitest passed 3 files and 30/30 tests. TypeScript lint/type-check and the esbuild production bundle both exited 0.
+Result: `PASS`. Vitest passed 9 files and 230/230 tests. TypeScript lint/type-check and the esbuild production bundle both exited 0.
 
 ### Current Gemini Paid Plan and production backend
 
@@ -113,6 +126,7 @@ Result: `PASS`. Vitest passed 3 files and 30/30 tests. TypeScript lint/type-chec
 ## Remaining Apple Release Gates
 
 - Distribution signing identity remains unverified.
+- A matching Build 4 App Check backend candidate, real-device evidence, production promotion, and live privacy-page verification remain separate pending gates.
 - Archive, export validation, Build 4 upload, App Store metadata save, and App Review submission have not been performed.
 - App Review approval and storefront availability remain separate future states.
 - The verified backend and Paid Plan state are not authorization for any remaining Apple action.
@@ -137,3 +151,4 @@ Append timestamped, sanitized evidence here during execution. Do not include cre
   - A resource-version-conditional service replacement created `lifesnap-action-00039-rwn` at zero traffic from the same immutable digest `sha256:8bb5f60e05db572fa9232c1bec894620567025ee61b1d19f44cd3fe3ce338a26`, Cloud Build `14c3eff7-a07c-479b-81c5-453b0d5e7256`, and source `8e1b6f5eb679c95a420c7307f5bedf4fe5a5a50d`. No rebuild or source deploy occurred.
   - Candidate runtime and strict smoke checks passed: exact non-stale provenance, preserved runtime service account/config/resources, `NODE_ENV=production`, `MOCK_MODE=false`, Secret Manager reference unchanged, `/health` HTTP 200 with status `ok`, current `/privacy` HTTP 200, and synthetic `/api/extract` HTTP 200 with a schema-complete response and `Cache-Control: no-store`. No response or document contents were recorded.
   - The exact candidate was conditionally promoted. The unchanged production URL passed the same strict smoke checks. Final control-plane state is one untagged `100%` target to `lifesnap-action-00039-rwn`, `lifesnap-action-00037-89l` at `0%`, latest ready revision `lifesnap-action-00039-rwn`, no traffic tags, and exact service/template/revision provenance. Rollback was not needed. No App Store action was taken.
+- `2026-08-01T01:22:29+0900` (`2026-07-31T16:22:29Z`) — Local Task 11 privacy and release-contract verification on a clean baseline at source commit `578a94f911a207b173ef7b7ec7e48dc80043d607`: focused runtime privacy test 8/8 PASS; full backend test 9 files and 230/230 PASS; TypeScript lint and esbuild production bundle PASS; release validator PASS for App Attest production entitlement, Firebase iOS SDK 12.17.0, v2 extraction route, no hard-coded App Check token, Firebase plist identity, and redacted API-key presence. Runtime and draft disclosures were updated for the unlinked Keychain installation UUID/HMAC, Firestore 24-hour/30-day expiry, separate Firebase replay-token retention up to 30 days, and no application persistence of uploaded images, raw Gemini output, or extracted content. No cloud, App Store Connect, deployment, traffic, or real-network action was performed; Build 4 backend and live privacy acceptance remain pending.
