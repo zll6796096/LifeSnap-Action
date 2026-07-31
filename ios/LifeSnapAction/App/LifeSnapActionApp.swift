@@ -4,6 +4,10 @@ import SwiftUI
 
 @main
 struct LifeSnapActionApp: App {
+    init() {
+        AppCheckBootstrap.configure()
+    }
+
     var body: some Scene {
         WindowGroup {
             ContentView()
