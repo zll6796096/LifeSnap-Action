@@ -59,9 +59,15 @@ final class APIClientSecurityTests: XCTestCase {
         }
     }
 
+    func testProductionSessionIsSharedAcrossApplicationLifetime() {
+        let first = SecureURLSessionFactory.shared
+        let second = SecureURLSessionFactory.shared
+
+        XCTAssertTrue(first === second)
+    }
+
     func testProductionSessionHasNoPersistentOrSharedStores() {
-        let session = SecureURLSessionFactory.make()
-        defer { session.invalidateAndCancel() }
+        let session = SecureURLSessionFactory.shared
 
         XCTAssertTrue(session.delegate is NoRedirectURLSessionDelegate)
         let configuration = session.configuration

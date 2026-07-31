@@ -23,7 +23,9 @@ final class NoRedirectURLSessionDelegate:
 }
 
 enum SecureURLSessionFactory {
-    static func make() -> URLSession {
+    static let shared = make()
+
+    private static func make() -> URLSession {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.urlCache = nil
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
@@ -57,7 +59,7 @@ final class APIClient {
 
     convenience init(
         bundle: Bundle = .main,
-        session: URLSessioning = SecureURLSessionFactory.make(),
+        session: URLSessioning = SecureURLSessionFactory.shared,
         tokenProvider: AppCheckTokenProviding =
             FirebaseLimitedUseTokenProvider(),
         installationStore: InstallationIdentifierProviding =
