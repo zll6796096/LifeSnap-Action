@@ -86,7 +86,7 @@ describe("Cloud Build trigger lifecycle helper", () => {
     expect(run.status, run.stderr).toBe(0);
     const runLog = await readFile(fixture.runLog, "utf8");
     expect(run.stdout, `stderr=${run.stderr} runLog=${runLog}`).toContain(
-      `trigger_lifecycle=RUN operation_name=operations/build/${projectNumber}/operation-123 build_id=build-123 commit=${mergedSha}`,
+      `trigger_lifecycle=RUN operation_name=operations/build/test-project/operation-123 build_id=build-123 commit=${mergedSha}`,
     );
     expect(runLog.trim().split("\n")).toEqual([
       `RUN trigger=${triggerId} sha=${mergedSha}`,
@@ -96,7 +96,7 @@ describe("Cloud Build trigger lifecycle helper", () => {
     ) as { run_state: Record<string, unknown> };
     expect(acceptedManifest.run_state).toEqual({
       build_id: "build-123",
-      operation_name: `operations/build/${projectNumber}/operation-123`,
+      operation_name: "operations/build/test-project/operation-123",
       sha: mergedSha,
       status: "accepted",
     });
@@ -260,7 +260,7 @@ describe("Cloud Build trigger lifecycle helper", () => {
     });
   });
 
-  it("accepts an LRO Build bound to the exact numeric project resource name", async () => {
+  it("accepts an LRO bound to the exact project ID and numeric Build resource", async () => {
     const fixture = await createTriggerFixture();
     expect(runHelper(fixture, "prepare-disable").status).toBe(0);
 
@@ -270,9 +270,22 @@ describe("Cloud Build trigger lifecycle helper", () => {
 
     expect(result.status, result.stderr).toBe(0);
     expect(result.stdout).toContain(
-      `operation_name=operations/build/${projectNumber}/operation-123`,
+      "operation_name=operations/build/test-project/operation-123",
     );
     expect(result.stdout).toContain("build_id=build-123");
+  });
+
+  it("rejects an LRO whose operation name belongs to a different project", async () => {
+    const fixture = await createTriggerFixture();
+    expect(runHelper(fixture, "prepare-disable").status).toBe(0);
+
+    const result = runHelper(fixture, "run-exact", {
+      MERGED_SHA: fixture.mergedSha,
+      MISMATCH_OPERATION_PROJECT_ID: "1",
+    });
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toMatch(/operation name|identity/i);
   });
 
   it("rejects an LRO Build whose canonical name has a different project number", async () => {
@@ -420,7 +433,7 @@ describe("Cloud Build trigger lifecycle helper", () => {
     const copiedScripts = join(copiedRepository, "scripts");
     await mkdir(copiedScripts, { recursive: true });
     const copiedHelper = join(copiedScripts, "manage-lifesnap-trigger.sh");
-    await copyFile(helperPath, copiedHelper);
+    await copyFile(fixture.helperPath, copiedHelper);
     await chmod(copiedHelper, 0o755);
     expect(spawnSync("git", ["init", "--quiet", copiedRepository]).status).toBe(0);
     const env: NodeJS.ProcessEnv = { ...fixture.env };
@@ -455,8 +468,30 @@ async function createTriggerFixture(options: { disabled?: boolean } = {}) {
   const buildsState = join(root, "builds.json");
   const stateDirectory = join(root, "trigger-state");
   const manifestFile = join(stateDirectory, "manifest.json");
+  const fixtureRepository = join(root, "repository");
+  const fixtureScripts = join(fixtureRepository, "scripts");
+  const fixtureHelperPath = join(
+    fixtureScripts,
+    "manage-lifesnap-trigger.sh",
+  );
+  await mkdir(fixtureScripts, { recursive: true });
+  await copyFile(helperPath, fixtureHelperPath);
+  await chmod(fixtureHelperPath, 0o755);
+  for (const args of [
+    ["init", "--quiet", "--initial-branch=main", fixtureRepository],
+    ["-C", fixtureRepository, "config", "user.name", "LifeSnap Test"],
+    ["-C", fixtureRepository, "config", "user.email", "test@lifesnap.invalid"],
+    ["-C", fixtureRepository, "add", "scripts/manage-lifesnap-trigger.sh"],
+    ["-C", fixtureRepository, "commit", "--quiet", "-m", "fixture"],
+    ["-C", fixtureRepository, "update-ref", "refs/remotes/origin/main", "HEAD"],
+  ]) {
+    const result = spawnSync("git", args, { encoding: "utf8" });
+    if (result.status !== 0) {
+      throw new Error(`git ${args.join(" ")} failed: ${result.stderr}`);
+    }
+  }
   const mergedSha = spawnSync("git", ["rev-parse", "origin/main"], {
-    cwd: repoRoot,
+    cwd: fixtureRepository,
     encoding: "utf8",
   }).stdout.trim();
   await mkdir(stateDirectory, { mode: 0o700 });
@@ -547,7 +582,9 @@ if (method === "POST" && url.endsWith(":run")) {
     process.exit(22);
   }
   respond({
-    name: "operations/build/${projectNumber}/operation-123",
+    name: "operations/build/" +
+      (process.env.MISMATCH_OPERATION_PROJECT_ID === "1" ? "other-project" : "test-project") +
+      "/operation-123",
     metadata: {
       "@type": "type.googleapis.com/google.devtools.cloudbuild.v1.BuildOperationMetadata",
       build,
@@ -634,6 +671,7 @@ process.exit(1);
       TRIGGER_REGION: triggerRegion,
       TRIGGER_STATE: triggerState,
     },
+    helperPath: fixtureHelperPath,
     patchLog,
     manifestFile,
     mergedSha,
@@ -648,8 +686,8 @@ function runHelper(
   mode: "prepare-disable" | "restore" | "run-exact" | "verify-disabled",
   overrides: Record<string, string> = {},
 ) {
-  return spawnSync(helperPath, [mode], {
-    cwd: repoRoot,
+  return spawnSync(fixture.helperPath, [mode], {
+    cwd: fixture.root,
     encoding: "utf8",
     env: { ...fixture.env, ...overrides },
   });
