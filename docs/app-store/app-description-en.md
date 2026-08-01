@@ -1,8 +1,8 @@
-# LifeSnap Action App Store Description Draft
+# Yotei Snap App Store Description Draft
 
-LifeSnap Action turns paper notices into calendar actions.
+Yotei Snap (よていスナップ) turns paper notices into calendar events.
 
-Take or select a photo of a school notice, appointment letter, invoice, or other time-sensitive document. LifeSnap extracts the likely date, time, title, location, and memo, lets you confirm the result, then adds the event to your iPhone calendar.
+Take or select a photo of a school notice, appointment letter, invoice, or other time-sensitive document. Yotei Snap extracts the likely date, time, title, location, and memo, lets you confirm the result, then adds the event to your iPhone calendar.
 
 ## Key Points
 
@@ -15,4 +15,4 @@ Take or select a photo of a school notice, appointment letter, invoice, or other
 
 ## Privacy Summary
 
-Selected images are sent to the LifeSnap backend and Google Gemini only after the user agrees on the pre-upload consent screen. LifeSnap does not persist uploaded images or extracted document contents. Google Gemini Paid Service inputs and outputs are not used to improve Google products, but limited logs may be processed for safety, abuse prevention, security, and legal obligations. Calendar access is used only to add events confirmed by the user.
+Selected images are sent to the Yotei Snap backend and Google Gemini only after the user agrees on the pre-upload consent screen. Yotei Snap does not persist uploaded images or extracted document contents. Google Gemini Paid Service inputs and outputs are not used to improve Google products, but limited logs may be processed for safety, abuse prevention, security, and legal obligations. Calendar access is used only to add events confirmed by the user.

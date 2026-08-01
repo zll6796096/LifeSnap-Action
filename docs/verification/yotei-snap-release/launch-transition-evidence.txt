@@ -1,0 +1,100 @@
+よていスナップ launch-transition evidence
+build_artifact_created_jst=2026-07-30T22:38:27+0900
+light_recording_window_jst=2026-07-30T22:41:57+0900_to_2026-07-30T22:42:12+0900
+dark_recording_window_jst=2026-07-30T22:42:18+0900_to_2026-07-30T22:42:30+0900
+evidence_assembled_jst=2026-07-30T22:46:31+0900
+evidence_assembled_utc=2026-07-30T13:46:31Z
+source_branch=codex/lifesnap-apple-native-ui
+head_at_capture=71fa37e076d7c1f05223c07c22cf8fb91371fc84
+working_tree_at_capture=adaptive semantic LaunchScreen fix present as uncommitted content on top of head_at_capture
+captured_source_content_later_committed_as=6e7f930ed453cffe498726219347fd44dc7dfe7b
+captured_source_content_committed_jst=2026-07-30T22:48:48+0900
+scope=local normally signed Release simulator acceptance only
+
+[build]
+command=xcodebuild -project ios/LifeSnapAction.xcodeproj -scheme LifeSnapAction -configuration Release -sdk iphonesimulator -destination generic/platform=iOS Simulator -derivedDataPath /tmp/yotei-snap-launch-adaptive-derived build -quiet
+result=PASS exit=0
+code_signing_allowed_override=NOT_SET
+app_path=/tmp/yotei-snap-launch-adaptive-derived/Build/Products/Release-iphonesimulator/LifeSnapAction.app
+app_bundle_content_sha256=6bb7bdd089234b796a24fd6b8cb374532dedc18574a6e77e06c9d75dfc38a936
+executable_sha256=1ee246719c49abfa509862a11caf87eddc2dc8908ba273e7bce6b21d1e5f8614
+
+[sanitized_signature_and_identity]
+command=codesign --verify --deep --strict --verbose=2 APP_PATH
+result=PASS valid_on_disk_and_designated_requirement
+identifier=com.zll.lifesnapaction
+signature=adhoc_simulator
+info_plist_top_level_entries=31
+sealed_resources=YES CodeResources contains files2 and rules2
+compiled_launch_screen=YES LaunchScreen.storyboardc
+bundle_short_version=1.1
+bundle_version=4
+bundle_display_name=よていスナップ
+ui_launch_storyboard_name=LaunchScreen
+signing_identity_or_certificate_details=OMITTED
+
+[post_commit_source_equivalence]
+verified_jst=2026-07-30T23:26:27+0900
+verified_utc=2026-07-30T14:26:27Z
+command=xcodebuild -project ios/LifeSnapAction.xcodeproj -scheme LifeSnapAction -configuration Release -sdk iphonesimulator -destination generic/platform=iOS Simulator -derivedDataPath CLEAN_DERIVED_DATA_PATH build -quiet
+result=PASS exit=0
+strict_codesign_verification=PASS
+captured_incremental_executable_sha256=1ee246719c49abfa509862a11caf87eddc2dc8908ba273e7bce6b21d1e5f8614
+independent_clean_executable_sha256=7ced3cbb6c9a51c29ea6e169276d044092dff95bfca3a08bc82ce287a9ca8911
+executable_byte_match=NO
+info_plist_byte_match=YES sha256=9fae6cc53b3587a02a5e613c7234e192514160a48aee037520924ac2b082fc30
+compiled_launch_storyboard_byte_match=YES
+compiled_launch_storyboard_info_sha256=b199dcf708018ac3a29a28f048f68a6d7b19fb47e6e452cb9a0cf79e1cc6f5c0
+compiled_launch_storyboard_controller_nib_sha256=7ea9c62e4246e9ba556a98fd1a7b061ae84082c12d7425ad183bd00ca34e7ed3
+compiled_launch_storyboard_view_nib_sha256=906fb5a33392e6d010e8e9102cf6de40f53c37f52a585e1c76b8384d456659d9
+committed_launch_source_matches_working_tree=YES commit=6e7f930ed453cffe498726219347fd44dc7dfe7b sha256=a127b2d40a700f4ad6dd6faa74797eb3e99a7b199e6ebd3deca714b427ecdb37
+identity_fields_match=YES com.zll.lifesnapaction version=1.1 build=4 display_name=よていスナップ launch_storyboard=LaunchScreen
+equivalence_limit=clean Mach-O bytes differ; final-source equivalence is limited to unchanged launch source, byte-identical compiled storyboard and Info.plist, matching identity, and successful normal-signed build verification
+
+[light_clean_first_launch]
+simulator_name=YoteiSnap-AdaptiveLight-iPhone15-20260730223844
+simulator_udid=E1DA6F95-D286-4667-B8C1-2E45D2DBAC8C
+device_type=iPhone 15
+runtime=iOS 26.5 (23F77)
+appearance_set_before_install=light
+app_previously_launched=NO
+launch_utc=2026-07-30T13:42:02Z
+recording_command=xcrun simctl io SIMULATOR_UDID recordVideo --codec=h264 --force /tmp/yotei-snap-adaptive-light-first-launch.mp4
+launch_command=xcrun simctl launch SIMULATOR_UDID com.zll.lifesnapaction
+recording_result=PASS frames=80 duration_seconds=15.078333 dimensions=1178x2556
+selected_frame_sequence=001@0.000s,002@3.232s,003@4.870s,004@5.135s,006@5.313s,010@5.347s,020@5.468s,030@5.543s,035@5.577s,040@5.687s,045@5.765s,050@5.848s,055@5.932s,060@6.015s,065@6.647s,080@14.053s
+near_full_black_mismatch_detection=ffmpeg blackframe amount=98 threshold=16
+near_full_black_mismatch_frame_count=0
+splashboard_denylist_predicate=Snapshot generation request AND rejected AND denylisted
+splashboard_denylist_count=0
+runtime_first_screen_intact=YES
+contact_sheet=docs/verification/yotei-snap-release/launch-transition-light-contact-sheet.png
+contact_sheet_sha256=5ea97956c0b01da67d3d18c5dae4a4bcec72d8e3f21b408c70b714e3feb0a9e0
+representative_launch_frame=docs/verification/yotei-snap-release/launch-screen-light.png
+representative_launch_frame_sha256=0b096796ee9cbaa067197a61da4867f0b1f6b5eb1b94e44c4dc2c3459cdcbe2a
+
+[dark_clean_first_launch]
+simulator_name=YoteiSnap-AdaptiveDark-iPhone15-20260730223844
+simulator_udid=BC4A4E3F-BAA7-4574-A9B1-E6B5C12D48F5
+device_type=iPhone 15
+runtime=iOS 26.5 (23F77)
+appearance_set_before_install=dark
+app_previously_launched=NO
+launch_utc=2026-07-30T13:42:22Z
+recording_command=xcrun simctl io SIMULATOR_UDID recordVideo --codec=h264 --force /tmp/yotei-snap-adaptive-dark-first-launch.mp4
+launch_command=xcrun simctl launch SIMULATOR_UDID com.zll.lifesnapaction
+recording_result=PASS frames=61 duration_seconds=7.145000 dimensions=1178x2556
+selected_frame_sequence=001@0.000s,002@5.148s,003@5.370s,004@5.407s,006@5.563s,010@5.583s,015@5.620s,020@5.682s,025@5.748s,030@5.812s,035@5.895s,040@5.980s,045@6.857s,050@6.937s,055@7.022s,061@7.125s
+near_full_light_flash_detection=ffmpeg negate then blackframe amount=98 threshold=16
+near_full_light_flash_frame_count=0
+splashboard_denylist_predicate=Snapshot generation request AND rejected AND denylisted
+splashboard_denylist_count=0
+runtime_first_screen_intact=YES
+contact_sheet=docs/verification/yotei-snap-release/launch-transition-dark-contact-sheet.png
+contact_sheet_sha256=eecab422d790db257ea70e18ab3820102aea196f75ed9dfcb6e6025c7e7a5d63
+
+[visual_review]
+light_sequence=PASS Home icon zoom to light semantic launch surface to light runtime
+dark_sequence=PASS Home icon zoom to dark semantic launch surface to dark runtime
+launch_branding=PASS no name logo image or decoration on launch surface
+result=PASS

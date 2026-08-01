@@ -40,8 +40,81 @@ final class AppFlowCoordinatorTests: XCTestCase {
 
         XCTAssertEqual(client.callCount, 1)
         XCTAssertNil(coordinator.captureVM.selectedImage)
+        XCTAssertNil(coordinator.reviewImage)
         guard case .noAction = coordinator.currentScreen else {
             return XCTFail("Expected no-action screen after successful extraction")
+        }
+    }
+
+    func testCalendarRouteMovesImageIntoTransientReviewState() async {
+        let client = MockExtractionClient(result: .success(makeCalendarResponse()))
+        let coordinator = makeCoordinator(client: client)
+
+        coordinator.imageSelected(makeImage())
+        await coordinator.startConsentedExtraction()
+
+        XCTAssertNil(coordinator.captureVM.selectedImage)
+        XCTAssertNotNil(coordinator.reviewImage)
+        guard case .review = coordinator.currentScreen else {
+            return XCTFail("Expected review screen")
+        }
+    }
+
+    func testShowingSuccessClearsTransientReviewImage() async {
+        let client = MockExtractionClient(result: .success(makeCalendarResponse()))
+        let coordinator = makeCoordinator(client: client)
+
+        coordinator.imageSelected(makeImage())
+        await coordinator.startConsentedExtraction()
+        guard case .review(let task) = coordinator.currentScreen else {
+            return XCTFail("Expected review screen")
+        }
+
+        coordinator.showSuccess(for: task)
+
+        XCTAssertNil(coordinator.reviewImage)
+        guard case .success = coordinator.currentScreen else {
+            return XCTFail("Expected success screen")
+        }
+    }
+
+    func testResetClearsTransientReviewImage() async {
+        let client = MockExtractionClient(result: .success(makeCalendarResponse()))
+        let coordinator = makeCoordinator(client: client)
+
+        coordinator.imageSelected(makeImage())
+        await coordinator.startConsentedExtraction()
+        coordinator.resetToCapture()
+
+        XCTAssertNil(coordinator.reviewImage)
+        guard case .capture = coordinator.currentScreen else {
+            return XCTFail("Expected capture screen after reset")
+        }
+    }
+
+    func testVerificationReviewScenarioUsesProvidedImage() {
+        let image = makeImage()
+
+        let coordinator = AppFlowCoordinator(
+            verificationScenario: .review,
+            verificationImage: image
+        )
+
+        XCTAssertNotNil(coordinator.reviewImage)
+        guard case .review = coordinator.currentScreen else {
+            return XCTFail("Expected review verification screen")
+        }
+    }
+
+    func testVerificationNoActionScenarioDoesNotRetainImage() {
+        let coordinator = AppFlowCoordinator(
+            verificationScenario: .noAction,
+            verificationImage: makeImage()
+        )
+
+        XCTAssertNil(coordinator.reviewImage)
+        guard case .noAction = coordinator.currentScreen else {
+            return XCTFail("Expected no-action verification screen")
         }
     }
 
@@ -85,10 +158,19 @@ final class AppFlowCoordinatorTests: XCTestCase {
         XCTAssertTrue(body.contains("永続保存しません"))
         XCTAssertTrue(body.contains("Google 製品の改善に使用されません"))
         XCTAssertTrue(body.contains("キャンセルすると画像は送信されず"))
-        XCTAssertEqual(ConsentPurpose.firstUpload.primaryButtonTitle, "同意してAI解析を開始")
-        XCTAssertEqual(ConsentPurpose.retryUpload.primaryButtonTitle, "同意して再解析")
+        XCTAssertTrue(body.contains("よていスナップ"))
+        XCTAssertFalse(body.contains("LifeSnap"))
+        XCTAssertEqual(ConsentPurpose.firstUpload.primaryButtonTitle, "同意して続ける")
+        XCTAssertEqual(ConsentPurpose.retryUpload.primaryButtonTitle, "同意してもう一度試す")
         XCTAssertEqual(ConsentCopy.cancelButtonTitle, "キャンセル")
         XCTAssertEqual(ConsentCopy.privacyLinkTitle, "プライバシーポリシー")
+    }
+
+    func testCalendarSignatureUsesJapaneseBrand() {
+        XCTAssertEqual(
+            CalendarService.brandSignature,
+            "— よていスナップで作成"
+        )
     }
 
     private func makeCoordinator(client: MockExtractionClient) -> AppFlowCoordinator {
@@ -139,5 +221,31 @@ private func makeNoActionResponse() -> ExtractionResponse {
         riskFlags: nil,
         evidence: nil,
         calendarEvent: nil
+    )
+}
+
+private func makeCalendarResponse() -> ExtractionResponse {
+    ExtractionResponse(
+        route: .calendarAction,
+        documentType: "notice",
+        taskType: "event",
+        title: "エレベーター点検",
+        dueDate: nil,
+        startDatetime: "2026-10-25T14:00:00+09:00",
+        endDatetime: "2026-10-25T16:00:00+09:00",
+        amount: nil,
+        issuer: "管理会社",
+        location: nil,
+        summary: "点検中はエレベーターを利用できません。",
+        confidence: 0.91,
+        riskFlags: [],
+        evidence: nil,
+        calendarEvent: CalendarEventData(
+            title: "エレベーター点検",
+            start: "2026-10-25T14:00:00+09:00",
+            end: "2026-10-25T16:00:00+09:00",
+            description: "点検中はエレベーターを利用できません。",
+            location: nil
+        )
     )
 }

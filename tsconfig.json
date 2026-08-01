@@ -16,6 +16,6 @@
     "noEmit": true,
     "strict": true
   },
-  "include": ["server.ts", "src/shared/**/*.ts"],
+  "include": ["server.ts", "src/**/*.ts"],
   "exclude": ["node_modules", "dist", "src/components", "src/App.tsx"]
 }

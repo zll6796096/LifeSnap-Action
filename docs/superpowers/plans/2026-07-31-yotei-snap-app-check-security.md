@@ -1,0 +1,5448 @@
+# Yotei Snap App Check Security Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Protect Build 4 image extraction with Firebase App Check/App Attest, exact cross-instance quotas, and a least-privilege Cloud Run runtime while preserving the current URL and Build 3 compatibility window.
+
+**Architecture:** Build 4 sends a limited-use App Check token and Keychain installation UUID to `POST /api/v2/extract`. Cloud Run consumes the token, HMACs the installation UUID, atomically reserves Firestore quota, and only then invokes Gemini; Build 3 remains on `/api/extract` behind a separate 50-call daily cap. A dedicated runtime service account can read only two named secrets, consume App Check tokens, and access the named quota database.
+
+**Tech Stack:** Swift 5.9 / SwiftUI / Firebase Apple SDK 12.17.0 / App Attest / Keychain, Node.js 20 / TypeScript / Express / Vitest / Firebase Admin 13.10.0 / Firestore 7.11.6, Cloud Run / Cloud Build / Secret Manager / IAM.
+
+---
+
+## First-principles execution contract
+
+- **Real objective:** prevent anonymous or replayed extraction abuse without
+  breaking the released Build 3, changing the public URL, or weakening the
+  existing consent and privacy boundaries.
+- **Relevant rule:** risk control and verifiable evidence come before rollout;
+  a healthy process or attractive UI is not security acceptance.
+- **Minimal verifiable deliverable:** one backward-compatible backend revision
+  with protected v2, capped legacy, exact cross-instance quotas, dedicated
+  runtime identity, and one physical Release-device App Attest proof before
+  traffic promotion.
+- **Likely files:** only the backend, iOS security/client configuration, focused
+  tests, release scripts, and sanitized release/verification documents listed
+  below.
+- **Explicitly out of scope:** product name/icon/UI changes, prompt/model/schema
+  changes, App Store upload/submission, automatic legacy shutdown, Cloud Armor,
+  Firebase Analytics/Auth/Crashlytics, cleanup of unrelated default service
+  account roles, and service-account JSON keys.
+- **Acceptance:** Gates A through E below pass with exact revisions, traffic,
+  IAM, token replay, quota, privacy, and Git evidence; skipped or failed checks
+  remain visible and block the next mutation.
+- **Risks and guardrails:** App Check token consumption is a replay-protection
+  dependency and remains fail-closed; Firestore is transactional; negative
+  requests must not reach Gemini; production promotion is conditional and
+  ownership-safe; no secret, token, image, installation identifier, extracted
+  content, or raw Gemini response enters logs or evidence.
+- **Verification commands:** each task gives the exact focused command first,
+  then the complete backend/iOS/emulator/release/Git gates before any
+  infrastructure or traffic change.
+
+---
+
+## Source specification and fixed decisions
+
+Implement against:
+
+`docs/superpowers/specs/2026-07-31-yotei-snap-app-check-security-design.md`
+
+The following values are immutable within this plan:
+
+| Item | Required value |
+| --- | --- |
+| GCP/Firebase project | `zhang23-23` |
+| Cloud Run service | `lifesnap-action` |
+| Cloud Run region | `asia-northeast1` |
+| Public base URL | `https://lifesnap-action-sxielk4wua-an.a.run.app` |
+| Bundle ID | `com.zll.lifesnapaction` |
+| Build 4 route | `/api/v2/extract` |
+| Build 3 route | `/api/extract` |
+| Firestore database | `lifesnap-quota` in `asia-northeast1` |
+| Runtime service account | `lifesnap-runtime@zhang23-23.iam.gserviceaccount.com` |
+| HMAC secret | `lifesnap-installation-hmac-key` |
+| v2 installation limit | 5/minute and 20/Asia-Tokyo day |
+| v2 global limit | 500/Asia-Tokyo day |
+| legacy global limit | 50/Asia-Tokyo day |
+| App Check token TTL | 3600 seconds |
+
+Do not change the product name, icon, Gemini prompt/model, extraction success schema, calendar behavior, Bundle ID, current public URL, or App Store state.
+
+## File responsibility map
+
+### Backend
+
+- `src/security/installation-id.ts` — canonical UUID validation and HMAC-SHA256.
+- `src/security/app-check.ts` — App Check header verification, app allowlist, replay handling, and stable failures.
+- `src/quota/buckets.ts` — deterministic minute and Asia/Tokyo day bucket calculations.
+- `src/quota/contracts.ts` — quota scope, decision, and store interfaces.
+- `src/quota/firestore-quota-store.ts` — exact Firestore transaction implementation.
+- `src/extraction/extraction-service.ts` — the existing Gemini request/schema validation, independent of HTTP and security.
+- `src/runtime/firebase.ts` — production Firebase Admin/App Check/Firestore construction through ADC.
+- `server.ts` — route ordering, dependency composition, stable HTTP errors, no-store, and safe logs.
+
+### iOS
+
+- `ios/LifeSnapAction/Services/AppCheckBootstrap.swift` — Debug versus App Attest provider selection and Firebase startup.
+- `ios/LifeSnapAction/Services/AppCheckTokenProvider.swift` — limited-use token retrieval.
+- `ios/LifeSnapAction/Services/InstallationIdentifierStore.swift` — Keychain UUID lifecycle.
+- `ios/LifeSnapAction/Services/APIClient.swift` — v2 request, headers, one bounded token refresh, and Japanese error mapping.
+- `ios/LifeSnapAction/LifeSnapAction.entitlements` — production App Attest entitlement.
+- `ios/LifeSnapAction/GoogleService-Info.plist` — Firebase app configuration for the existing project and bundle.
+- `ios/project.yml` and generated `ios/LifeSnapAction.xcodeproj/project.pbxproj` — pinned Firebase package and capability wiring.
+
+### Release and evidence
+
+- `scripts/promote-and-verify.sh` — zero-traffic candidate creation and non-secret candidate checks; no automatic promotion.
+- `scripts/promote-verified-candidate.sh` — exact-candidate conditional promotion after recorded real-device evidence.
+- `src/shared/__tests__/cloudbuild-contract.test.ts` — candidate/promotion ownership and rollback contract.
+- `scripts/validate-yotei-snap-release.sh` — static Release/App Attest contract.
+- `docs/release/yotei-snap-v1.1-app-store-release-gate.md` — append-only sanitized gate evidence.
+- `docs/verification/yotei-snap-security/` — sanitized security evidence; never tokens, images, OCR, or extracted text.
+
+## Execution gates
+
+| Gate | Required evidence | Mutation allowed after pass |
+| --- | --- | --- |
+| A — Local | Unit, emulator, lint, build, Release contract, Git diff | Firebase/IAM provisioning |
+| B — Infrastructure | Exact app, App Attest, database, TTL, secrets, conditional IAM | Zero-traffic candidate |
+| C — Candidate | Exact image/runtime, public routes, negative App Check, legacy smoke | Real-device candidate smoke |
+| D — Device | Release/App Attest valid v2 request and replay rejection | Production traffic cutover |
+| E — Production | 100% exact revision, valid v2, negative v2, bounded legacy, safe logs | Mark backend security PASS |
+
+No gate can be replaced by `/health`, simulator Debug Provider, a local mock, or a permissive production fallback.
+
+### Task 1: Record the clean baseline
+
+**Files:**
+- Read: `package.json`
+- Read: `server.ts`
+- Read: `ios/project.yml`
+- Read: `docs/release/yotei-snap-v1.1-app-store-release-gate.md`
+- No file changes
+
+- [ ] **Step 1: Confirm the exact worktree and clean scope**
+
+Run:
+
+```bash
+pwd
+git rev-parse --show-toplevel
+git status --short --branch
+git log -1 --oneline
+```
+
+Expected:
+
+- top level is `.worktrees/lifesnap-apple-native-ui`;
+- branch is `codex/lifesnap-apple-native-ui`;
+- no uncommitted files exist before implementation;
+- HEAD contains the approved design and plan commits.
+
+- [ ] **Step 2: Run the existing backend baseline**
+
+Run:
+
+```bash
+npm test
+npm run lint
+npm run build
+npm run validate:ios-release
+```
+
+Expected: 30 existing Vitest tests pass, type-check/build exit 0, and all current release-contract checks pass.
+
+- [ ] **Step 3: Run the existing iOS baseline**
+
+Resolve one available `LifeSnap iPhone 15` simulator and run:
+
+```bash
+simulator_udid="$(
+  xcrun simctl list devices available -j |
+    jq -r '
+      [.devices[][] | select(.name == "LifeSnap iPhone 15") | .udid]
+      | if length == 1 then .[0] else error("expected exactly one LifeSnap iPhone 15") end
+    '
+)"
+
+xcodebuild \
+  -project ios/LifeSnapAction.xcodeproj \
+  -scheme LifeSnapAction \
+  -sdk iphonesimulator \
+  -destination "platform=iOS Simulator,id=${simulator_udid}" \
+  -derivedDataPath /tmp/yotei-security-baseline \
+  CODE_SIGNING_ALLOWED=NO \
+  test -quiet
+```
+
+Expected: 12 existing iOS tests pass. If the named simulator is absent or duplicated, stop and report the observed device inventory; do not silently use a different acceptance device.
+
+### Task 2: Add deterministic installation hashing and quota buckets
+
+**Files:**
+- Create: `src/security/installation-id.ts`
+- Create: `src/security/__tests__/installation-id.test.ts`
+- Create: `src/quota/buckets.ts`
+- Create: `src/quota/__tests__/buckets.test.ts`
+
+- [ ] **Step 1: Write failing installation-ID tests**
+
+Create tests covering canonicalization, rejection, key separation, and non-disclosure:
+
+```ts
+import { describe, expect, it } from "vitest";
+import {
+  canonicalizeInstallationId,
+  hashInstallationId,
+} from "../installation-id";
+
+describe("installation identifier", () => {
+  const id = "E8B18B25-64A6-4AF9-B31F-9B0B6D3C3D4E";
+  const keyOne = "1".repeat(32);
+  const keyTwo = "2".repeat(32);
+
+  it("canonicalizes a UUID without retaining the source in the digest", () => {
+    expect(canonicalizeInstallationId(id)).toBe(id.toLowerCase());
+    const digest = hashInstallationId(id, keyOne);
+    expect(digest).toMatch(/^[a-f0-9]{64}$/);
+    expect(digest).not.toContain(id.toLowerCase());
+  });
+
+  it("rejects non-UUID identifiers", () => {
+    expect(() => canonicalizeInstallationId("device-123")).toThrow(
+      "INSTALLATION_ID_INVALID",
+    );
+  });
+
+  it("uses a keyed digest", () => {
+    expect(hashInstallationId(id, keyOne)).not.toBe(
+      hashInstallationId(id, keyTwo),
+    );
+  });
+
+  it("rejects a short HMAC key", () => {
+    expect(() => hashInstallationId(id, "too-short")).toThrow(
+      "INSTALLATION_HMAC_KEY must contain at least 32 characters",
+    );
+  });
+});
+```
+
+- [ ] **Step 2: Write failing bucket tests**
+
+```ts
+import { describe, expect, it } from "vitest";
+import {
+  buildQuotaBuckets,
+  secondsUntilNextTokyoDay,
+} from "../buckets";
+
+describe("quota buckets", () => {
+  it("uses Asia/Tokyo for the daily key", () => {
+    const beforeMidnight = new Date("2026-07-31T14:59:59.000Z");
+    const afterMidnight = new Date("2026-07-31T15:00:00.000Z");
+    expect(buildQuotaBuckets(beforeMidnight).tokyoDay).toBe("2026-07-31");
+    expect(buildQuotaBuckets(afterMidnight).tokyoDay).toBe("2026-08-01");
+  });
+
+  it("uses UTC epoch minutes for exact minute windows", () => {
+    const result = buildQuotaBuckets(new Date("2026-07-31T01:02:59.999Z"));
+    expect(result.epochMinute).toBe(Math.floor(Date.parse("2026-07-31T01:02:00Z") / 60_000));
+  });
+
+  it("returns Retry-After to the next Tokyo day", () => {
+    expect(secondsUntilNextTokyoDay(new Date("2026-07-31T14:59:59Z"))).toBe(1);
+  });
+});
+```
+
+- [ ] **Step 3: Verify the new tests fail**
+
+Run:
+
+```bash
+npx vitest run \
+  src/security/__tests__/installation-id.test.ts \
+  src/quota/__tests__/buckets.test.ts
+```
+
+Expected: FAIL because the two implementation modules do not exist.
+
+- [ ] **Step 4: Implement canonical UUID and HMAC-SHA256**
+
+Add:
+
+```ts
+import crypto from "node:crypto";
+
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+export class InstallationIdentifierError extends Error {
+  readonly code = "INSTALLATION_ID_INVALID";
+}
+
+export function canonicalizeInstallationId(value: string): string {
+  const canonical = value.trim().toLowerCase();
+  if (!UUID_PATTERN.test(canonical)) {
+    throw new InstallationIdentifierError("INSTALLATION_ID_INVALID");
+  }
+  return canonical;
+}
+
+export function hashInstallationId(value: string, hmacKey: string): string {
+  if (hmacKey.length < 32) {
+    throw new Error("INSTALLATION_HMAC_KEY must contain at least 32 characters");
+  }
+  return crypto
+    .createHmac("sha256", hmacKey)
+    .update(canonicalizeInstallationId(value), "utf8")
+    .digest("hex");
+}
+```
+
+- [ ] **Step 5: Implement deterministic bucket helpers**
+
+Add:
+
+```ts
+const TOKYO_OFFSET_MILLISECONDS = 9 * 60 * 60 * 1000;
+
+function tokyoDateParts(now: Date) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "Asia/Tokyo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(now);
+  const value = (type: Intl.DateTimeFormatPartTypes) =>
+    Number(parts.find((part) => part.type === type)?.value);
+  return { year: value("year"), month: value("month"), day: value("day") };
+}
+
+export function buildQuotaBuckets(now: Date) {
+  const { year, month, day } = tokyoDateParts(now);
+  const minuteStart = new Date(
+    Math.floor(now.getTime() / 60_000) * 60_000,
+  );
+  const tokyoDayStart = new Date(
+    Date.UTC(year, month - 1, day) - TOKYO_OFFSET_MILLISECONDS,
+  );
+  return {
+    epochMinute: Math.floor(now.getTime() / 60_000),
+    tokyoDay: [
+      String(year).padStart(4, "0"),
+      String(month).padStart(2, "0"),
+      String(day).padStart(2, "0"),
+    ].join("-"),
+    minuteStart,
+    tokyoDayStart,
+  };
+}
+
+export function secondsUntilNextMinute(now: Date): number {
+  return 60 - (Math.floor(now.getTime() / 1000) % 60);
+}
+
+export function secondsUntilNextTokyoDay(now: Date): number {
+  const { year, month, day } = tokyoDateParts(now);
+  const nextMidnightUtc =
+    Date.UTC(year, month - 1, day + 1) - TOKYO_OFFSET_MILLISECONDS;
+  return Math.max(1, Math.ceil((nextMidnightUtc - now.getTime()) / 1000));
+}
+```
+
+- [ ] **Step 6: Run focused tests**
+
+Run:
+
+```bash
+npx vitest run \
+  src/security/__tests__/installation-id.test.ts \
+  src/quota/__tests__/buckets.test.ts
+npm run lint
+```
+
+Expected: both test files pass and type-check exits 0.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add \
+  src/security/installation-id.ts \
+  src/security/__tests__/installation-id.test.ts \
+  src/quota/buckets.ts \
+  src/quota/__tests__/buckets.test.ts
+git commit -m "feat: add private quota identifiers"
+```
+
+### Task 3: Implement exact Firestore quota transactions
+
+**Files:**
+- Create: `src/quota/contracts.ts`
+- Create: `src/quota/firestore-quota-store.ts`
+- Create: `src/quota/__tests__/firestore-quota-store.test.ts`
+- Create: `src/quota/__tests__/firestore-quota.integration.test.ts`
+- Create: `firebase.json`
+- Modify: `package.json`
+- Modify: `package-lock.json`
+- Modify: `tsconfig.json`
+
+- [ ] **Step 1: Pin backend and emulator dependencies**
+
+Run:
+
+```bash
+npm install --save-exact \
+  firebase-admin@13.10.0 \
+  @google-cloud/firestore@7.11.6
+npm install --save-dev --save-exact firebase-tools@15.25.0
+```
+
+Expected: `package.json` contains exact versions without `^` or `~`; `package-lock.json` changes only through npm.
+
+- [ ] **Step 1a: Make the normal lint command cover all backend source/tests**
+
+Change:
+
+```json
+"include": ["server.ts", "src/**/*.ts"]
+```
+
+Keep the existing frontend exclusions. Run `npm run lint` before adding the
+quota implementation and require it to type-check the Task 2 security/quota
+files as well as all subsequent backend tests; do not rely on a one-off
+alternate TypeScript command.
+
+- [ ] **Step 2: Write the quota contract**
+
+```ts
+export type QuotaScope =
+  | { kind: "v2"; installationHash: string }
+  | { kind: "legacy" };
+
+export type QuotaDeniedCode =
+  | "INSTALL_RATE_LIMITED"
+  | "INSTALL_DAILY_LIMITED"
+  | "SERVICE_DAILY_LIMITED";
+
+export type QuotaDecision =
+  | { allowed: true; crossedThreshold?: 70 | 90 | 100 }
+  | {
+      allowed: false;
+      code: QuotaDeniedCode;
+      retryAfterSeconds: number;
+    };
+
+export type QuotaPolicy = {
+  installPerMinute: number;
+  installPerDay: number;
+  v2PerDay: number;
+  legacyPerDay: number;
+};
+
+export const PRODUCTION_QUOTA_POLICY: QuotaPolicy = {
+  installPerMinute: 5,
+  installPerDay: 20,
+  v2PerDay: 500,
+  legacyPerDay: 50,
+};
+
+export interface QuotaStore {
+  consume(scope: QuotaScope, now: Date): Promise<QuotaDecision>;
+}
+```
+
+- [ ] **Step 3: Write failing unit tests around exact edges**
+
+Use an injected transaction adapter so the tests can assert:
+
+```ts
+it("allows the 500th v2 call and rejects the 501st", async () => {
+  const store = makeTestStore({
+    policy: { installPerMinute: 999, installPerDay: 999, v2PerDay: 500, legacyPerDay: 50 },
+    counts: { installMinute: 499, installDay: 499, serviceDay: 499 },
+  });
+  await expect(store.consume(v2Scope, now)).resolves.toEqual({
+    allowed: true,
+    crossedThreshold: 100,
+  });
+  await expect(store.consume(v2Scope, now)).resolves.toMatchObject({
+    allowed: false,
+    code: "SERVICE_DAILY_LIMITED",
+  });
+});
+
+it("never writes a partial set when one boundary is exhausted", async () => {
+  const store = makeTestStore({
+    policy: { installPerMinute: 5, installPerDay: 20, v2PerDay: 500, legacyPerDay: 50 },
+    counts: { installMinute: 5, installDay: 3, serviceDay: 3 },
+  });
+  await store.consume(v2Scope, now);
+  expect(store.snapshot()).toEqual({
+    installMinute: 5,
+    installDay: 3,
+    serviceDay: 3,
+  });
+});
+
+it.each([
+  [349, 70],
+  [449, 90],
+  [499, 100],
+] as const)(
+  "reports the %i%% v2 global threshold exactly on the crossing",
+  async (serviceDay, threshold) => {
+    const store = makeTestStore({
+      policy: {
+        installPerMinute: 999,
+        installPerDay: 999,
+        v2PerDay: 500,
+        legacyPerDay: 50,
+      },
+      counts: { installMinute: 0, installDay: 0, serviceDay },
+    });
+    await expect(store.consume(v2Scope, now)).resolves.toMatchObject({
+      allowed: true,
+      crossedThreshold: threshold,
+    });
+    const next = await store.consume(v2Scope, now);
+    if (threshold === 100) {
+      expect(next).toMatchObject({
+        allowed: false,
+        code: "SERVICE_DAILY_LIMITED",
+      });
+    } else {
+      expect(next).toEqual({ allowed: true, crossedThreshold: undefined });
+    }
+  },
+);
+```
+
+The same test file defines a complete in-memory Firestore-shaped adapter so failures are about quota behavior rather than missing helpers:
+
+```ts
+function makeTestStore(input: {
+  policy: QuotaPolicy;
+  counts: {
+    installMinute?: number;
+    installDay?: number;
+    serviceDay?: number;
+    legacyServiceDay?: number;
+  };
+}) {
+  type TestDocument = Record<string, unknown>;
+  type TestReference = { path: string };
+  const buckets = buildQuotaBuckets(now);
+  const paths = {
+    installMinute:
+      `install_minute/${v2Scope.installationHash}:${buckets.epochMinute}`,
+    installDay:
+      `install_day/${v2Scope.installationHash}:${buckets.tokyoDay}`,
+    serviceDay: `service_day/v2:${buckets.tokyoDay}`,
+    legacyServiceDay: `service_day/legacy:${buckets.tokyoDay}`,
+  };
+  const state = new Map<string, TestDocument>();
+  for (const [name, count] of Object.entries(input.counts)) {
+    if (count !== undefined) {
+      state.set(paths[name as keyof typeof paths], { count });
+    }
+  }
+  const db = {
+    collection(collection: string) {
+      return {
+        doc(id: string) {
+          return { path: `${collection}/${id}` };
+        },
+      };
+    },
+    runTransaction<T>(
+      run: (transaction: {
+        getAll: (...refs: TestReference[]) => Promise<
+          Array<{
+            exists: boolean;
+            data: () => TestDocument | undefined;
+          }>
+        >;
+        set: (
+          ref: TestReference,
+          data: TestDocument,
+          options: { merge: true },
+        ) => void;
+      }) => Promise<T>,
+    ) {
+      const pending: Array<{
+        ref: TestReference;
+        data: TestDocument;
+      }> = [];
+      return run({
+        getAll: async (...refs) =>
+          refs.map((ref) => ({
+            exists: state.has(ref.path),
+            data: () => state.get(ref.path),
+          })),
+        set: (ref, data) => {
+          pending.push({ ref, data });
+        },
+      }).then((result) => {
+        for (const write of pending) {
+          state.set(write.ref.path, {
+            ...state.get(write.ref.path),
+            ...write.data,
+          });
+        }
+        return result;
+      });
+    },
+  };
+  const store = new FirestoreQuotaStore(
+    db as unknown as Firestore,
+    input.policy,
+  );
+  return {
+    consume: store.consume.bind(store),
+    snapshot: () => ({
+      installMinute: state.get(paths.installMinute)?.count,
+      installDay: state.get(paths.installDay)?.count,
+      serviceDay: state.get(paths.serviceDay)?.count,
+      legacyServiceDay: state.get(paths.legacyServiceDay)?.count,
+    }),
+    paths,
+    setRawDocument: (path: string, data: TestDocument) =>
+      state.set(path, data),
+    deleteDocument: (path: string) => state.delete(path),
+  };
+}
+```
+
+Use the `setRawDocument`/`deleteDocument` controls for corrupt/absent cases.
+Do not cast a collection-only counter map into Firestore: full-path separation,
+document existence, and transaction-local writes are part of the behavior under
+test.
+
+Add explicit table-driven cases for:
+
+- install minute count 4 → fifth allowed, then sixth rejected with
+  `INSTALL_RATE_LIMITED`;
+- install day count 19 → twentieth allowed, then twenty-first rejected with
+  `INSTALL_DAILY_LIMITED`;
+- v2 global count 499 → five-hundredth allowed, then five-hundred-first rejected
+  with `SERVICE_DAILY_LIMITED`;
+- legacy global count 49 → fiftieth allowed, then fifty-first rejected with
+  `SERVICE_DAILY_LIMITED`;
+- a legacy consume changes only `service_day/legacy:*`, while a v2 consume
+  changes only its installation documents and `service_day/v2:*`.
+- an existing counter with a missing, negative, fractional, string, `NaN`, or
+  unsafe-integer `count` rejects with `QUOTA_COUNTER_INVALID` and writes
+  nothing; only a genuinely absent document starts at zero.
+
+- [ ] **Step 4: Verify quota tests fail**
+
+Run:
+
+```bash
+npx vitest run src/quota/__tests__/firestore-quota-store.test.ts
+```
+
+Expected: FAIL because `FirestoreQuotaStore` and the test adapter are not implemented.
+
+- [ ] **Step 5: Implement the Firestore transaction**
+
+The production class must accept a `Firestore` instance so production uses the named database and tests use Emulator:
+
+```ts
+import {
+  type DocumentReference,
+  type Firestore,
+  Timestamp,
+} from "@google-cloud/firestore";
+import {
+  buildQuotaBuckets,
+  secondsUntilNextMinute,
+  secondsUntilNextTokyoDay,
+} from "./buckets";
+import {
+  PRODUCTION_QUOTA_POLICY,
+  type QuotaDecision,
+  type QuotaPolicy,
+  type QuotaScope,
+  type QuotaStore,
+} from "./contracts";
+
+type Counter = {
+  ref: DocumentReference;
+  count: number;
+  limit: number;
+  bucketStart: Date;
+  deniedCode:
+    | "INSTALL_RATE_LIMITED"
+    | "INSTALL_DAILY_LIMITED"
+    | "SERVICE_DAILY_LIMITED";
+  retryAfterSeconds: number;
+  expiresAt: Date;
+};
+
+export class FirestoreQuotaStore implements QuotaStore {
+  constructor(
+    private readonly db: Firestore,
+    private readonly policy: QuotaPolicy = PRODUCTION_QUOTA_POLICY,
+  ) {}
+
+  async consume(scope: QuotaScope, now: Date): Promise<QuotaDecision> {
+    const {
+      epochMinute,
+      tokyoDay,
+      minuteStart,
+      tokyoDayStart,
+    } = buildQuotaBuckets(now);
+    return this.db.runTransaction(async (transaction) => {
+      const refs =
+        scope.kind === "v2"
+          ? [
+              this.db.collection("install_minute").doc(
+                `${scope.installationHash}:${epochMinute}`,
+              ),
+              this.db.collection("install_day").doc(
+                `${scope.installationHash}:${tokyoDay}`,
+              ),
+              this.db.collection("service_day").doc(`v2:${tokyoDay}`),
+            ]
+          : [this.db.collection("service_day").doc(`legacy:${tokyoDay}`)];
+      const snapshots = await transaction.getAll(...refs);
+      const current = snapshots.map((snapshot) => {
+        if (!snapshot.exists) return 0;
+        const value = snapshot.data()?.count;
+        if (
+          typeof value !== "number" ||
+          !Number.isSafeInteger(value) ||
+          value < 0
+        ) {
+          throw new Error("QUOTA_COUNTER_INVALID");
+        }
+        return value;
+      });
+      const minuteExpiry = new Date(
+        minuteStart.getTime() + 24 * 60 * 60 * 1000,
+      );
+      const dayExpiry = new Date(
+        tokyoDayStart.getTime() + 30 * 24 * 60 * 60 * 1000,
+      );
+      const counters: Counter[] =
+        scope.kind === "v2"
+          ? [
+              {
+                ref: refs[0],
+                count: current[0],
+                limit: this.policy.installPerMinute,
+                bucketStart: minuteStart,
+                deniedCode: "INSTALL_RATE_LIMITED",
+                retryAfterSeconds: secondsUntilNextMinute(now),
+                expiresAt: minuteExpiry,
+              },
+              {
+                ref: refs[1],
+                count: current[1],
+                limit: this.policy.installPerDay,
+                bucketStart: tokyoDayStart,
+                deniedCode: "INSTALL_DAILY_LIMITED",
+                retryAfterSeconds: secondsUntilNextTokyoDay(now),
+                expiresAt: dayExpiry,
+              },
+              {
+                ref: refs[2],
+                count: current[2],
+                limit: this.policy.v2PerDay,
+                bucketStart: tokyoDayStart,
+                deniedCode: "SERVICE_DAILY_LIMITED",
+                retryAfterSeconds: secondsUntilNextTokyoDay(now),
+                expiresAt: dayExpiry,
+              },
+            ]
+          : [
+              {
+                ref: refs[0],
+                count: current[0],
+                limit: this.policy.legacyPerDay,
+                bucketStart: tokyoDayStart,
+                deniedCode: "SERVICE_DAILY_LIMITED",
+                retryAfterSeconds: secondsUntilNextTokyoDay(now),
+                expiresAt: dayExpiry,
+              },
+            ];
+
+      const denied = counters.find((counter) => counter.count >= counter.limit);
+      if (denied) {
+        return {
+          allowed: false,
+          code: denied.deniedCode,
+          retryAfterSeconds: denied.retryAfterSeconds,
+        };
+      }
+
+      for (const counter of counters) {
+        transaction.set(
+          counter.ref,
+          {
+            count: counter.count + 1,
+            bucket_start: Timestamp.fromDate(counter.bucketStart),
+            updated_at: Timestamp.fromDate(now),
+            expires_at: Timestamp.fromDate(counter.expiresAt),
+          },
+          { merge: true },
+        );
+      }
+
+      const service = counters.at(-1)!;
+      const previousPercent = Math.floor((service.count * 100) / service.limit);
+      const nextPercent = Math.floor(((service.count + 1) * 100) / service.limit);
+      const crossedThreshold = ([70, 90, 100] as const).find(
+        (threshold) => previousPercent < threshold && nextPercent >= threshold,
+      );
+      return { allowed: true, crossedThreshold };
+    });
+  }
+}
+```
+
+Add test assertions that `bucket_start` equals the exact UTC minute boundary for `install_minute` and Tokyo midnight for both daily collections.
+
+- [ ] **Step 6: Configure and test the Firestore Emulator**
+
+Add `firebase.json`:
+
+```json
+{
+  "emulators": {
+    "firestore": {
+      "host": "127.0.0.1",
+      "port": 8089
+    },
+    "ui": {
+      "enabled": false
+    }
+  }
+}
+```
+
+Add scripts:
+
+```json
+{
+  "test:firestore": "firebase emulators:exec --only firestore --project demo-lifesnap \"vitest run src/quota/__tests__/firestore-quota.integration.test.ts\""
+}
+```
+
+The integration test must initialize a uniquely named Firebase Admin app, use
+the Emulator’s default database, clear the three test collection groups
+(`install_minute`, `install_day`, and `service_day`, including both v2 and
+legacy documents), and launch concurrent `consume()` calls under a reduced test
+policy. Assert the number of `allowed: true` results equals the exact policy
+limit.
+
+Run:
+
+```bash
+npm run test:firestore
+npx vitest run src/quota/__tests__/firestore-quota-store.test.ts
+npm run lint
+```
+
+Expected: exact-boundary, atomicity, and emulator concurrency tests pass.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add \
+  package.json \
+  package-lock.json \
+  tsconfig.json \
+  firebase.json \
+  src/quota
+git commit -m "feat: enforce atomic extraction quotas"
+```
+
+### Task 4: Add consumed App Check verification
+
+**Files:**
+- Create: `src/security/app-check.ts`
+- Create: `src/security/__tests__/app-check.test.ts`
+
+- [ ] **Step 1: Write failing verification tests**
+
+Define a fake SDK verifier and cover:
+
+```ts
+it.each([
+  [undefined, 401, "APP_CHECK_REQUIRED"],
+  ["", 401, "APP_CHECK_REQUIRED"],
+])("rejects a missing token before calling the SDK", async (token, status, code) => {
+  const sdk = vi.fn();
+  const verifier = new ConsumedAppCheckVerifier(sdk, APPROVED_APP_ID);
+  await expect(verifier.verify(token)).rejects.toMatchObject({ status, code });
+  expect(sdk).not.toHaveBeenCalled();
+});
+
+it("consumes the limited-use token and allows only the configured app", async () => {
+  const sdk = vi.fn().mockResolvedValue({
+    appId: APPROVED_APP_ID,
+    alreadyConsumed: false,
+  });
+  await expect(new ConsumedAppCheckVerifier(sdk, APPROVED_APP_ID).verify("jwt"))
+    .resolves.toEqual({ appId: APPROVED_APP_ID });
+  expect(sdk).toHaveBeenCalledWith("jwt", { consume: true });
+});
+
+it("rejects a replay without returning decoded claims", async () => {
+  const sdk = vi.fn().mockResolvedValue({
+    appId: APPROVED_APP_ID,
+    alreadyConsumed: true,
+  });
+  await expect(verifierFrom(sdk).verify("jwt")).rejects.toMatchObject({
+    status: 401,
+    code: "APP_CHECK_REPLAYED",
+  });
+});
+```
+
+Also cover wrong app ID (`403 APP_ID_FORBIDDEN`), invalid/expired token (`401 APP_CHECK_INVALID`), and network/permission/unknown SDK failure (`503 SECURITY_SERVICE_UNAVAILABLE`).
+
+Define the synthetic app ID and helper in the same test file:
+
+```ts
+const APPROVED_APP_ID = "1:1234567890:ios:security-test";
+
+function verifierFrom(sdk: VerifyToken) {
+  return new ConsumedAppCheckVerifier(sdk, APPROVED_APP_ID);
+}
+```
+
+- [ ] **Step 2: Verify the tests fail**
+
+Run:
+
+```bash
+npx vitest run src/security/__tests__/app-check.test.ts
+```
+
+Expected: FAIL because the verifier does not exist.
+
+- [ ] **Step 3: Implement the stable verifier boundary**
+
+```ts
+export type AppCheckClaims = {
+  appId: string;
+  alreadyConsumed?: boolean;
+};
+
+export type VerifyToken = (
+  token: string,
+  options: { consume: true },
+) => Promise<AppCheckClaims>;
+
+export type AppCheckIdentity = { appId: string };
+
+export class AppCheckRequestError extends Error {
+  constructor(
+    readonly status: 401 | 403 | 503,
+    readonly code:
+      | "APP_CHECK_REQUIRED"
+      | "APP_CHECK_INVALID"
+      | "APP_CHECK_REPLAYED"
+      | "APP_ID_FORBIDDEN"
+      | "SECURITY_SERVICE_UNAVAILABLE",
+  ) {
+    super(code);
+  }
+}
+
+const INVALID_CODES = new Set([
+  "app-check/invalid-argument",
+  "app-check/app-check-token-expired",
+]);
+const NETWORK_CODES = new Set([
+  "ECONNRESET",
+  "ENETUNREACH",
+  "ENOTFOUND",
+  "ETIMEDOUT",
+]);
+
+function hasNetworkCause(error: unknown): boolean {
+  let current: unknown = error;
+  for (let depth = 0; depth < 6; depth += 1) {
+    if (typeof current !== "object" || current === null) return false;
+    const record = current as Record<string, unknown>;
+    if (typeof record.code === "string" && NETWORK_CODES.has(record.code)) {
+      return true;
+    }
+    current = record.cause;
+  }
+  return false;
+}
+
+export class ConsumedAppCheckVerifier {
+  constructor(
+    private readonly verifyToken: VerifyToken,
+    private readonly allowedAppId: string,
+  ) {}
+
+  async verify(token: string | undefined): Promise<AppCheckIdentity> {
+    if (!token?.trim()) {
+      throw new AppCheckRequestError(401, "APP_CHECK_REQUIRED");
+    }
+    try {
+      const claims = await this.verifyToken(token, { consume: true });
+      if (claims.appId !== this.allowedAppId) {
+        throw new AppCheckRequestError(403, "APP_ID_FORBIDDEN");
+      }
+      if (claims.alreadyConsumed === true) {
+        throw new AppCheckRequestError(401, "APP_CHECK_REPLAYED");
+      }
+      return { appId: claims.appId };
+    } catch (error) {
+      if (error instanceof AppCheckRequestError) throw error;
+      const code =
+        typeof error === "object" && error !== null
+          ? (error as { code?: string }).code
+          : undefined;
+      if (!hasNetworkCause(error) && code && INVALID_CODES.has(code)) {
+        throw new AppCheckRequestError(401, "APP_CHECK_INVALID");
+      }
+      throw new AppCheckRequestError(503, "SECURITY_SERVICE_UNAVAILABLE");
+    }
+  }
+}
+```
+
+Do not log the SDK error message, token, or decoded claims. Tests must prove a nested network cause takes precedence over the SDK’s broad `invalid-argument` wrapper.
+
+- [ ] **Step 4: Run focused tests and commit**
+
+```bash
+npx vitest run src/security/__tests__/app-check.test.ts
+npm run lint
+git add src/security/app-check.ts src/security/__tests__/app-check.test.ts
+git commit -m "feat: verify consumed app check tokens"
+```
+
+Expected: tests and type-check pass before the commit.
+
+### Task 5: Split extraction logic and add protected v2/limited legacy routes
+
+**Files:**
+- Create: `src/extraction/extraction-service.ts`
+- Create: `src/shared/http-error.ts`
+- Create: `src/shared/__tests__/server-security.test.ts`
+- Modify: `server.ts`
+- Modify: `src/shared/__tests__/server-privacy.test.ts`
+
+- [ ] **Step 1: Extract the current Gemini service behind an interface**
+
+Move only the existing Gemini call and schema validation into:
+
+```ts
+export type ImageInput = {
+  buffer: Buffer;
+  mimeType: string;
+};
+
+export interface ExtractionService {
+  extract(image: ImageInput): Promise<ReturnType<typeof validateGeminiExtraction>>;
+}
+```
+
+The concrete factory accepts the Gemini API key, model, and client factory. Preserve the current prompt, `responseMimeType`, response schema, Japanese public failures, and safe metadata. Do not alter the extraction result.
+
+- [ ] **Step 2: Write failing route-order and zero-Gemini tests**
+
+In `server-security.test.ts`, inject fake `appCheckVerifier`, `quotaStore`, `hashInstallationId`, `clock`, and `ExtractionService`. Add:
+
+```ts
+it.each([
+  [undefined, 401, "APP_CHECK_REQUIRED"],
+  ["invalid", 401, "APP_CHECK_INVALID"],
+  ["replayed", 401, "APP_CHECK_REPLAYED"],
+])("rejects %s App Check before quota and Gemini", async (token, status, code) => {
+  const harness = securityHarness({ tokenOutcome: token });
+  const response = await harness.postV2({
+    token,
+    installationId: VALID_INSTALLATION_ID,
+    image: imageForm("image/png", 16),
+  });
+  await expectStablePublicError(response, status, code);
+  expect(harness.quota.consume).not.toHaveBeenCalled();
+  expect(harness.extraction.extract).not.toHaveBeenCalled();
+});
+
+it("validates the image before consuming quota", async () => {
+  const harness = securityHarness();
+  const response = await harness.postV2({
+    token: "valid",
+    installationId: VALID_INSTALLATION_ID,
+    image: imageForm("text/plain", 16),
+  });
+  await expectStablePublicError(response, 415, "UNSUPPORTED_IMAGE_TYPE");
+  expect(harness.quota.consume).not.toHaveBeenCalled();
+});
+
+it("reserves quota before Gemini and keeps it on upstream failure", async () => {
+  const harness = securityHarness({ extractionError: new Error("upstream") });
+  await harness.postValidV2();
+  expect(harness.callOrder).toEqual(["app-check", "quota", "gemini"]);
+  expect(harness.quota.consume).toHaveBeenCalledTimes(1);
+});
+```
+
+Define the harness in the same test file:
+
+```ts
+const VALID_INSTALLATION_ID = "e8b18b25-64a6-4af9-b31f-9b0b6d3c3d4e";
+
+function securityHarness(
+  options: {
+    tokenOutcome?: string;
+    extractionError?: Error;
+  } = {},
+) {
+  const callOrder: string[] = [];
+  const appCheckVerifier = {
+    verify: vi.fn(async (token: string | undefined) => {
+      callOrder.push("app-check");
+      if (!token) {
+        throw new AppCheckRequestError(401, "APP_CHECK_REQUIRED");
+      }
+      if (token === "invalid" || options.tokenOutcome === "invalid") {
+        throw new AppCheckRequestError(401, "APP_CHECK_INVALID");
+      }
+      if (token === "replayed" || options.tokenOutcome === "replayed") {
+        throw new AppCheckRequestError(401, "APP_CHECK_REPLAYED");
+      }
+      return { appId: "1:1234567890:ios:security-test" };
+    }),
+  };
+  const quota = {
+    consume: vi.fn(async () => {
+      callOrder.push("quota");
+      return { allowed: true as const };
+    }),
+  };
+  const extraction = {
+    extract: vi.fn(async () => {
+      callOrder.push("gemini");
+      if (options.extractionError) throw options.extractionError;
+      return validExtractionFixture();
+    }),
+  };
+  const app = createApp({
+    env: testEnv({ GEMINI_API_KEY: "unused-by-injected-service" }),
+    extractionService: extraction,
+    security: {
+      appCheckVerifier,
+      quotaStore: quota,
+      hashInstallationId: () => "a".repeat(64),
+      now: () => new Date("2026-07-31T01:00:00Z"),
+    },
+  });
+  return {
+    callOrder,
+    quota,
+    extraction,
+    postV2: (input: {
+      token?: string;
+      installationId: string;
+      image: FormData;
+    }) =>
+      requestOnce(app, "/api/v2/extract", {
+        token: input.token,
+        installationId: input.installationId,
+        body: input.image,
+      }),
+    postValidV2: () =>
+      requestOnce(app, "/api/v2/extract", {
+        token: "valid",
+        installationId: VALID_INSTALLATION_ID,
+        body: imageForm("image/png", 16),
+      }),
+  };
+}
+
+async function requestOnce(
+  app: ReturnType<typeof createApp>,
+  path: string,
+  input: { token?: string; installationId: string; body: FormData },
+) {
+  const server = app.listen(0);
+  await new Promise<void>((resolve) => server.once("listening", resolve));
+  const address = server.address() as AddressInfo;
+  try {
+    return await fetch(`http://127.0.0.1:${address.port}${path}`, {
+      method: "POST",
+      headers: {
+        ...(input.token
+          ? { "X-Firebase-AppCheck": input.token }
+          : {}),
+        "X-LifeSnap-Install-ID": input.installationId,
+      },
+      body: input.body,
+    });
+  } finally {
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve())),
+    );
+  }
+}
+```
+
+Define the remaining helpers once at the bottom of the new test file; do not
+import private test helpers from another test file:
+
+```ts
+function validExtractionFixture() {
+  return validateGeminiExtraction({
+    route: "calendar_action",
+    document_type: "notice",
+    task_type: "event",
+    title: "Synthetic event",
+    due_date: "",
+    start_datetime: "2026-10-25T14:00",
+    end_datetime: "2026-10-25T15:00",
+    amount: 0,
+    issuer: "",
+    location: "",
+    summary: "Synthetic summary",
+    confidence: 0.9,
+    risk_flags: [],
+    evidence: "",
+    calendar_event: {
+      title: "Synthetic event",
+      start: "2026-10-25T14:00",
+      end: "2026-10-25T15:00",
+      description: "Synthetic summary",
+      location: "",
+    },
+  });
+}
+
+function imageForm(mimeType: string, sizeBytes: number) {
+  const form = new FormData();
+  form.append(
+    "image",
+    new Blob([Buffer.alloc(sizeBytes)], { type: mimeType }),
+    "fixture",
+  );
+  return form;
+}
+
+function testEnv(overrides: Partial<NodeJS.ProcessEnv> = {}) {
+  return {
+    NODE_ENV: "test",
+    MOCK_MODE: "false",
+    GEMINI_API_KEY: "",
+    ...overrides,
+  };
+}
+
+async function expectStablePublicError(
+  response: Response,
+  status: number,
+  code: string,
+) {
+  const body = (await response.json()) as {
+    code?: string;
+    error?: string;
+    details?: string;
+  };
+  expect(response.status).toBe(status);
+  expect(response.headers.get("cache-control")).toBe("no-store");
+  expect(body.code).toBe(code);
+  expect(body.error).toBeTruthy();
+  expect(body.details).toBeUndefined();
+  expect(JSON.stringify(body)).not.toMatch(
+    /GEMINI_API_KEY|X-Firebase-AppCheck|stack|Error:/,
+  );
+  return body;
+}
+```
+
+Add boundaries for every `429` code and `Retry-After`, Firestore failure as `503`, success schema equality between v1/v2, all errors using no-store, and safe logs excluding token/UUID/HMAC/image/text.
+For injected decisions carrying `crossedThreshold: 70`, `90`, or `100`, assert
+one and only one `quota_threshold` structured event with only
+`route_category` and `threshold_percent`; assert no event for an absent
+threshold or a denied request.
+
+- [ ] **Step 3: Verify the route tests fail**
+
+Run:
+
+```bash
+npx vitest run src/shared/__tests__/server-security.test.ts
+```
+
+Expected: FAIL because `/api/v2/extract` and the dependency contract do not exist.
+
+- [ ] **Step 4: Add explicit application dependencies**
+
+Extend `CreateAppOptions` with:
+
+```ts
+export type SecurityDependencies = {
+  appCheckVerifier: {
+    verify(token: string | undefined): Promise<{ appId: string }>;
+  };
+  quotaStore: QuotaStore;
+  hashInstallationId(value: string): string;
+  now(): Date;
+};
+
+export type CreateAppOptions = {
+  env?: AppEnvironment;
+  logger?: PrivacySafeLogger;
+  extractionService?: ExtractionService;
+  security?: SecurityDependencies;
+};
+```
+
+Tests must pass an explicit fake `security`. Production construction is added in Task 6. There must be no default allow-all verifier or in-memory production quota.
+
+- [ ] **Step 5: Implement route composition**
+
+Use a small `handleExtraction()` shared function, but keep security ordering at route definition:
+
+```ts
+app.post(
+  "/api/v2/extract",
+  setNoStore,
+  verifyAppCheck(security.appCheckVerifier),
+  hashInstallationHeader(security.hashInstallationId),
+  v2Upload.single("image"),
+  async (req, res) => {
+    const image = requireImage(req);
+    const decision = await security.quotaStore.consume(
+      {
+        kind: "v2",
+        installationHash: res.locals.installationHash,
+      },
+      security.now(),
+    );
+    if (!decision.allowed) {
+      res.setHeader("Retry-After", String(decision.retryAfterSeconds));
+      throw quotaHttpError(decision.code);
+    }
+    logThreshold(decision.crossedThreshold, "v2");
+    await handleExtraction(req, res, image, "v2");
+  },
+);
+
+app.post(
+  "/api/extract",
+  setNoStore,
+  legacyUpload.single("image"),
+  async (req, res) => {
+    const image = requireImage(req);
+    const decision = await security.quotaStore.consume(
+      { kind: "legacy" },
+      security.now(),
+    );
+    if (!decision.allowed) {
+      res.setHeader("Retry-After", String(decision.retryAfterSeconds));
+      throw quotaHttpError(decision.code);
+    }
+    logThreshold(decision.crossedThreshold, "legacy");
+    await handleExtraction(req, res, image, "legacy");
+  },
+);
+```
+
+`setNoStore` must run before every route middleware and the error handler must apply no-store to both paths. v2 uses `413/415`; legacy retains current `400` codes except its new `429`.
+
+- [ ] **Step 6: Run focused and full backend tests**
+
+```bash
+npx vitest run \
+  src/shared/__tests__/server-security.test.ts \
+  src/shared/__tests__/server-privacy.test.ts
+npm test
+npm run lint
+npm run build
+```
+
+Expected: all new security tests pass; all 30 pre-existing tests remain green or are updated only for explicit legacy quota injection.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add \
+  server.ts \
+  src/extraction/extraction-service.ts \
+  src/shared/http-error.ts \
+  src/shared/__tests__/server-security.test.ts \
+  src/shared/__tests__/server-privacy.test.ts
+git commit -m "feat: protect v2 extraction route"
+```
+
+### Task 6: Add production Firebase runtime construction
+
+**Files:**
+- Create: `src/runtime/firebase.ts`
+- Create: `src/runtime/__tests__/firebase.test.ts`
+- Modify: `server.ts`
+- Modify: `.env.example`
+- Modify: `tsconfig.json`
+
+- [ ] **Step 1: Write failing production-config tests**
+
+Assert every required value:
+
+```ts
+it.each([
+  "FIREBASE_PROJECT_ID",
+  "FIREBASE_APP_ID",
+  "FIRESTORE_DATABASE_ID",
+  "INSTALLATION_HMAC_KEY",
+])("fails closed when %s is missing", (name) => {
+  const env = completeProductionEnv();
+  delete env[name];
+  expect(() => buildRuntimeSecurity(env)).toThrow(`${name} is required`);
+});
+
+it("targets the named quota database and consumed token verifier", () => {
+  const fakes = fakeFirebaseFactory();
+  const dependencies = buildRuntimeSecurity(completeProductionEnv(), fakes);
+  expect(fakes.getFirestore).toHaveBeenCalledWith(
+    expect.anything(),
+    "lifesnap-quota",
+  );
+  expect(dependencies.hashInstallationId(VALID_ID)).toMatch(/^[a-f0-9]{64}$/);
+});
+
+const VALID_ID = "e8b18b25-64a6-4af9-b31f-9b0b6d3c3d4e";
+
+function completeProductionEnv(): NodeJS.ProcessEnv {
+  return {
+    NODE_ENV: "production",
+    FIREBASE_PROJECT_ID: "zhang23-23",
+    FIREBASE_APP_ID: "1:1234567890:ios:security-test",
+    FIRESTORE_DATABASE_ID: "lifesnap-quota",
+    INSTALLATION_HMAC_KEY: "k".repeat(48),
+  };
+}
+
+function fakeFirebaseFactory() {
+  const app = { name: "lifesnap-runtime" };
+  return {
+    applicationDefault: vi.fn(() => ({}) as never),
+    getApps: vi.fn(() => []),
+    initializeApp: vi.fn(() => app as never),
+    getAppCheck: vi.fn(() => ({
+      verifyToken: vi.fn(),
+    })),
+    getFirestore: vi.fn(() => ({}) as never),
+  };
+}
+```
+
+- [ ] **Step 2: Implement ADC-only initialization**
+
+```ts
+import { applicationDefault, getApps, initializeApp } from "firebase-admin/app";
+import { getAppCheck } from "firebase-admin/app-check";
+import { getFirestore } from "firebase-admin/firestore";
+
+type FirebaseFactory = {
+  applicationDefault: typeof applicationDefault;
+  getApps: typeof getApps;
+  initializeApp: typeof initializeApp;
+  getAppCheck: typeof getAppCheck;
+  getFirestore: typeof getFirestore;
+};
+
+const productionFirebaseFactory: FirebaseFactory = {
+  applicationDefault,
+  getApps,
+  initializeApp,
+  getAppCheck,
+  getFirestore,
+};
+
+function required(env: NodeJS.ProcessEnv, name: string): string {
+  const value = env[name]?.trim();
+  if (!value) throw new Error(`${name} is required`);
+  return value;
+}
+
+export function buildRuntimeSecurity(
+  env: NodeJS.ProcessEnv,
+  factory: FirebaseFactory = productionFirebaseFactory,
+) {
+  const projectId = required(env, "FIREBASE_PROJECT_ID");
+  const appId = required(env, "FIREBASE_APP_ID");
+  const databaseId = required(env, "FIRESTORE_DATABASE_ID");
+  const hmacKey = required(env, "INSTALLATION_HMAC_KEY");
+  const firebaseApp =
+    factory.getApps().find((app) => app.name === "lifesnap-runtime") ??
+    factory.initializeApp(
+      { credential: factory.applicationDefault(), projectId },
+      "lifesnap-runtime",
+    );
+  const appCheck = factory.getAppCheck(firebaseApp);
+  const verifier = new ConsumedAppCheckVerifier(
+    appCheck.verifyToken.bind(appCheck),
+    appId,
+  );
+  const quotaStore = new FirestoreQuotaStore(
+    factory.getFirestore(firebaseApp, databaseId),
+  );
+  return {
+    appCheckVerifier: verifier,
+    quotaStore,
+    hashInstallationId: (value: string) =>
+      hashInstallationId(value, hmacKey),
+    now: () => new Date(),
+  };
+}
+```
+
+Do not accept a credentials JSON path or create service-account keys. Production startup must fail before listening if configuration is incomplete.
+
+- [ ] **Step 3: Document exact environment contract**
+
+Add to `.env.example` without values:
+
+```dotenv
+FIREBASE_PROJECT_ID="zhang23-23"
+FIREBASE_APP_ID=""
+FIRESTORE_DATABASE_ID="lifesnap-quota"
+INSTALLATION_HMAC_KEY=""
+```
+
+Comments must state that `INSTALLATION_HMAC_KEY` is a distinct Secret Manager value and must never reuse `GEMINI_API_KEY`.
+
+- [ ] **Step 4: Run tests and commit**
+
+```bash
+npx vitest run src/runtime/__tests__/firebase.test.ts
+npm test
+npm run lint
+npm run build
+git add \
+  .env.example \
+  server.ts \
+  tsconfig.json \
+  src/runtime
+git commit -m "feat: wire fail-closed firebase runtime"
+```
+
+### Task 7: Provision the no-traffic Firebase, Firestore, Secret, and IAM boundary
+
+**Files:**
+- Amend: `docs/superpowers/plans/2026-07-31-yotei-snap-app-check-security.md`
+- Add after retrieval with `apply_patch`: `ios/LifeSnapAction/GoogleService-Info.plist`
+- Create: `docs/verification/yotei-snap-security/infrastructure-preflight.txt`
+- External state: Firebase project/app/App Check, Firestore, Secret Manager, IAM
+
+- [ ] **Step 1: Re-run read-only preflight and stop on conflict**
+
+Use an isolated temporary directory:
+
+```bash
+set -euo pipefail
+
+if ! security_tmp_dir="$(mktemp -d)"; then
+  exit 1
+fi
+project_id="zhang23-23"
+if ! project_number="$(
+  gcloud projects describe "${project_id}" \
+    --format='value(projectNumber)'
+)"; then
+  exit 1
+fi
+if ! [[ "${project_number}" =~ ^[0-9]+$ ]]; then
+  exit 1
+fi
+
+if ! gcloud run services describe lifesnap-action \
+  --project="${project_id}" \
+  --region=asia-northeast1 \
+  --format=json > "${security_tmp_dir}/service-before.json"
+then
+  exit 1
+fi
+
+if ! gcloud firestore databases list \
+  --project="${project_id}" \
+  --format=json > "${security_tmp_dir}/databases-before.json"
+then
+  exit 1
+fi
+
+if ! service_accounts_json="$(
+  gcloud iam service-accounts list \
+    --project="${project_id}" \
+    --format=json
+)"; then
+  exit 1
+fi
+runtime_sa="lifesnap-runtime@${project_id}.iam.gserviceaccount.com"
+if ! runtime_sa_count="$(
+  jq \
+    --arg expected_email "${runtime_sa}" \
+    '[.[] | select(.email == $expected_email)] | length' \
+    <<<"${service_accounts_json}"
+)"; then
+  exit 1
+fi
+if ! [[ "${runtime_sa_count}" == "0" || "${runtime_sa_count}" == "1" ]]; then
+  exit 1
+fi
+if [[ "${runtime_sa_count}" == "1" ]] && ! jq -e \
+  --arg expected_email "${runtime_sa}" \
+  '[.[] | select(.email == $expected_email)] |
+   length == 1 and (.[0].disabled // false) == false' \
+  <<<"${service_accounts_json}" >/dev/null
+then
+  exit 1
+fi
+if ! jq \
+  --arg expected_email "${runtime_sa}" \
+  '[.[] | select(.email == $expected_email)]' \
+  <<<"${service_accounts_json}" \
+  > "${security_tmp_dir}/runtime-sa-before.json"
+then
+  exit 1
+fi
+```
+
+The service-account list call must succeed before a zero count is accepted.
+Permission, authentication, transport, malformed JSON, or multiple-match
+failures are fatal and must never be reclassified as “absent.”
+
+Expected:
+
+- current service identity remains the previously observed default Compute service account;
+- no conflicting database named `lifesnap-quota` exists; if it exists, it must already be Firestore Native, Standard, `asia-northeast1`, and delete-protected;
+- the exact `lifesnap-runtime` account count is zero or one, and an existing account is enabled.
+
+Write only sanitized facts to the verification file. Do not copy access tokens, IAM credentials, secret payloads, user emails, or unrelated principals.
+
+- [ ] **Step 2: Validate the approved project Apple Team ID**
+
+Use the project-approved Team ID and prove it is represented in both target
+certificate collections without printing any other Team ID:
+
+```bash
+set -euo pipefail
+
+apple_team_id="YMUG864233"
+if ! [[ "${apple_team_id}" =~ ^[A-Z0-9]{10}$ ]]; then
+  exit 1
+fi
+
+for certificate_name in "Apple Development" "Apple Distribution"; do
+  if ! matching_certificate_count="$(
+    security find-certificate -a -c "${certificate_name}" -p |
+      openssl crl2pkcs7 -nocrl -certfile /dev/stdin |
+      openssl pkcs7 -print_certs -noout |
+      sed -n 's/.*OU=\\([^,/]*\\).*/\\1/p' |
+      awk \
+        -v expected_team_id="${apple_team_id}" \
+        '$0 == expected_team_id { count++ }
+         END { print count + 0 }'
+  )"; then
+    exit 1
+  fi
+  if ! [[ "${matching_certificate_count}" =~ ^[0-9]+$ ]]; then
+    exit 1
+  fi
+  if ! [[ "${matching_certificate_count}" -ge 1 ]]; then
+    exit 1
+  fi
+done
+```
+
+Expected: `YMUG864233` is a valid 10-character Team ID and has at least one
+matching Apple Development certificate and at least one matching Apple
+Distribution certificate. The project-approved identity is authoritative;
+other installed Team IDs are neither selected nor printed.
+
+- [ ] **Step 3: Enable the four core APIs and record the automatic-expansion risk**
+
+Enable the four explicitly required APIs first:
+
+```bash
+gcloud services enable \
+  firebase.googleapis.com \
+  firebaseappcheck.googleapis.com \
+  firestore.googleapis.com \
+  secretmanager.googleapis.com \
+  --project="${project_id}"
+```
+
+Do not directly enable Firebase Authentication, Analytics, Cloud Armor, or
+load-balancing APIs. `addFirebase` and `iosApps.create` are not API-neutral:
+the 2026-07-31 Cloud Audit Logs showed that they automatically requested
+`BatchEnableServices` for 17 additional services.
+
+The `addFirebase` batch contained:
+
+```text
+appengine.googleapis.com
+cloudapis.googleapis.com
+cloudresourcemanager.googleapis.com
+fcm.googleapis.com
+firebasehosting.googleapis.com
+firebaserules.googleapis.com
+firebaseremoteconfig.googleapis.com
+firebaseremoteconfigrealtime.googleapis.com
+identitytoolkit.googleapis.com
+pubsub.googleapis.com
+runtimeconfig.googleapis.com
+securetoken.googleapis.com
+storage-component.googleapis.com
+testing.googleapis.com
+```
+
+The `iosApps.create` batch contained:
+
+```text
+fcmregistrations.googleapis.com
+firebaseappdistribution.googleapis.com
+firebaseinstallations.googleapis.com
+identitytoolkit.googleapis.com
+securetoken.googleapis.com
+```
+
+`identitytoolkit` and `securetoken` appeared in both batches, leaving 17
+unique automatically requested services. The original preflight directly
+proved only that `identitytoolkit.googleapis.com` was disabled. It did not
+record the other 16 services individually, so their preflight states are
+`UNKNOWN`; the idempotent batch request itself does not prove they were
+previously disabled.
+
+Do not disable any of those automatically requested services in this step:
+they do not exist as a new expansion until Steps 4 and 5 attach Firebase and
+create or reuse the iOS app. Reconcile the observed expansion exactly once in
+Step 10, after Steps 6 through 9 have verified App Attest and provisioned the
+Firestore, Secret, and runtime IAM boundary needed for per-disable regression.
+
+- [ ] **Step 4: Attach Firebase to the existing GCP project if absent**
+
+First GET:
+
+```bash
+if ! access_token="$(gcloud auth print-access-token)"; then
+  exit 1
+fi
+if [[ -z "${access_token}" ]]; then
+  exit 1
+fi
+
+task7_rest_request() {
+  local request_method="$1"
+  local request_url="$2"
+  local output_path="$3"
+  local request_body="${4-}"
+  local http_code
+
+  if [[ "${request_method}" == "POST" || "${request_method}" == "PATCH" ]]; then
+    if ! http_code="$(
+      curl --silent --show-error \
+        --request "${request_method}" \
+        --output "${output_path}" \
+        --write-out '%{http_code}' \
+        --header "Authorization: Bearer ${access_token}" \
+        --header "X-Goog-User-Project: ${project_id}" \
+        --header "Content-Type: application/json" \
+        --data "${request_body}" \
+        "${request_url}"
+    )"; then
+      return 1
+    fi
+  else
+    if ! http_code="$(
+      curl --silent --show-error \
+        --request "${request_method}" \
+        --output "${output_path}" \
+        --write-out '%{http_code}' \
+        --header "Authorization: Bearer ${access_token}" \
+        --header "X-Goog-User-Project: ${project_id}" \
+        "${request_url}"
+    )"; then
+      return 1
+    fi
+  fi
+  if ! [[ "${http_code}" =~ ^[0-9]{3}$ ]]; then
+    return 1
+  fi
+  TASK7_HTTP_CODE="${http_code}"
+  return 0
+}
+
+poll_firebase_operation() {
+  local operation_name="$1"
+  local operation_path="${security_tmp_dir}/firebase-operation.json"
+  local attempt=0
+
+  if ! [[ "${operation_name}" =~ ^operations/[A-Za-z0-9._~/-]+$ ]]; then
+    return 1
+  fi
+  while [[ "${attempt}" -lt 60 ]]; do
+    if ! task7_rest_request \
+      GET \
+      "https://firebase.googleapis.com/v1beta1/${operation_name}" \
+      "${operation_path}"
+    then
+      return 1
+    fi
+    if ! [[ "${TASK7_HTTP_CODE}" == "200" ]]; then
+      return 1
+    fi
+    if jq -e '.error != null' "${operation_path}" >/dev/null; then
+      return 1
+    fi
+    if jq -e '.done == true and .error == null' \
+      "${operation_path}" >/dev/null
+    then
+      return 0
+    fi
+    if ! jq -e \
+      '(.done == null or .done == false) and .error == null' \
+      "${operation_path}" >/dev/null
+    then
+      return 1
+    fi
+    attempt=$((attempt + 1))
+    sleep 2
+  done
+  return 1
+}
+
+firebase_project_path="${security_tmp_dir}/firebase-project.json"
+if ! task7_rest_request \
+  GET \
+  "https://firebase.googleapis.com/v1beta1/projects/${project_id}" \
+  "${firebase_project_path}"
+then
+  exit 1
+fi
+if ! [[ "${TASK7_HTTP_CODE}" == "200" || \
+  "${TASK7_HTTP_CODE}" == "404" ]]
+then
+  exit 1
+fi
+```
+
+If and only if that exact probe returned `404`, attach Firebase and poll the
+returned operation:
+
+```bash
+if [[ "${TASK7_HTTP_CODE}" == "404" ]]; then
+  if ! task7_rest_request \
+    POST \
+    "https://firebase.googleapis.com/v1beta1/projects/${project_id}:addFirebase" \
+    "${security_tmp_dir}/add-firebase-operation.json" \
+    '{}'
+  then
+    exit 1
+  fi
+  if ! [[ "${TASK7_HTTP_CODE}" == "200" ]]; then
+    exit 1
+  fi
+  if ! add_firebase_operation_name="$(
+    jq -er '.name | select(type == "string" and length > 0)' \
+      "${security_tmp_dir}/add-firebase-operation.json"
+  )"; then
+    exit 1
+  fi
+  if ! poll_firebase_operation "${add_firebase_operation_name}"; then
+    exit 1
+  fi
+fi
+
+if ! task7_rest_request \
+  GET \
+  "https://firebase.googleapis.com/v1beta1/projects/${project_id}" \
+  "${firebase_project_path}"
+then
+  exit 1
+fi
+if ! [[ "${TASK7_HTTP_CODE}" == "200" ]]; then
+  exit 1
+fi
+if ! jq -e \
+  --arg expected_project_id "${project_id}" \
+  --arg expected_project_number "${project_number}" \
+  '.projectId == $expected_project_id and
+   .projectNumber == $expected_project_number and
+   .state == "ACTIVE"' \
+  "${firebase_project_path}" >/dev/null
+then
+  exit 1
+fi
+```
+
+Only the exact initial `200` or `404` is accepted. A `404` is the sole state
+that authorizes `addFirebase`; POST must return `200` with a valid operation
+name, every poll GET must return `200`, and operation error, malformed state,
+or the 120-second timeout stops execution. The final project GET must return
+`200` and match the exact project ID, number, and `ACTIVE` state.
+
+- [ ] **Step 5: Reuse or create exactly one iOS app**
+
+List iOS apps:
+
+```bash
+set -euo pipefail
+
+ios_apps_path="${security_tmp_dir}/ios-apps.json"
+
+list_ios_apps() {
+  if ! task7_rest_request \
+    GET \
+    "https://firebase.googleapis.com/v1beta1/projects/${project_id}/iosApps?pageSize=100" \
+    "${ios_apps_path}"
+  then
+    return 1
+  fi
+  if ! [[ "${TASK7_HTTP_CODE}" == "200" ]]; then
+    return 1
+  fi
+  if ! jq -e '(.nextPageToken // "") == ""' \
+    "${ios_apps_path}" >/dev/null
+  then
+    return 1
+  fi
+  if ! ios_apps_json="$(<"${ios_apps_path}")"; then
+    return 1
+  fi
+  return 0
+}
+
+classify_target_ios_app() {
+  if ! target_bundle_total="$(
+    jq '[.apps[]? |
+      select(.bundleId == "com.zll.lifesnapaction")
+    ] | length' <<<"${ios_apps_json}"
+  )"; then
+    return 1
+  fi
+  if ! target_active_count="$(
+    jq '[.apps[]? |
+      select(
+        .bundleId == "com.zll.lifesnapaction" and
+        .state == "ACTIVE"
+      )
+    ] | length' <<<"${ios_apps_json}"
+  )"; then
+    return 1
+  fi
+  if ! [[ "${target_bundle_total}" == "${target_active_count}" ]]; then
+    return 1
+  fi
+  if ! [[ "${target_active_count}" == "0" || \
+    "${target_active_count}" == "1" ]]
+  then
+    return 1
+  fi
+  return 0
+}
+
+if ! list_ios_apps; then
+  exit 1
+fi
+if ! classify_target_ios_app; then
+  exit 1
+fi
+```
+
+If exactly one ACTIVE app has `bundleId=com.zll.lifesnapaction`, reuse it. If
+none exists and no non-ACTIVE app conflicts, create it from the Team ID resolved
+in Step 2:
+
+```bash
+if [[ "${target_active_count}" == "0" ]]; then
+  if ! ios_app_body="$(
+    jq -n \
+      --arg display_name "よていスナップ" \
+      --arg bundle_id "com.zll.lifesnapaction" \
+      --arg team_id "${apple_team_id}" \
+      '{
+        displayName: $display_name,
+        bundleId: $bundle_id,
+        teamId: $team_id
+      }'
+  )"; then
+    exit 1
+  fi
+  if ! task7_rest_request \
+    POST \
+    "https://firebase.googleapis.com/v1beta1/projects/${project_id}/iosApps" \
+    "${security_tmp_dir}/create-ios-app-operation.json" \
+    "${ios_app_body}"
+  then
+    exit 1
+  fi
+  if ! [[ "${TASK7_HTTP_CODE}" == "200" ]]; then
+    exit 1
+  fi
+  if ! create_ios_app_operation_name="$(
+    jq -er '.name | select(type == "string" and length > 0)' \
+      "${security_tmp_dir}/create-ios-app-operation.json"
+  )"; then
+    exit 1
+  fi
+  if ! poll_firebase_operation "${create_ios_app_operation_name}"; then
+    exit 1
+  fi
+  if ! list_ios_apps; then
+    exit 1
+  fi
+  if ! classify_target_ios_app; then
+    exit 1
+  fi
+  if ! [[ "${target_active_count}" == "1" ]]; then
+    exit 1
+  fi
+fi
+```
+
+Resolve the single app, patch only when its reviewed fields differ, and then
+perform one fresh complete list:
+
+```bash
+if ! selected_app_json="$(
+  jq -c '.apps[] |
+    select(
+      .bundleId == "com.zll.lifesnapaction" and
+      .state == "ACTIVE"
+    )' <<<"${ios_apps_json}"
+)"; then
+  exit 1
+fi
+if ! selected_app_name="$(
+  jq -er '.name | select(type == "string" and length > 0)' \
+    <<<"${selected_app_json}"
+)"; then
+  exit 1
+fi
+if ! [[ "${selected_app_name}" =~ \
+  ^projects/${project_id}/iosApps/[A-Za-z0-9:_-]+$ ]]
+then
+  exit 1
+fi
+if ! selected_app_etag="$(
+  jq -er '.etag | select(type == "string" and length > 0)' \
+    <<<"${selected_app_json}"
+)"; then
+  exit 1
+fi
+
+if ! jq -e \
+  --arg expected_team_id "${apple_team_id}" \
+  '.displayName == "よていスナップ" and
+   .teamId == $expected_team_id' \
+  <<<"${selected_app_json}" >/dev/null
+then
+  if ! ios_app_patch_body="$(
+    jq -n \
+      --arg name "${selected_app_name}" \
+      --arg display_name "よていスナップ" \
+      --arg team_id "${apple_team_id}" \
+      --arg etag "${selected_app_etag}" \
+      '{
+        name: $name,
+        displayName: $display_name,
+        teamId: $team_id,
+        etag: $etag
+      }'
+  )"; then
+    exit 1
+  fi
+  if ! task7_rest_request \
+    PATCH \
+    "https://firebase.googleapis.com/v1beta1/${selected_app_name}?updateMask=displayName,teamId" \
+    "${security_tmp_dir}/patched-ios-app.json" \
+    "${ios_app_patch_body}"
+  then
+    exit 1
+  fi
+  if ! [[ "${TASK7_HTTP_CODE}" == "200" ]]; then
+    exit 1
+  fi
+  if ! jq -e \
+    --arg expected_name "${selected_app_name}" \
+    --arg expected_team_id "${apple_team_id}" \
+    '.name == $expected_name and
+     .bundleId == "com.zll.lifesnapaction" and
+     .displayName == "よていスナップ" and
+     .teamId == $expected_team_id and
+     .state == "ACTIVE"' \
+    "${security_tmp_dir}/patched-ios-app.json" >/dev/null
+  then
+    exit 1
+  fi
+fi
+
+if ! list_ios_apps; then
+  exit 1
+fi
+if ! classify_target_ios_app; then
+  exit 1
+fi
+if ! [[ "${target_active_count}" == "1" ]]; then
+  exit 1
+fi
+if ! firebase_app_id="$(
+  jq -er '.apps[] |
+    select(
+      .bundleId == "com.zll.lifesnapaction" and
+      .state == "ACTIVE"
+    ) |
+    .appId | select(type == "string" and length > 0)' \
+    <<<"${ios_apps_json}"
+)"; then
+  exit 1
+fi
+if ! jq -e \
+  --arg expected_app_id "${firebase_app_id}" \
+  --arg expected_team_id "${apple_team_id}" \
+  '[.apps[] |
+    select(
+      .bundleId == "com.zll.lifesnapaction" and
+      .state == "ACTIVE"
+    )
+  ] as $apps |
+  ($apps | length) == 1 and
+  $apps[0].appId == $expected_app_id and
+  $apps[0].displayName == "よていスナップ" and
+  $apps[0].teamId == $expected_team_id' \
+  <<<"${ios_apps_json}" >/dev/null
+then
+  exit 1
+fi
+```
+
+The target Bundle ID must classify as exactly zero or one ACTIVE app, with no
+non-ACTIVE conflict. Create runs only for zero; a successful partial create is
+recovered by the next list, while duplicate or transitional conflicts stop.
+The create operation uses the bounded poll from Step 4. The reused-app PATCH
+is synchronous, requires its current `etag`, accepts only HTTP `200`, and is
+followed by a fresh complete list.
+
+- [ ] **Step 6: Configure App Attest and download the app config**
+
+Build the exact resource name and patch body:
+
+```bash
+app_attest_name="projects/${project_number}/apps/${firebase_app_id}/appAttestConfig"
+app_attest_body="$(
+  jq -n \
+    --arg name "${app_attest_name}" \
+    '{name: $name, tokenTtl: "3600s"}'
+)"
+if ! app_attest_json="$(
+  curl --fail-with-body --silent --show-error \
+    --request PATCH \
+    --header "Authorization: Bearer ${access_token}" \
+    --header "X-Goog-User-Project: ${project_id}" \
+    --header "Content-Type: application/json" \
+    --data "${app_attest_body}" \
+    "https://firebaseappcheck.googleapis.com/v1/${app_attest_name}?updateMask=tokenTtl"
+)"; then
+  exit 1
+fi
+```
+
+GET the resource and require the exact name and TTL:
+
+```bash
+if ! app_attest_json="$(
+  curl --fail-with-body --silent --show-error \
+    --header "Authorization: Bearer ${access_token}" \
+    --header "X-Goog-User-Project: ${project_id}" \
+    "https://firebaseappcheck.googleapis.com/v1/${app_attest_name}"
+)"; then
+  exit 1
+fi
+if ! jq -e \
+  --arg expected_name "${app_attest_name}" \
+  '.name == $expected_name and .tokenTtl == "3600s"' \
+  <<<"${app_attest_json}" >/dev/null
+then
+  exit 1
+fi
+```
+
+Retrieve the app config:
+
+```bash
+if ! firebase_app_config_json="$(
+  curl --fail-with-body --silent --show-error \
+    --header "Authorization: Bearer ${access_token}" \
+    --header "X-Goog-User-Project: ${project_id}" \
+    "https://firebase.googleapis.com/v1beta1/projects/${project_id}/iosApps/${firebase_app_id}/config"
+)"; then
+  exit 1
+fi
+```
+
+Decode the returned base64 Firebase configuration payload into the temporary
+directory without printing it. Inspect that:
+
+- `BUNDLE_ID=com.zll.lifesnapaction`;
+- `PROJECT_ID=zhang23-23`;
+- `GOOGLE_APP_ID` equals the selected Firebase app ID;
+- no Analytics, AdMob, Messaging, or Sign-In SDK dependency or product
+  integration is added by this plan; plist capability flags and automatically
+  enabled service APIs are reviewed separately under the reconciled service
+  matrix in Steps 10 and 11.
+
+Use `apply_patch` to add the reviewed XML plist to `ios/LifeSnapAction/GoogleService-Info.plist`; do not use shell redirection to write into the repository.
+
+- [ ] **Step 7: Create the named Firestore database and TTL policies**
+
+Classify the database as absent, one exact reusable resource, one exact
+transitional resource, or conflict. The list call must succeed before absence
+is accepted:
+
+```bash
+set -euo pipefail
+
+read_target_database() {
+  if ! databases_json="$(
+    gcloud firestore databases list \
+      --project="${project_id}" \
+      --format=json
+  )"; then
+    return 1
+  fi
+  if ! target_database_count="$(
+    jq '[.[] |
+      select(.name == "projects/zhang23-23/databases/lifesnap-quota")
+    ] | length' <<<"${databases_json}"
+  )"; then
+    return 1
+  fi
+  if ! [[ "${target_database_count}" == "0" || \
+    "${target_database_count}" == "1" ]]
+  then
+    return 1
+  fi
+  return 0
+}
+
+database_identity_matches() {
+  jq -e \
+    '[.[] |
+      select(.name == "projects/zhang23-23/databases/lifesnap-quota")
+    ] as $databases |
+    ($databases | length) == 1 and
+    $databases[0].locationId == "asia-northeast1" and
+    $databases[0].type == "FIRESTORE_NATIVE" and
+    $databases[0].databaseEdition == "STANDARD" and
+    $databases[0].deleteProtectionState == "DELETE_PROTECTION_ENABLED"' \
+    <<<"${databases_json}" >/dev/null
+}
+
+database_is_exact_ready() {
+  jq -e \
+    '[.[] |
+      select(.name == "projects/zhang23-23/databases/lifesnap-quota")
+    ] as $databases |
+    ($databases | length) == 1 and
+    $databases[0].locationId == "asia-northeast1" and
+    $databases[0].type == "FIRESTORE_NATIVE" and
+    $databases[0].databaseEdition == "STANDARD" and
+    $databases[0].deleteProtectionState == "DELETE_PROTECTION_ENABLED" and
+    $databases[0].versionRetentionPeriod == "3600s" and
+    ($databases[0].reconciling // false) == false' \
+    <<<"${databases_json}" >/dev/null
+}
+
+if ! read_target_database; then
+  exit 1
+fi
+if [[ "${target_database_count}" == "0" ]]; then
+  if ! gcloud firestore databases create \
+    --project="${project_id}" \
+    --database=lifesnap-quota \
+    --location=asia-northeast1 \
+    --type=firestore-native \
+    --edition=standard \
+    --delete-protection
+  then
+    exit 1
+  fi
+elif ! database_identity_matches; then
+  exit 1
+fi
+
+database_ready=false
+for attempt in $(seq 1 60); do
+  if ! read_target_database; then
+    exit 1
+  fi
+  if [[ "${target_database_count}" == "1" ]]; then
+    if ! database_identity_matches; then
+      exit 1
+    fi
+    if database_is_exact_ready; then
+      database_ready=true
+      break
+    fi
+  fi
+  sleep 2
+done
+if ! ${database_ready}; then
+  exit 1
+fi
+
+read_ttl_field() {
+  local collection_group="$1"
+  ttl_field_path="${security_tmp_dir}/ttl-${collection_group}.json"
+  if ! task7_rest_request \
+    GET \
+    "https://firestore.googleapis.com/v1/projects/${project_id}/databases/lifesnap-quota/collectionGroups/${collection_group}/fields/expires_at" \
+    "${ttl_field_path}"
+  then
+    return 1
+  fi
+  if ! [[ "${TASK7_HTTP_CODE}" == "200" || \
+    "${TASK7_HTTP_CODE}" == "404" ]]
+  then
+    return 1
+  fi
+  return 0
+}
+
+ensure_ttl_active() {
+  local collection_group="$1"
+  local ttl_state
+  local create_ttl=false
+  local ttl_ready=false
+
+  if ! read_ttl_field "${collection_group}"; then
+    return 1
+  fi
+  if [[ "${TASK7_HTTP_CODE}" == "404" ]]; then
+    create_ttl=true
+  else
+    if ! ttl_state="$(jq -r '.ttlConfig.state // "ABSENT"' \
+      "${ttl_field_path}")"; then
+      return 1
+    fi
+    case "${ttl_state}" in
+      ACTIVE)
+        return 0
+        ;;
+      CREATING)
+        ;;
+      ABSENT)
+        create_ttl=true
+        ;;
+      *)
+        return 1
+        ;;
+    esac
+  fi
+
+  if ${create_ttl}; then
+    if ! gcloud firestore fields ttls update expires_at \
+      --project="${project_id}" \
+      --database=lifesnap-quota \
+      --collection-group="${collection_group}" \
+      --enable-ttl
+    then
+      return 1
+    fi
+  fi
+
+  for attempt in $(seq 1 60); do
+    if ! read_ttl_field "${collection_group}"; then
+      return 1
+    fi
+    if [[ "${TASK7_HTTP_CODE}" == "404" ]]; then
+      sleep 2
+      continue
+    fi
+    if ! ttl_state="$(jq -r '.ttlConfig.state // "ABSENT"' \
+      "${ttl_field_path}")"; then
+      return 1
+    fi
+    case "${ttl_state}" in
+      ACTIVE)
+        ttl_ready=true
+        break
+        ;;
+      CREATING)
+        ;;
+      *)
+        return 1
+        ;;
+    esac
+    sleep 2
+  done
+  if ! ${ttl_ready}; then
+    return 1
+  fi
+  return 0
+}
+
+for collection_group in install_minute install_day service_day; do
+  if ! ensure_ttl_active "${collection_group}"; then
+    exit 1
+  fi
+done
+
+if ! read_target_database; then
+  exit 1
+fi
+if ! database_is_exact_ready; then
+  exit 1
+fi
+for collection_group in install_minute install_day service_day; do
+  if ! read_ttl_field "${collection_group}"; then
+    exit 1
+  fi
+  if ! [[ "${TASK7_HTTP_CODE}" == "200" ]]; then
+    exit 1
+  fi
+  if ! jq -e '.ttlConfig.state == "ACTIVE"' \
+    "${ttl_field_path}" >/dev/null
+  then
+    exit 1
+  fi
+done
+```
+
+An existing database is reused only when every immutable property matches;
+`reconciling=true` is the sole transitional database state and receives a
+bounded 120-second poll. Each TTL is created only when absent, reuses `ACTIVE`,
+polls `CREATING`, and stops on every other state. All three TTLs and the exact
+database are read back before continuing.
+
+- [ ] **Step 8: Create the independent HMAC Secret**
+
+Classify both the Secret resource and all version states before deciding
+whether a mutation is safe:
+
+```bash
+set -euo pipefail
+
+hmac_secret="lifesnap-installation-hmac-key"
+if ! secret_resources_json="$(
+  gcloud secrets list \
+    --project="${project_id}" \
+    --format=json
+)"; then
+  exit 1
+fi
+if ! hmac_secret_count="$(
+  jq \
+    --arg secret_id "${hmac_secret}" \
+    --arg resource_name \
+      "projects/${project_id}/secrets/${hmac_secret}" \
+    '[.[] |
+      select(.name == $secret_id or .name == $resource_name)
+    ] | length' <<<"${secret_resources_json}"
+)"; then
+  exit 1
+fi
+if ! [[ "${hmac_secret_count}" == "0" || \
+  "${hmac_secret_count}" == "1" ]]
+then
+  exit 1
+fi
+
+if [[ "${hmac_secret_count}" == "0" ]]; then
+  if ! gcloud secrets create "${hmac_secret}" \
+    --project="${project_id}" \
+    --replication-policy=automatic
+  then
+    exit 1
+  fi
+fi
+
+if ! hmac_secret_json="$(
+  gcloud secrets describe "${hmac_secret}" \
+    --project="${project_id}" \
+    --format=json
+)"; then
+  exit 1
+fi
+if ! jq -e '.replication.automatic != null' \
+  <<<"${hmac_secret_json}" >/dev/null
+then
+  exit 1
+fi
+
+if ! hmac_versions_json="$(
+  gcloud secrets versions list "${hmac_secret}" \
+    --project="${project_id}" \
+    --format=json
+)"; then
+  exit 1
+fi
+if ! hmac_version_total="$(jq 'length' <<<"${hmac_versions_json}")"; then
+  exit 1
+fi
+if ! [[ "${hmac_version_total}" =~ ^[0-9]+$ ]]; then
+  exit 1
+fi
+
+if [[ "${hmac_version_total}" == "0" ]]; then
+  if ! hmac_material="$(openssl rand -base64 48)"; then
+    exit 1
+  fi
+  if ! [[ -n "${hmac_material}" ]]; then
+    unset hmac_material
+    exit 1
+  fi
+  if ! [[ "${#hmac_material}" -eq 64 ]]; then
+    unset hmac_material
+    exit 1
+  fi
+  if ! [[ "${hmac_material}" =~ ^[A-Za-z0-9+/]{64}$ ]]; then
+    unset hmac_material
+    exit 1
+  fi
+  if ! gcloud secrets versions add "${hmac_secret}" \
+    --project="${project_id}" \
+    --data-file=- <<<"${hmac_material}"
+  then
+    unset hmac_material
+    exit 1
+  fi
+  unset hmac_material
+elif [[ "${hmac_version_total}" == "1" ]]; then
+  if ! jq -e \
+    'length == 1 and .[0].state == "ENABLED"' \
+    <<<"${hmac_versions_json}" >/dev/null
+  then
+    exit 1
+  fi
+  if ! hmac_latest_json="$(
+    gcloud secrets versions describe latest \
+      --secret="${hmac_secret}" \
+      --project="${project_id}" \
+      --format=json
+  )"; then
+    exit 1
+  fi
+  if ! jq -e '.state == "ENABLED"' \
+    <<<"${hmac_latest_json}" >/dev/null
+  then
+    exit 1
+  fi
+else
+  exit 1
+fi
+
+if ! hmac_versions_json="$(
+  gcloud secrets versions list "${hmac_secret}" \
+    --project="${project_id}" \
+    --format=json
+)"; then
+  exit 1
+fi
+if ! jq -e \
+  'length == 1 and .[0].state == "ENABLED"' \
+  <<<"${hmac_versions_json}" >/dev/null
+then
+  exit 1
+fi
+if ! hmac_latest_json="$(
+  gcloud secrets versions describe latest \
+    --secret="${hmac_secret}" \
+    --project="${project_id}" \
+    --format=json
+)"; then
+  exit 1
+fi
+if ! jq -e '.state == "ENABLED"' \
+  <<<"${hmac_latest_json}" >/dev/null
+then
+  exit 1
+fi
+```
+
+The only recoverable partial state is an automatically replicated Secret with
+zero versions. Exactly one enabled version whose `latest` state is enabled is
+reused; every other total or state stops. Random material exists only in the
+shell variable, must be exactly 64 Base64 characters for 48 random bytes, is
+passed through a here-string, and is immediately unset. It is never written,
+printed, read back, or compared. Do not modify the existing Gemini Secret.
+
+- [ ] **Step 9: Create and bind the least-privilege runtime identity**
+
+Classify the exact service-account count before creation and poll the successful
+create through the same list API. Then preflight every IAM binding before an
+idempotent add:
+
+```bash
+set -euo pipefail
+
+runtime_sa="lifesnap-runtime@${project_id}.iam.gserviceaccount.com"
+runtime_member="serviceAccount:${runtime_sa}"
+deploy_sa="apps-cloud-build@${project_id}.iam.gserviceaccount.com"
+deploy_member="serviceAccount:${deploy_sa}"
+secret_names=(
+  lifesnap-gemini-api-key
+  lifesnap-installation-hmac-key
+)
+
+read_runtime_sa_inventory() {
+  if ! service_accounts_json="$(
+    gcloud iam service-accounts list \
+      --project="${project_id}" \
+      --format=json
+  )"; then
+    return 1
+  fi
+  if ! runtime_sa_count="$(
+    jq \
+      --arg expected_email "${runtime_sa}" \
+      '[.[] | select(.email == $expected_email)] | length' \
+      <<<"${service_accounts_json}"
+  )"; then
+    return 1
+  fi
+  if ! [[ "${runtime_sa_count}" == "0" || "${runtime_sa_count}" == "1" ]]; then
+    return 1
+  fi
+  return 0
+}
+
+if ! read_runtime_sa_inventory; then
+  exit 1
+fi
+if [[ "${runtime_sa_count}" == "0" ]]; then
+  if ! gcloud iam service-accounts create lifesnap-runtime \
+    --project="${project_id}" \
+    --display-name="LifeSnap production runtime"
+  then
+    exit 1
+  fi
+fi
+
+runtime_sa_ready=false
+for attempt in $(seq 1 30); do
+  if ! read_runtime_sa_inventory; then
+    exit 1
+  fi
+  if [[ "${runtime_sa_count}" == "1" ]]; then
+    if ! jq -e \
+      --arg expected_email "${runtime_sa}" \
+      '[.[] | select(.email == $expected_email)] |
+       length == 1 and (.[0].disabled // false) == false' \
+      <<<"${service_accounts_json}" >/dev/null
+    then
+      exit 1
+    fi
+    runtime_sa_ready=true
+    break
+  fi
+  sleep 2
+done
+if ! ${runtime_sa_ready}; then
+  exit 1
+fi
+
+if ! deployment_principals="$(
+  rg -o \
+    'apps-cloud-build@zhang23-23[.]iam[.]gserviceaccount[.]com' \
+    cloudbuild.yaml | sort -u
+)"; then
+  exit 1
+fi
+if ! [[ "${deployment_principals}" == "${deploy_sa}" ]]; then
+  exit 1
+fi
+
+read_project_policy() {
+  if ! project_policy_json="$(
+    gcloud projects get-iam-policy "${project_id}" --format=json
+  )"; then
+    return 1
+  fi
+  return 0
+}
+
+if ! read_project_policy; then
+  exit 1
+fi
+if ! existing_runtime_project_bindings="$(
+  jq -c \
+    --arg member "${runtime_member}" \
+    '[.bindings[] | select(any(.members[]?; . == $member))]' \
+    <<<"${project_policy_json}"
+)"; then
+  exit 1
+fi
+if ! jq -e \
+  'all(.[];
+    (.role == "roles/firebaseappcheck.tokenVerifier" and
+     (.condition == null)) or
+    (.role == "roles/datastore.user" and
+     .condition.title == "LifeSnapQuotaDatabase" and
+     .condition.description == "LifeSnap quota database only" and
+     .condition.expression ==
+       "resource.name==\"projects/zhang23-23/databases/lifesnap-quota\""))' \
+  <<<"${existing_runtime_project_bindings}" >/dev/null
+then
+  exit 1
+fi
+if ! jq -e \
+  --arg member "${deploy_member}" \
+  '[.bindings[] |
+    select(.role == "roles/iam.serviceAccountUser") |
+    select(any(.members[]?; . == $member))
+  ] | length == 0' \
+  <<<"${project_policy_json}" >/dev/null
+then
+  exit 1
+fi
+
+if ! token_binding_count="$(
+  jq \
+    --arg member "${runtime_member}" \
+    '[.bindings[] |
+      select(
+        .role == "roles/firebaseappcheck.tokenVerifier" and
+        any(.members[]?; . == $member)
+      )
+    ] | length' <<<"${project_policy_json}"
+)"; then
+  exit 1
+fi
+if [[ "${token_binding_count}" == "0" ]]; then
+  if ! gcloud projects add-iam-policy-binding "${project_id}" \
+    --member="${runtime_member}" \
+    --role=roles/firebaseappcheck.tokenVerifier \
+    --condition=None
+  then
+    exit 1
+  fi
+elif ! [[ "${token_binding_count}" == "1" ]]; then
+  exit 1
+fi
+
+if ! read_project_policy; then
+  exit 1
+fi
+if ! datastore_binding_count="$(
+  jq \
+    --arg member "${runtime_member}" \
+    '[.bindings[] |
+      select(
+        .role == "roles/datastore.user" and
+        any(.members[]?; . == $member)
+      )
+    ] | length' <<<"${project_policy_json}"
+)"; then
+  exit 1
+fi
+if [[ "${datastore_binding_count}" == "0" ]]; then
+  if ! gcloud projects add-iam-policy-binding "${project_id}" \
+    --member="${runtime_member}" \
+    --role=roles/datastore.user \
+    --condition='title=LifeSnapQuotaDatabase,description=LifeSnap quota database only,expression=resource.name=="projects/zhang23-23/databases/lifesnap-quota"'
+  then
+    exit 1
+  fi
+elif ! [[ "${datastore_binding_count}" == "1" ]]; then
+  exit 1
+fi
+
+for secret_name in "${secret_names[@]}"; do
+  if ! secret_policy_json="$(
+    gcloud secrets get-iam-policy "${secret_name}" \
+      --project="${project_id}" \
+      --format=json
+  )"; then
+    exit 1
+  fi
+  if ! runtime_secret_bindings="$(
+    jq -c \
+      --arg member "${runtime_member}" \
+      '[.bindings[] | select(any(.members[]?; . == $member))]' \
+      <<<"${secret_policy_json}"
+  )"; then
+    exit 1
+  fi
+  if ! jq -e \
+    'length <= 1 and
+     all(.[]; .role == "roles/secretmanager.secretAccessor")' \
+    <<<"${runtime_secret_bindings}" >/dev/null
+  then
+    exit 1
+  fi
+  if ! runtime_secret_binding_count="$(
+    jq 'length' <<<"${runtime_secret_bindings}"
+  )"; then
+    exit 1
+  fi
+  if [[ "${runtime_secret_binding_count}" == "0" ]]; then
+    if ! gcloud secrets add-iam-policy-binding "${secret_name}" \
+      --project="${project_id}" \
+      --member="${runtime_member}" \
+      --role=roles/secretmanager.secretAccessor
+    then
+      exit 1
+    fi
+  elif ! [[ "${runtime_secret_binding_count}" == "1" ]]; then
+    exit 1
+  fi
+done
+
+if ! runtime_policy_json="$(
+  gcloud iam service-accounts get-iam-policy "${runtime_sa}" \
+    --project="${project_id}" \
+    --format=json
+)"; then
+  exit 1
+fi
+if ! sa_user_members_json="$(
+  jq -c \
+    '[.bindings[] |
+      select(.role == "roles/iam.serviceAccountUser") |
+      .members[]?
+    ]' <<<"${runtime_policy_json}"
+)"; then
+  exit 1
+fi
+if ! sa_user_member_count="$(jq 'length' <<<"${sa_user_members_json}")"; then
+  exit 1
+fi
+if [[ "${sa_user_member_count}" == "0" ]]; then
+  if ! gcloud iam service-accounts add-iam-policy-binding \
+    "${runtime_sa}" \
+    --project="${project_id}" \
+    --member="${deploy_member}" \
+    --role=roles/iam.serviceAccountUser
+  then
+    exit 1
+  fi
+elif [[ "${sa_user_member_count}" == "1" ]]; then
+  if ! jq -e --arg expected_member "${deploy_member}" \
+    '.[0] == $expected_member' \
+    <<<"${sa_user_members_json}" >/dev/null
+  then
+    exit 1
+  fi
+else
+  exit 1
+fi
+
+if ! read_project_policy; then
+  exit 1
+fi
+if ! runtime_project_bindings_json="$(
+  jq -c \
+    --arg member "${runtime_member}" \
+    '[.bindings[] | select(any(.members[]?; . == $member))]' \
+    <<<"${project_policy_json}"
+)"; then
+  exit 1
+fi
+if ! jq -e \
+  'length == 2 and
+   ([.[] |
+      select(
+        .role == "roles/firebaseappcheck.tokenVerifier" and
+        (.condition == null)
+      )
+    ] | length) == 1 and
+   ([.[] |
+      select(
+        .role == "roles/datastore.user" and
+        .condition.title == "LifeSnapQuotaDatabase" and
+        .condition.description == "LifeSnap quota database only" and
+        .condition.expression ==
+          "resource.name==\"projects/zhang23-23/databases/lifesnap-quota\""
+      )
+    ] | length) == 1' \
+  <<<"${runtime_project_bindings_json}" >/dev/null
+then
+  exit 1
+fi
+if ! jq -e \
+  --arg member "${deploy_member}" \
+  '[.bindings[] |
+    select(.role == "roles/iam.serviceAccountUser") |
+    select(any(.members[]?; . == $member))
+  ] | length == 0' \
+  <<<"${project_policy_json}" >/dev/null
+then
+  exit 1
+fi
+
+for secret_name in "${secret_names[@]}"; do
+  if ! secret_policy_json="$(
+    gcloud secrets get-iam-policy "${secret_name}" \
+      --project="${project_id}" \
+      --format=json
+  )"; then
+    exit 1
+  fi
+  if ! jq -e \
+    --arg member "${runtime_member}" \
+    '[.bindings[] |
+      select(.role == "roles/secretmanager.secretAccessor") |
+      .members[]? |
+      select(. == $member)
+    ] | length == 1' \
+    <<<"${secret_policy_json}" >/dev/null
+  then
+    exit 1
+  fi
+done
+
+if ! runtime_policy_json="$(
+  gcloud iam service-accounts get-iam-policy "${runtime_sa}" \
+    --project="${project_id}" \
+    --format=json
+)"; then
+  exit 1
+fi
+if ! jq -e \
+  --arg expected_member "${deploy_member}" \
+  '[.bindings[] |
+    select(.role == "roles/iam.serviceAccountUser") |
+    .members[]?
+  ] as $members |
+  ($members | length) == 1 and $members[0] == $expected_member' \
+  <<<"${runtime_policy_json}" >/dev/null
+then
+  exit 1
+fi
+```
+
+Every IAM add is authorized only by an exact zero-count preflight and is
+followed by the complete read-back. Existing exact bindings are reused;
+duplicates, unexpected runtime roles, altered conditions, other Secret roles,
+another resource-level actor, or any project-level Service Account User for
+the deploy principal stop execution. Do not grant broad runtime roles or a
+service-account key.
+
+- [ ] **Step 10: Reconcile the observed automatic service expansion exactly once**
+
+Run this step only after Steps 4 through 9 have completed successfully. It is
+the only step that disables automatically requested services. Its per-service
+invariant checks cover the Firebase project, iOS app, App Attest configuration,
+Firestore/TTL, Secret metadata, runtime IAM, four core service APIs, and
+unchanged Cloud Run baseline. Step 11 repeats the complete post-provision
+acceptance before the local commit.
+
+Use the final dependency-safe order and explicit failure handling:
+
+```bash
+set -euo pipefail
+
+project_id="zhang23-23"
+project_number="788259830737"
+runtime_sa="lifesnap-runtime@${project_id}.iam.gserviceaccount.com"
+deploy_sa="apps-cloud-build@${project_id}.iam.gserviceaccount.com"
+
+if [[ -z "${firebase_app_id:-}" ]]; then
+  exit 1
+fi
+if [[ -z "${apple_team_id:-}" ]]; then
+  exit 1
+fi
+if [[ -z "${security_tmp_dir:-}" ]]; then
+  exit 1
+fi
+if [[ ! -s "${security_tmp_dir}/service-before.json" ]]; then
+  exit 1
+fi
+if ! access_token="$(gcloud auth print-access-token)"; then
+  exit 1
+fi
+if [[ -z "${access_token}" ]]; then
+  exit 1
+fi
+
+disabled_services=(
+  identitytoolkit.googleapis.com
+  securetoken.googleapis.com
+  fcm.googleapis.com
+  fcmregistrations.googleapis.com
+  firebaseremoteconfigrealtime.googleapis.com
+  firebaseremoteconfig.googleapis.com
+  firebaseinstallations.googleapis.com
+  firebaseappdistribution.googleapis.com
+  runtimeconfig.googleapis.com
+)
+retained_services=(
+  appengine.googleapis.com
+  cloudapis.googleapis.com
+  cloudresourcemanager.googleapis.com
+  pubsub.googleapis.com
+  storage-component.googleapis.com
+  firebasehosting.googleapis.com
+  testing.googleapis.com
+  firebaserules.googleapis.com
+)
+core_services=(
+  firebase.googleapis.com
+  firebaseappcheck.googleapis.com
+  firestore.googleapis.com
+  secretmanager.googleapis.com
+)
+secret_names=(
+  lifesnap-gemini-api-key
+  lifesnap-installation-hmac-key
+)
+reconciled_services=()
+
+api_get() {
+  local request_url="$1"
+  if ! curl --fail-with-body --silent --show-error \
+    --header "Authorization: Bearer ${access_token}" \
+    --header "X-Goog-User-Project: ${project_id}" \
+    "${request_url}"
+  then
+    return 1
+  fi
+  return 0
+}
+
+refresh_enabled_services() {
+  if ! enabled_services="$(
+    gcloud services list \
+      --enabled \
+      --project="${project_id}" \
+      --format='value(config.name)'
+  )"; then
+    return 1
+  fi
+  return 0
+}
+
+service_is_enabled() {
+  local service_name="$1"
+  if ! grep -Fxq "${service_name}" <<<"${enabled_services}"; then
+    return 1
+  fi
+  return 0
+}
+
+service_is_disabled() {
+  local service_name="$1"
+  local grep_status
+  if grep -Fxq "${service_name}" <<<"${enabled_services}"; then
+    return 1
+  else
+    grep_status=$?
+  fi
+  if [[ "${grep_status}" -eq 1 ]]; then
+    return 0
+  fi
+  return "${grep_status}"
+}
+
+verify_reconciliation_invariants() {
+  local firebase_project_json
+  local ios_apps_json
+  local app_attest_json
+  local database_json
+  local ttl_field_json
+  local collection_group
+  local secret_name
+  local secret_json
+  local secret_versions_json
+  local secret_latest_json
+  local runtime_sa_json
+  local project_policy_json
+  local runtime_member
+  local deploy_member
+  local runtime_project_bindings_json
+  local project_secret_names
+  local secret_policy_json
+  local accessor_count
+  local sorted_accessor_resources
+  local runtime_policy_json
+  local -a secret_accessor_resources
+  local cloud_run_json
+  local service_name
+  local reconciled_service
+
+  if ! refresh_enabled_services; then
+    return 1
+  fi
+  for service_name in "${core_services[@]}"; do
+    if ! service_is_enabled "${service_name}"; then
+      return 1
+    fi
+  done
+  for service_name in "${retained_services[@]}"; do
+    if ! service_is_enabled "${service_name}"; then
+      return 1
+    fi
+  done
+  for reconciled_service in "${reconciled_services[@]}"; do
+    if ! service_is_disabled "${reconciled_service}"; then
+      return 1
+    fi
+  done
+
+  if ! firebase_project_json="$(
+    api_get "https://firebase.googleapis.com/v1beta1/projects/${project_id}"
+  )"; then
+    return 1
+  fi
+  if ! jq -e \
+    --arg project_id "${project_id}" \
+    --arg project_number "${project_number}" \
+    '.projectId == $project_id and
+     .projectNumber == $project_number and
+     .state == "ACTIVE"' \
+    <<<"${firebase_project_json}" >/dev/null
+  then
+    return 1
+  fi
+
+  if ! ios_apps_json="$(
+    api_get "https://firebase.googleapis.com/v1beta1/projects/${project_id}/iosApps?pageSize=100"
+  )"; then
+    return 1
+  fi
+  if ! jq -e '(.nextPageToken // "") == ""' \
+    <<<"${ios_apps_json}" >/dev/null
+  then
+    return 1
+  fi
+  if ! jq -e \
+    --arg app_id "${firebase_app_id}" \
+    --arg team_id "${apple_team_id}" \
+    '[.apps[] |
+      select(
+        .bundleId == "com.zll.lifesnapaction" and
+        .state == "ACTIVE"
+      )
+    ] as $apps |
+    ($apps | length) == 1 and
+    $apps[0].appId == $app_id and
+    $apps[0].displayName == "よていスナップ" and
+    $apps[0].teamId == $team_id' \
+    <<<"${ios_apps_json}" >/dev/null
+  then
+    return 1
+  fi
+
+  if ! app_attest_json="$(
+    api_get "https://firebaseappcheck.googleapis.com/v1/projects/${project_number}/apps/${firebase_app_id}/appAttestConfig"
+  )"; then
+    return 1
+  fi
+  if ! jq -e \
+    --arg expected_name \
+      "projects/${project_number}/apps/${firebase_app_id}/appAttestConfig" \
+    '.name == $expected_name and .tokenTtl == "3600s"' \
+    <<<"${app_attest_json}" >/dev/null
+  then
+    return 1
+  fi
+
+  if ! database_json="$(
+    api_get \
+      "https://firestore.googleapis.com/v1/projects/${project_id}/databases/lifesnap-quota"
+  )"; then
+    return 1
+  fi
+  if ! jq -e \
+    '.name == "projects/zhang23-23/databases/lifesnap-quota" and
+     .locationId == "asia-northeast1" and
+     .type == "FIRESTORE_NATIVE" and
+     .databaseEdition == "STANDARD" and
+     .deleteProtectionState == "DELETE_PROTECTION_ENABLED" and
+     .versionRetentionPeriod == "3600s"' \
+    <<<"${database_json}" >/dev/null
+  then
+    return 1
+  fi
+  for collection_group in install_minute install_day service_day; do
+    if ! ttl_field_json="$(
+      api_get \
+        "https://firestore.googleapis.com/v1/projects/${project_id}/databases/lifesnap-quota/collectionGroups/${collection_group}/fields/expires_at"
+    )"; then
+      return 1
+    fi
+    if ! jq -e \
+      --arg expected_name \
+        "projects/${project_id}/databases/lifesnap-quota/collectionGroups/${collection_group}/fields/expires_at" \
+      '.name == $expected_name and .ttlConfig.state == "ACTIVE"' \
+      <<<"${ttl_field_json}" >/dev/null
+    then
+      return 1
+    fi
+  done
+
+  for secret_name in "${secret_names[@]}"; do
+    if ! secret_json="$(
+      gcloud secrets describe "${secret_name}" \
+        --project="${project_id}" \
+        --format=json
+    )"; then
+      return 1
+    fi
+    if ! jq -e '.replication.automatic != null' \
+      <<<"${secret_json}" >/dev/null
+    then
+      return 1
+    fi
+    if ! secret_versions_json="$(
+      gcloud secrets versions list "${secret_name}" \
+        --project="${project_id}" \
+        --format=json
+    )"; then
+      return 1
+    fi
+    if ! jq -e \
+      '[.[] | select(.state == "ENABLED")] | length == 1' \
+      <<<"${secret_versions_json}" >/dev/null
+    then
+      return 1
+    fi
+    if ! secret_latest_json="$(
+      gcloud secrets versions describe latest \
+        --secret="${secret_name}" \
+        --project="${project_id}" \
+        --format=json
+    )"; then
+      return 1
+    fi
+    if ! jq -e '.state == "ENABLED"' \
+      <<<"${secret_latest_json}" >/dev/null
+    then
+      return 1
+    fi
+  done
+
+  if ! runtime_sa_json="$(
+    gcloud iam service-accounts describe "${runtime_sa}" \
+      --project="${project_id}" \
+      --format=json
+  )"; then
+    return 1
+  fi
+  if ! jq -e \
+    --arg expected_email "${runtime_sa}" \
+    '.email == $expected_email and (.disabled // false) == false' \
+    <<<"${runtime_sa_json}" >/dev/null
+  then
+    return 1
+  fi
+
+  if ! project_policy_json="$(
+    gcloud projects get-iam-policy "${project_id}" --format=json
+  )"; then
+    return 1
+  fi
+  runtime_member="serviceAccount:${runtime_sa}"
+  deploy_member="serviceAccount:${deploy_sa}"
+  if ! runtime_project_bindings_json="$(
+    jq -c \
+      --arg member "${runtime_member}" \
+      '[.bindings[] | select(any(.members[]?; . == $member))]' \
+      <<<"${project_policy_json}"
+  )"; then
+    return 1
+  fi
+  if ! jq -e 'length == 2' \
+    <<<"${runtime_project_bindings_json}" >/dev/null
+  then
+    return 1
+  fi
+  if ! jq -e \
+    '[.[] |
+      select(
+        .role == "roles/firebaseappcheck.tokenVerifier" and
+        (.condition == null)
+      )
+    ] | length == 1' \
+    <<<"${runtime_project_bindings_json}" >/dev/null
+  then
+    return 1
+  fi
+  if ! jq -e \
+    '[.[] |
+      select(
+        .role == "roles/datastore.user" and
+        .condition.title == "LifeSnapQuotaDatabase" and
+        .condition.description == "LifeSnap quota database only" and
+        .condition.expression ==
+          "resource.name==\"projects/zhang23-23/databases/lifesnap-quota\""
+      )
+    ] | length == 1' \
+    <<<"${runtime_project_bindings_json}" >/dev/null
+  then
+    return 1
+  fi
+  if ! jq -e \
+    --arg member "${deploy_member}" \
+    '[.bindings[] |
+      select(.role == "roles/iam.serviceAccountUser") |
+      select(any(.members[]?; . == $member))
+    ] | length == 0' \
+    <<<"${project_policy_json}" >/dev/null
+  then
+    return 1
+  fi
+
+  if ! project_secret_names="$(
+    gcloud secrets list \
+      --project="${project_id}" \
+      --format='value(name)'
+  )"; then
+    return 1
+  fi
+  secret_accessor_resources=()
+  while IFS= read -r secret_name; do
+    if [[ -z "${secret_name}" ]]; then
+      continue
+    fi
+    if ! secret_policy_json="$(
+      gcloud secrets get-iam-policy "${secret_name}" \
+        --project="${project_id}" \
+        --format=json
+    )"; then
+      return 1
+    fi
+    if ! accessor_count="$(
+      jq -r \
+        --arg member "${runtime_member}" \
+        '[.bindings[] |
+          select(.role == "roles/secretmanager.secretAccessor") |
+          .members[]? |
+          select(. == $member)
+        ] | length' \
+        <<<"${secret_policy_json}"
+    )"; then
+      return 1
+    fi
+    if [[ "${accessor_count}" == "1" ]]; then
+      secret_accessor_resources+=("${secret_name}")
+    elif [[ "${accessor_count}" != "0" ]]; then
+      return 1
+    fi
+  done <<<"${project_secret_names}"
+  if ! [[ "${#secret_accessor_resources[@]}" -eq 2 ]]; then
+    return 1
+  fi
+  if ! sorted_accessor_resources="$(
+    printf '%s\n' "${secret_accessor_resources[@]}" | sort
+  )"; then
+    return 1
+  fi
+  if ! [[ "${sorted_accessor_resources}" == \
+    $'lifesnap-gemini-api-key\nlifesnap-installation-hmac-key' ]]
+  then
+    return 1
+  fi
+
+  if ! runtime_policy_json="$(
+    gcloud iam service-accounts get-iam-policy "${runtime_sa}" \
+      --project="${project_id}" \
+      --format=json
+  )"; then
+    return 1
+  fi
+  if ! jq -e \
+    --arg member "${deploy_member}" \
+    '[.bindings[] |
+      select(.role == "roles/iam.serviceAccountUser") |
+      .members[]?
+    ] as $members |
+    ($members | length) == 1 and $members[0] == $member' \
+    <<<"${runtime_policy_json}" >/dev/null
+  then
+    return 1
+  fi
+
+  if ! cloud_run_json="$(
+    gcloud run services describe lifesnap-action \
+      --project="${project_id}" \
+      --region=asia-northeast1 \
+      --format=json
+  )"; then
+    return 1
+  fi
+  if ! jq -e \
+    --slurpfile before "${security_tmp_dir}/service-before.json" \
+    '.spec.template.spec.serviceAccountName ==
+       $before[0].spec.template.spec.serviceAccountName and
+     .status.latestReadyRevisionName ==
+       $before[0].status.latestReadyRevisionName and
+     .status.traffic == $before[0].status.traffic' \
+    <<<"${cloud_run_json}" >/dev/null
+  then
+    return 1
+  fi
+  return 0
+}
+
+disable_and_verify() {
+  local service_name="$1"
+
+  if ! gcloud services disable "${service_name}" \
+    --project="${project_id}" \
+    --quiet
+  then
+    return 1
+  fi
+  if ! refresh_enabled_services; then
+    return 1
+  fi
+  if ! service_is_disabled "${service_name}"; then
+    return 1
+  fi
+  reconciled_services+=("${service_name}")
+  if ! verify_reconciliation_invariants; then
+    return 1
+  fi
+  return 0
+}
+
+if ! verify_reconciliation_invariants; then
+  exit 1
+fi
+for service_name in "${disabled_services[@]}"; do
+  if ! disable_and_verify "${service_name}"; then
+    exit 1
+  fi
+done
+
+if ! refresh_enabled_services; then
+  exit 1
+fi
+for service_name in "${disabled_services[@]}"; do
+  if ! service_is_disabled "${service_name}"; then
+    exit 1
+  fi
+done
+for service_name in "${retained_services[@]}"; do
+  if ! service_is_enabled "${service_name}"; then
+    exit 1
+  fi
+done
+for service_name in "${core_services[@]}"; do
+  if ! service_is_enabled "${service_name}"; then
+    exit 1
+  fi
+done
+```
+
+The script uses ordinary single-service disables only: no force, cascade,
+dependency bypass, resource deletion, token output, Secret access, or key
+output. It exits immediately when any disable, per-service disabled-state
+check, core service check, Firebase/App/App Attest check, Firestore database or
+three-TTL check, Secret metadata/version-state check, runtime IAM/condition,
+two-Secret accessor, resource `actAs`, project-level Service Account User, or
+Cloud Run non-mutation check fails. `disable_and_verify` calls that complete
+verifier after every single-service disable.
+
+Historical reconciliation evidence from 2026-07-31 remains relevant: the first
+four removals were `identitytoolkit`, `securetoken`, `fcm`, and
+`fcmregistrations`; the first `firebaseinstallations` attempt stopped because
+active `firebaseremoteconfig` depended on it. After explicit approval, the
+dependency-safe reverse sequence removed `firebaseremoteconfigrealtime`,
+`firebaseremoteconfig`, `firebaseinstallations`, and
+`firebaseappdistribution`. A later ordinary `firebaserules` disable stopped
+because core Firestore depended on it, so the approved final revision retained
+`firebaserules` and disabled `runtimeconfig`. No force, cascade, or bypass was
+used in that history or in the replayable script.
+
+Final accepted service boundary:
+
+- disabled, 9 of 9: `identitytoolkit`, `securetoken`, `fcm`,
+  `fcmregistrations`, `firebaseinstallations`, `firebaseappdistribution`,
+  `firebaseremoteconfig`, `firebaseremoteconfigrealtime`, and `runtimeconfig`;
+- retained enabled, 8 of 8: `appengine`, `cloudapis`,
+  `cloudresourcemanager`, `pubsub`, `storage-component`, `firebasehosting`,
+  `testing`, and `firebaserules`;
+- core enabled, 4 of 4: `firebase`, `firebaseappcheck`, `firestore`, and
+  `secretmanager`.
+
+The first five retained services have existing infrastructure or an unknown
+caller surface. Hosting has an empty default site, Testing lacks sufficient
+usage evidence, and Firebase Rules is a confirmed dependency of the required
+Firestore API. Do not describe the final state as “only four APIs are
+enabled.”
+
+- [ ] **Step 11: Verify and commit only the reviewed local config/evidence**
+
+Run a complete fail-closed read-back. Reading only the four core APIs is not
+sufficient because Firebase automatically expanded the service surface during
+project and app registration. This script reads Secret metadata and IAM only;
+it never accesses a Secret version payload or prints an access token, client
+key, raw policy, or unrelated principal:
+
+```bash
+set -euo pipefail
+
+project_id="zhang23-23"
+project_number="788259830737"
+runtime_sa="lifesnap-runtime@${project_id}.iam.gserviceaccount.com"
+deploy_sa="apps-cloud-build@${project_id}.iam.gserviceaccount.com"
+
+if [[ -z "${firebase_app_id:-}" ]]; then
+  exit 1
+fi
+if [[ -z "${apple_team_id:-}" ]]; then
+  exit 1
+fi
+if [[ -z "${security_tmp_dir:-}" ]]; then
+  exit 1
+fi
+if [[ ! -s "${security_tmp_dir}/service-before.json" ]]; then
+  exit 1
+fi
+if ! access_token="$(gcloud auth print-access-token)"; then
+  exit 1
+fi
+if [[ -z "${access_token}" ]]; then
+  exit 1
+fi
+
+disabled_services=(
+  identitytoolkit.googleapis.com
+  securetoken.googleapis.com
+  fcm.googleapis.com
+  fcmregistrations.googleapis.com
+  firebaseinstallations.googleapis.com
+  firebaseappdistribution.googleapis.com
+  firebaseremoteconfig.googleapis.com
+  firebaseremoteconfigrealtime.googleapis.com
+  runtimeconfig.googleapis.com
+)
+retained_services=(
+  appengine.googleapis.com
+  cloudapis.googleapis.com
+  cloudresourcemanager.googleapis.com
+  pubsub.googleapis.com
+  storage-component.googleapis.com
+  firebasehosting.googleapis.com
+  testing.googleapis.com
+  firebaserules.googleapis.com
+)
+core_services=(
+  firebase.googleapis.com
+  firebaseappcheck.googleapis.com
+  firestore.googleapis.com
+  secretmanager.googleapis.com
+)
+secret_names=(
+  lifesnap-gemini-api-key
+  lifesnap-installation-hmac-key
+)
+
+task7_api_get() {
+  local request_url="$1"
+  if ! curl --fail-with-body --silent --show-error \
+    --header "Authorization: Bearer ${access_token}" \
+    --header "X-Goog-User-Project: ${project_id}" \
+    "${request_url}"
+  then
+    return 1
+  fi
+  return 0
+}
+
+task7_service_is_enabled() {
+  local service_name="$1"
+  if ! grep -Fxq "${service_name}" <<<"${enabled_services}"; then
+    return 1
+  fi
+  return 0
+}
+
+task7_service_is_disabled() {
+  local service_name="$1"
+  local grep_status
+  if grep -Fxq "${service_name}" <<<"${enabled_services}"; then
+    return 1
+  else
+    grep_status=$?
+  fi
+  if [[ "${grep_status}" -eq 1 ]]; then
+    return 0
+  fi
+  return "${grep_status}"
+}
+
+if ! enabled_services="$(
+  gcloud services list \
+    --enabled \
+    --project="${project_id}" \
+    --format='value(config.name)'
+)"; then
+  exit 1
+fi
+for service_name in "${disabled_services[@]}"; do
+  if ! task7_service_is_disabled "${service_name}"; then
+    exit 1
+  fi
+done
+for service_name in "${retained_services[@]}"; do
+  if ! task7_service_is_enabled "${service_name}"; then
+    exit 1
+  fi
+done
+for service_name in "${core_services[@]}"; do
+  if ! task7_service_is_enabled "${service_name}"; then
+    exit 1
+  fi
+done
+
+if ! firebase_project_json="$(
+  task7_api_get \
+    "https://firebase.googleapis.com/v1beta1/projects/${project_id}"
+)"; then
+  exit 1
+fi
+if ! jq -e \
+  --arg project_id "${project_id}" \
+  --arg project_number "${project_number}" \
+  '.projectId == $project_id and
+   .projectNumber == $project_number and
+   .state == "ACTIVE"' \
+  <<<"${firebase_project_json}" >/dev/null
+then
+  exit 1
+fi
+
+if ! ios_apps_json="$(
+  task7_api_get \
+    "https://firebase.googleapis.com/v1beta1/projects/${project_id}/iosApps?pageSize=100"
+)"; then
+  exit 1
+fi
+if ! jq -e '(.nextPageToken // "") == ""' \
+  <<<"${ios_apps_json}" >/dev/null
+then
+  exit 1
+fi
+if ! jq -e \
+  --arg app_id "${firebase_app_id}" \
+  --arg team_id "${apple_team_id}" \
+  '[.apps[] |
+    select(
+      .bundleId == "com.zll.lifesnapaction" and
+      .state == "ACTIVE"
+    )
+  ] as $apps |
+  ($apps | length) == 1 and
+  $apps[0].appId == $app_id and
+  $apps[0].displayName == "よていスナップ" and
+  $apps[0].teamId == $team_id' \
+  <<<"${ios_apps_json}" >/dev/null
+then
+  exit 1
+fi
+
+if ! app_attest_json="$(
+  task7_api_get \
+    "https://firebaseappcheck.googleapis.com/v1/projects/${project_number}/apps/${firebase_app_id}/appAttestConfig"
+)"; then
+  exit 1
+fi
+if ! jq -e \
+  --arg expected_name \
+    "projects/${project_number}/apps/${firebase_app_id}/appAttestConfig" \
+  '.name == $expected_name and .tokenTtl == "3600s"' \
+  <<<"${app_attest_json}" >/dev/null
+then
+  exit 1
+fi
+
+if ! database_json="$(
+  task7_api_get \
+    "https://firestore.googleapis.com/v1/projects/${project_id}/databases/lifesnap-quota"
+)"; then
+  exit 1
+fi
+if ! jq -e \
+  '.name == "projects/zhang23-23/databases/lifesnap-quota" and
+   .locationId == "asia-northeast1" and
+   .type == "FIRESTORE_NATIVE" and
+   .databaseEdition == "STANDARD" and
+   .deleteProtectionState == "DELETE_PROTECTION_ENABLED" and
+   .versionRetentionPeriod == "3600s"' \
+  <<<"${database_json}" >/dev/null
+then
+  exit 1
+fi
+for collection_group in install_minute install_day service_day; do
+  if ! ttl_field_json="$(
+    task7_api_get \
+      "https://firestore.googleapis.com/v1/projects/${project_id}/databases/lifesnap-quota/collectionGroups/${collection_group}/fields/expires_at"
+  )"; then
+    exit 1
+  fi
+  if ! jq -e \
+    --arg expected_name \
+      "projects/${project_id}/databases/lifesnap-quota/collectionGroups/${collection_group}/fields/expires_at" \
+    '.name == $expected_name and .ttlConfig.state == "ACTIVE"' \
+    <<<"${ttl_field_json}" >/dev/null
+  then
+    exit 1
+  fi
+done
+
+for secret_name in "${secret_names[@]}"; do
+  if ! secret_json="$(
+    gcloud secrets describe "${secret_name}" \
+      --project="${project_id}" \
+      --format=json
+  )"; then
+    exit 1
+  fi
+  if ! jq -e '.replication.automatic != null' \
+    <<<"${secret_json}" >/dev/null
+  then
+    exit 1
+  fi
+  if ! secret_versions_json="$(
+    gcloud secrets versions list "${secret_name}" \
+      --project="${project_id}" \
+      --format=json
+  )"; then
+    exit 1
+  fi
+  if ! jq -e \
+    '[.[] | select(.state == "ENABLED")] | length == 1' \
+    <<<"${secret_versions_json}" >/dev/null
+  then
+    exit 1
+  fi
+  if ! secret_latest_json="$(
+    gcloud secrets versions describe latest \
+      --secret="${secret_name}" \
+      --project="${project_id}" \
+      --format=json
+  )"; then
+    exit 1
+  fi
+  if ! jq -e '.state == "ENABLED"' \
+    <<<"${secret_latest_json}" >/dev/null
+  then
+    exit 1
+  fi
+done
+
+if ! runtime_sa_json="$(
+  gcloud iam service-accounts describe "${runtime_sa}" \
+    --project="${project_id}" \
+    --format=json
+)"; then
+  exit 1
+fi
+if ! jq -e \
+  --arg expected_email "${runtime_sa}" \
+  '.email == $expected_email and (.disabled // false) == false' \
+  <<<"${runtime_sa_json}" >/dev/null
+then
+  exit 1
+fi
+
+if ! project_policy_json="$(
+  gcloud projects get-iam-policy "${project_id}" --format=json
+)"; then
+  exit 1
+fi
+runtime_member="serviceAccount:${runtime_sa}"
+deploy_member="serviceAccount:${deploy_sa}"
+if ! runtime_project_bindings_json="$(
+  jq -c \
+    --arg member "${runtime_member}" \
+    '[.bindings[] | select(any(.members[]?; . == $member))]' \
+    <<<"${project_policy_json}"
+)"; then
+  exit 1
+fi
+if ! jq -e 'length == 2' \
+  <<<"${runtime_project_bindings_json}" >/dev/null
+then
+  exit 1
+fi
+if ! jq -e \
+  '[.[] |
+    select(
+      .role == "roles/firebaseappcheck.tokenVerifier" and
+      (.condition == null)
+    )
+  ] | length == 1' \
+  <<<"${runtime_project_bindings_json}" >/dev/null
+then
+  exit 1
+fi
+if ! jq -e \
+  '[.[] |
+    select(
+      .role == "roles/datastore.user" and
+      .condition.title == "LifeSnapQuotaDatabase" and
+      .condition.description == "LifeSnap quota database only" and
+      .condition.expression ==
+        "resource.name==\"projects/zhang23-23/databases/lifesnap-quota\""
+    )
+  ] | length == 1' \
+  <<<"${runtime_project_bindings_json}" >/dev/null
+then
+  exit 1
+fi
+if ! jq -e \
+  --arg member "${deploy_member}" \
+  '[.bindings[] |
+    select(.role == "roles/iam.serviceAccountUser") |
+    select(any(.members[]?; . == $member))
+  ] | length == 0' \
+  <<<"${project_policy_json}" >/dev/null
+then
+  exit 1
+fi
+
+if ! project_secret_names="$(
+  gcloud secrets list \
+    --project="${project_id}" \
+    --format='value(name)'
+)"; then
+  exit 1
+fi
+secret_accessor_resources=()
+while IFS= read -r secret_name; do
+  if [[ -z "${secret_name}" ]]; then
+    continue
+  fi
+  if ! secret_policy_json="$(
+    gcloud secrets get-iam-policy "${secret_name}" \
+      --project="${project_id}" \
+      --format=json
+  )"; then
+    exit 1
+  fi
+  if ! accessor_count="$(
+    jq -r \
+      --arg member "${runtime_member}" \
+      '[.bindings[] |
+        select(.role == "roles/secretmanager.secretAccessor") |
+        .members[]? |
+        select(. == $member)
+      ] | length' \
+      <<<"${secret_policy_json}"
+  )"; then
+    exit 1
+  fi
+  if [[ "${accessor_count}" == "1" ]]; then
+    secret_accessor_resources+=("${secret_name}")
+  elif [[ "${accessor_count}" != "0" ]]; then
+    exit 1
+  fi
+done <<<"${project_secret_names}"
+if ! [[ "${#secret_accessor_resources[@]}" -eq 2 ]]; then
+  exit 1
+fi
+if ! sorted_accessor_resources="$(
+  printf '%s\n' "${secret_accessor_resources[@]}" | sort
+)"; then
+  exit 1
+fi
+if ! [[ "${sorted_accessor_resources}" == \
+  $'lifesnap-gemini-api-key\nlifesnap-installation-hmac-key' ]]
+then
+  exit 1
+fi
+
+if ! runtime_policy_json="$(
+  gcloud iam service-accounts get-iam-policy "${runtime_sa}" \
+    --project="${project_id}" \
+    --format=json
+)"; then
+  exit 1
+fi
+if ! jq -e \
+  --arg member "${deploy_member}" \
+  '[.bindings[] |
+    select(.role == "roles/iam.serviceAccountUser") |
+    .members[]?
+  ] as $members |
+  ($members | length) == 1 and $members[0] == $member' \
+  <<<"${runtime_policy_json}" >/dev/null
+then
+  exit 1
+fi
+
+if ! cloud_run_json="$(
+  gcloud run services describe lifesnap-action \
+    --project="${project_id}" \
+    --region=asia-northeast1 \
+    --format=json
+)"; then
+  exit 1
+fi
+if ! jq -e \
+  --slurpfile before "${security_tmp_dir}/service-before.json" \
+  '.spec.template.spec.serviceAccountName ==
+     $before[0].spec.template.spec.serviceAccountName and
+   .status.latestReadyRevisionName ==
+     $before[0].status.latestReadyRevisionName and
+   .status.traffic == $before[0].status.traffic' \
+  <<<"${cloud_run_json}" >/dev/null
+then
+  exit 1
+fi
+```
+
+Only after that complete read-back succeeds, run the local and Git gates. From
+a blank replay, Task 7 creates or amends exactly three repository files, so
+stage all three explicit paths and reject any other cached path:
+
+```bash
+set -euo pipefail
+
+plist_path="ios/LifeSnapAction/GoogleService-Info.plist"
+if [[ -z "${firebase_app_id:-}" ]]; then
+  exit 1
+fi
+if ! /usr/bin/plutil -lint "${plist_path}" >/dev/null; then
+  exit 1
+fi
+if ! plist_bundle_id="$(
+  /usr/libexec/PlistBuddy -c 'Print :BUNDLE_ID' "${plist_path}"
+)"; then
+  exit 1
+fi
+if ! plist_project_id="$(
+  /usr/libexec/PlistBuddy -c 'Print :PROJECT_ID' "${plist_path}"
+)"; then
+  exit 1
+fi
+if ! plist_google_app_id="$(
+  /usr/libexec/PlistBuddy -c 'Print :GOOGLE_APP_ID' "${plist_path}"
+)"; then
+  exit 1
+fi
+if [[ "${plist_bundle_id}" != "com.zll.lifesnapaction" ]]; then
+  exit 1
+fi
+if [[ "${plist_project_id}" != "zhang23-23" ]]; then
+  exit 1
+fi
+if [[ "${plist_google_app_id}" != "${firebase_app_id}" ]]; then
+  exit 1
+fi
+
+if ! PATH=/Users/zhanglonglong/.nvm/versions/node/v24.16.0/bin:$PATH \
+  npm test
+then
+  exit 1
+fi
+if ! PATH=/Users/zhanglonglong/.nvm/versions/node/v24.16.0/bin:$PATH \
+  npm run validate:ios-release
+then
+  exit 1
+fi
+if ! git diff --check; then
+  exit 1
+fi
+if ! git status --short --branch; then
+  exit 1
+fi
+if ! git add -- \
+  ios/LifeSnapAction/GoogleService-Info.plist \
+  docs/superpowers/plans/2026-07-31-yotei-snap-app-check-security.md \
+  docs/verification/yotei-snap-security/infrastructure-preflight.txt
+then
+  exit 1
+fi
+if ! git diff --cached --check; then
+  exit 1
+fi
+if ! cached_paths="$(git diff --cached --name-only | sort)"; then
+  exit 1
+fi
+expected_cached_paths=$'docs/superpowers/plans/2026-07-31-yotei-snap-app-check-security.md\ndocs/verification/yotei-snap-security/infrastructure-preflight.txt\nios/LifeSnapAction/GoogleService-Info.plist'
+if ! [[ "${cached_paths}" == "${expected_cached_paths}" ]]; then
+  exit 1
+fi
+if ! git commit -m "chore: register app check infrastructure"; then
+  exit 1
+fi
+```
+
+Expected: 9 of 9 approved automatic services are disabled; all 8 retained
+dependencies and all 4 core APIs are enabled; every protected resource read
+passes; Cloud Run is unchanged; the cached diff contains exactly the three
+Task 7 files; and no token, Secret payload, personal account, or unrelated IAM
+member appears in the commit. A client API key must not enter evidence, logs,
+temporary plan output, or any other file; the reviewed
+`ios/LifeSnapAction/GoogleService-Info.plist` is the sole normal
+client-configuration exception. Never print or compare that key during this
+gate.
+
+### Task 8: Bootstrap Firebase App Check and the production entitlement on iOS
+
+**Files:**
+- Create: `ios/LifeSnapAction/Services/AppCheckBootstrap.swift`
+- Create: `ios/LifeSnapAction/LifeSnapAction.entitlements`
+- Create: `ios/LifeSnapActionTests/AppCheckBootstrapTests.swift`
+- Modify: `ios/LifeSnapAction/App/LifeSnapActionApp.swift`
+- Modify: `ios/project.yml`
+- Regenerate: `ios/LifeSnapAction.xcodeproj/project.pbxproj`
+- Create/update: `ios/LifeSnapAction.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved`
+
+- [ ] **Step 1: Add the pinned Firebase package and entitlement path**
+
+Modify `ios/project.yml`:
+
+```yaml
+packages:
+  Firebase:
+    url: https://github.com/firebase/firebase-ios-sdk
+    exactVersion: 12.17.0
+
+targets:
+  LifeSnapAction:
+    dependencies:
+      - package: Firebase
+        product: FirebaseCore
+      - package: Firebase
+        product: FirebaseAppCheck
+      - sdk: Security.framework
+    settings:
+      CODE_SIGN_ENTITLEMENTS: LifeSnapAction/LifeSnapAction.entitlements
+```
+
+Add:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>com.apple.developer.devicecheck.appattest-environment</key>
+    <string>production</string>
+</dict>
+</plist>
+```
+
+- [ ] **Step 2: Write the bootstrap mode test**
+
+```swift
+import XCTest
+@testable import LifeSnapAction
+
+final class AppCheckBootstrapTests: XCTestCase {
+    func testDebugBuildUsesOnlyDebugMode() {
+        #if DEBUG
+        XCTAssertEqual(AppCheckBuildMode.current, .debug)
+        #else
+        XCTAssertEqual(AppCheckBuildMode.current, .appAttest)
+        #endif
+    }
+}
+```
+
+- [ ] **Step 3: Implement the provider factory**
+
+```swift
+import FirebaseAppCheck
+import FirebaseCore
+
+enum AppCheckBuildMode: Equatable {
+    case debug
+    case appAttest
+
+    static var current: Self {
+        #if DEBUG
+        return .debug
+        #else
+        return .appAttest
+        #endif
+    }
+}
+
+final class LifeSnapAppAttestProviderFactory: NSObject, AppCheckProviderFactory {
+    func createProvider(with app: FirebaseApp) -> AppCheckProvider? {
+        AppAttestProvider(app: app)
+    }
+}
+
+enum AppCheckBootstrap {
+    static func configure() {
+        switch AppCheckBuildMode.current {
+        case .debug:
+            AppCheck.setAppCheckProviderFactory(AppCheckDebugProviderFactory())
+        case .appAttest:
+            AppCheck.setAppCheckProviderFactory(
+                LifeSnapAppAttestProviderFactory()
+            )
+        }
+        FirebaseApp.configure()
+    }
+}
+```
+
+Call `AppCheckBootstrap.configure()` from `LifeSnapActionApp.init()` before the scene body can create `APIClient`.
+
+- [ ] **Step 4: Regenerate and test the project**
+
+```bash
+xcodegen generate --spec ios/project.yml
+xcodebuild \
+  -resolvePackageDependencies \
+  -project ios/LifeSnapAction.xcodeproj \
+  -scheme LifeSnapAction
+
+plutil -lint \
+  ios/LifeSnapAction/LifeSnapAction.entitlements \
+  ios/LifeSnapAction/GoogleService-Info.plist
+
+xcodebuild \
+  -project ios/LifeSnapAction.xcodeproj \
+  -scheme LifeSnapAction \
+  -sdk iphonesimulator \
+  -destination "platform=iOS Simulator,id=${simulator_udid}" \
+  -derivedDataPath /tmp/yotei-security-bootstrap \
+  CODE_SIGNING_ALLOWED=NO \
+  test -quiet
+```
+
+Expected: the new bootstrap test passes and the project pins Firebase 12.17.0.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add \
+  ios/project.yml \
+  ios/LifeSnapAction.xcodeproj \
+  ios/LifeSnapAction/App/LifeSnapActionApp.swift \
+  ios/LifeSnapAction/Services/AppCheckBootstrap.swift \
+  ios/LifeSnapAction/LifeSnapAction.entitlements \
+  ios/LifeSnapActionTests/AppCheckBootstrapTests.swift
+git commit -m "feat: bootstrap app attest for release"
+```
+
+### Task 9: Add Keychain installation identity and limited-use tokens
+
+**Files:**
+- Create: `ios/LifeSnapAction/Services/InstallationIdentifierStore.swift`
+- Create: `ios/LifeSnapAction/Services/AppCheckTokenProvider.swift`
+- Create: `ios/LifeSnapActionTests/SecurityCredentialTests.swift`
+
+- [ ] **Step 1: Write failing tests with injected stores/providers**
+
+```swift
+func testInstallationIdentifierIsCreatedOnceAndReused() throws {
+    let keychain = InMemoryKeychain()
+    let store = KeychainInstallationIdentifierStore(keychain: keychain)
+    let first = try store.identifier()
+    let second = try store.identifier()
+    XCTAssertEqual(first, second)
+    XCTAssertEqual(keychain.writeCount, 1)
+}
+
+func testCorruptIdentifierIsReplacedWithoutReturningIt() throws {
+    let keychain = InMemoryKeychain(initial: Data("not-a-uuid".utf8))
+    let store = KeychainInstallationIdentifierStore(keychain: keychain)
+    XCTAssertNotNil(UUID(uuidString: try store.identifier()))
+    XCTAssertEqual(keychain.deleteCount, 1)
+}
+
+func testLimitedUseProviderReturnsOnlyTheTokenString() async throws {
+    var callCount = 0
+    let provider = FirebaseLimitedUseTokenProvider { completion in
+        callCount += 1
+        completion(.success("limited-token"))
+    }
+    XCTAssertEqual(try await provider.token(), "limited-token")
+    XCTAssertEqual(callCount, 1)
+}
+```
+
+Define the test Keychain in the same file:
+
+```swift
+private final class InMemoryKeychain: KeychainPersisting {
+    var data: Data?
+    var writeCount = 0
+    var deleteCount = 0
+
+    init(initial: Data? = nil) {
+        data = initial
+    }
+
+    func read(service: String, account: String) throws -> Data? {
+        data
+    }
+
+    func write(
+        _ data: Data,
+        service: String,
+        account: String
+    ) throws {
+        self.data = data
+        writeCount += 1
+    }
+
+    func delete(service: String, account: String) throws {
+        data = nil
+        deleteCount += 1
+    }
+}
+```
+
+- [ ] **Step 2: Verify tests fail**
+
+Run the focused XCTest target:
+
+```bash
+xcodebuild \
+  -project ios/LifeSnapAction.xcodeproj \
+  -scheme LifeSnapAction \
+  -sdk iphonesimulator \
+  -destination "platform=iOS Simulator,id=${simulator_udid}" \
+  -only-testing:LifeSnapActionTests/SecurityCredentialTests \
+  CODE_SIGNING_ALLOWED=NO \
+  test
+```
+
+Expected: FAIL because the credential components do not exist.
+
+- [ ] **Step 3: Implement Keychain storage**
+
+Use:
+
+```swift
+protocol InstallationIdentifierProviding {
+    func identifier() throws -> String
+}
+
+protocol KeychainPersisting {
+    func read(service: String, account: String) throws -> Data?
+    func write(
+        _ data: Data,
+        service: String,
+        account: String
+    ) throws
+    func delete(service: String, account: String) throws
+}
+
+final class KeychainInstallationIdentifierStore:
+    InstallationIdentifierProviding
+{
+    private let service = "com.zll.lifesnapaction.security"
+    private let account = "app-check-installation-id-v1"
+    private let keychain: KeychainPersisting
+
+    init(keychain: KeychainPersisting = SystemKeychain()) {
+        self.keychain = keychain
+    }
+
+    func identifier() throws -> String {
+        if let data = try keychain.read(service: service, account: account),
+           let stored = String(data: data, encoding: .utf8),
+           let uuid = UUID(uuidString: stored) {
+            return uuid.uuidString.lowercased()
+        }
+        try keychain.delete(service: service, account: account)
+        let created = UUID().uuidString.lowercased()
+        try keychain.write(
+            Data(created.utf8),
+            service: service,
+            account: account
+        )
+        return created
+    }
+}
+```
+
+The concrete Keychain query must use:
+
+```swift
+kSecClassGenericPassword
+kSecAttrService
+kSecAttrAccount
+kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+```
+
+It must not use iCloud synchronization, logs, `UserDefaults`, pasteboard, or vendor/advertising identifiers.
+
+- [ ] **Step 4: Implement limited-use token retrieval**
+
+```swift
+protocol AppCheckTokenProviding {
+    func token() async throws -> String
+}
+
+struct FirebaseLimitedUseTokenProvider: AppCheckTokenProviding {
+    typealias Fetch = (
+        @escaping (Result<String, Error>) -> Void
+    ) -> Void
+
+    private let fetch: Fetch
+
+    init(fetch: @escaping Fetch = { completion in
+        AppCheck.appCheck().limitedUseToken { token, error in
+            if let error {
+                completion(.failure(error))
+            } else if let token {
+                completion(.success(token.token))
+            } else {
+                completion(.failure(
+                    APIError.securityVerificationUnavailable
+                ))
+            }
+        }
+    }) {
+        self.fetch = fetch
+    }
+
+    func token() async throws -> String {
+        try await withCheckedThrowingContinuation { continuation in
+            fetch { result in
+                continuation.resume(with: result)
+            }
+        }
+    }
+}
+```
+
+Never cache or log the returned string.
+
+- [ ] **Step 5: Run tests and commit**
+
+```bash
+xcodebuild \
+  -project ios/LifeSnapAction.xcodeproj \
+  -scheme LifeSnapAction \
+  -sdk iphonesimulator \
+  -destination "platform=iOS Simulator,id=${simulator_udid}" \
+  -only-testing:LifeSnapActionTests/SecurityCredentialTests \
+  CODE_SIGNING_ALLOWED=NO \
+  test
+
+git add \
+  ios/LifeSnapAction/Services/InstallationIdentifierStore.swift \
+  ios/LifeSnapAction/Services/AppCheckTokenProvider.swift \
+  ios/LifeSnapActionTests/SecurityCredentialTests.swift
+git commit -m "feat: create private app check credentials"
+```
+
+### Task 10: Send secure v2 requests and map Japanese errors
+
+**Files:**
+- Modify: `ios/LifeSnapAction/Services/APIClient.swift`
+- Modify: `ios/LifeSnapAction/Models/ExtractionResult.swift`
+- Modify: `ios/LifeSnapAction/Info.plist`
+- Modify: `ios/project.yml`
+- Create: `ios/LifeSnapActionTests/APIClientSecurityTests.swift`
+- Create: `ios/LifeSnapActionTests/AppAttestLiveSmokeTests.swift`
+
+- [ ] **Step 1: Write failing request and retry tests**
+
+Use injected `URLSessioning`, `AppCheckTokenProviding`, and `InstallationIdentifierProviding`. Cover:
+
+```swift
+func testV2RequestContainsBothSecurityHeaders() async throws {
+    let session = StubSession(responses: [.successExtraction])
+    let client = APIClient(
+        baseURL: URL(string: "https://candidate.example")!,
+        session: session,
+        tokenProvider: StubTokenProvider(tokens: ["limited-1"]),
+        installationStore: StubInstallationStore(id: validUUID)
+    )
+    _ = try await client.extractEvent(from: Data([0x01]))
+    let request = try XCTUnwrap(session.requests.first)
+    XCTAssertEqual(request.url?.path, "/api/v2/extract")
+    XCTAssertEqual(
+        request.value(forHTTPHeaderField: "X-Firebase-AppCheck"),
+        "limited-1"
+    )
+    XCTAssertEqual(
+        request.value(forHTTPHeaderField: "X-LifeSnap-Install-ID"),
+        validUUID
+    )
+}
+
+func testInvalidTokenRefreshesOnceWithANewLimitedToken() async throws {
+    let session = StubSession(responses: [
+        .error(401, "APP_CHECK_INVALID"),
+        .successExtraction
+    ])
+    let tokens = StubTokenProvider(tokens: ["limited-1", "limited-2"])
+    _ = try await makeClient(session, tokens).extractEvent(from: image)
+    XCTAssertEqual(tokens.callCount, 2)
+    XCTAssertEqual(session.requests.count, 2)
+}
+
+func testReplayQuotaAndNetworkFailuresNeverAutoRetry() async {
+    for fixture in [
+        StubResponse.error(401, "APP_CHECK_REPLAYED"),
+        .error(429, "INSTALL_RATE_LIMITED"),
+        .error(503, "SECURITY_SERVICE_UNAVAILABLE"),
+        .transportFailure
+    ] {
+        let session = StubSession(responses: [fixture])
+        do {
+            _ = try await makeClient(session).extractEvent(from: image)
+            XCTFail("Expected the request to fail")
+        } catch {
+            // Expected; the request count below proves no automatic retry.
+        }
+        XCTAssertEqual(session.requests.count, 1)
+    }
+}
+```
+
+Define the test doubles in the same file so the examples compile without a
+shared hidden helper:
+
+```swift
+private let validUUID =
+    "e8b18b25-64a6-4af9-b31f-9b0b6d3c3d4e"
+private let image = Data([0x01])
+
+private enum StubResponse {
+    case successExtraction
+    case error(Int, String)
+    case transportFailure
+}
+
+private final class StubSession: URLSessioning {
+    private var responses: [StubResponse]
+    private(set) var requests: [URLRequest] = []
+
+    init(responses: [StubResponse]) {
+        self.responses = responses
+    }
+
+    func data(
+        for request: URLRequest
+    ) async throws -> (Data, URLResponse) {
+        requests.append(request)
+        let fixture = responses.removeFirst()
+        if case .transportFailure = fixture {
+            throw URLError(.networkConnectionLost)
+        }
+        let status: Int
+        let data: Data
+        switch fixture {
+        case .successExtraction:
+            status = 200
+            data = Data(#"{"route":"no_action_detected"}"#.utf8)
+        case .error(let value, let code):
+            status = value
+            data = try JSONEncoder().encode(
+                APIErrorResponse(error: "public error", code: code)
+            )
+        case .transportFailure:
+            fatalError("handled above")
+        }
+        let response = HTTPURLResponse(
+            url: request.url!,
+            statusCode: status,
+            httpVersion: nil,
+            headerFields: ["Cache-Control": "no-store"]
+        )!
+        return (data, response)
+    }
+}
+
+private final class StubTokenProvider: AppCheckTokenProviding {
+    private var tokens: [String]
+    private(set) var callCount = 0
+
+    init(tokens: [String]) {
+        self.tokens = tokens
+    }
+
+    func token() async throws -> String {
+        callCount += 1
+        return tokens.removeFirst()
+    }
+}
+
+private struct StubInstallationStore:
+    InstallationIdentifierProviding
+{
+    let id: String
+    func identifier() throws -> String { id }
+}
+
+private func makeClient(
+    _ session: StubSession,
+    _ tokens: StubTokenProvider = StubTokenProvider(tokens: ["limited-1"])
+) -> APIClient {
+    APIClient(
+        baseURL: URL(string: "https://candidate.example")!,
+        session: session,
+        tokenProvider: tokens,
+        installationStore: StubInstallationStore(id: validUUID)
+    )
+}
+```
+
+Add one test for each server code in Step 4 and assert the exact Japanese
+`errorDescription`. Also assert that `APP_CHECK_REQUIRED` is not retried,
+because a missing header indicates local request construction failure rather
+than a refreshable expired token.
+
+- [ ] **Step 2: Verify the tests fail**
+
+```bash
+xcodebuild \
+  -project ios/LifeSnapAction.xcodeproj \
+  -scheme LifeSnapAction \
+  -sdk iphonesimulator \
+  -destination "platform=iOS Simulator,id=${simulator_udid}" \
+  -only-testing:LifeSnapActionTests/APIClientSecurityTests \
+  CODE_SIGNING_ALLOWED=NO \
+  test
+```
+
+Expected: FAIL because APIClient still calls `/api/extract` without credentials.
+
+- [ ] **Step 3: Convert APIClient to an injectable instance**
+
+Preserve the public privacy URL while making the extraction base URL an injected instance value:
+
+```swift
+static let productionBaseURL =
+    "https://lifesnap-action-sxielk4wua-an.a.run.app"
+static var privacyPolicyURL: URL {
+    URL(string: "\(productionBaseURL)/privacy")!
+}
+```
+
+Use:
+
+```swift
+protocol URLSessioning {
+    func data(for request: URLRequest) async throws -> (Data, URLResponse)
+}
+extension URLSession: URLSessioning {}
+
+final class APIClient {
+    private let baseURL: URL
+    private let session: URLSessioning
+    private let tokenProvider: AppCheckTokenProviding
+    private let installationStore: InstallationIdentifierProviding
+
+    func extractEvent(from imageData: Data) async throws -> ExtractionResponse {
+        var attempt = 0
+        while true {
+            let request = try await makeRequest(imageData: imageData)
+            let (data, response) = try await session.data(for: request)
+            do {
+                return try decode(data: data, response: response)
+            } catch APIError.appCheckInvalid where attempt == 0 {
+                attempt += 1
+                continue
+            }
+        }
+    }
+}
+```
+
+`makeRequest` obtains a new limited-use token on each loop, reads the Keychain UUID, builds the multipart body, and sends both headers. Do not log either value.
+
+Add a build-setting-backed validation URL without changing the default:
+
+```xml
+<key>APIBaseURL</key>
+<string>$(API_BASE_URL)</string>
+```
+
+```yaml
+settings:
+  API_BASE_URL: https://lifesnap-action-sxielk4wua-an.a.run.app
+```
+
+The default initializer reads `APIBaseURL` from `Info.plist`, validates it is HTTPS, and otherwise fails closed. Tests inject a URL directly. A candidate device build overrides the Xcode build setting on the command line; no candidate URL is committed.
+
+- [ ] **Step 4: Add stable Japanese error mapping**
+
+Map server codes without exposing backend messages:
+
+```swift
+case "APP_CHECK_REQUIRED", "APP_CHECK_INVALID":
+    return .appCheckInvalid
+case "APP_CHECK_REPLAYED":
+    return .securityVerificationFailed(
+        "安全確認に失敗しました。もう一度画像を選び直してください。"
+    )
+case "APP_ID_FORBIDDEN":
+    return .securityVerificationFailed(
+        "このアプリのバージョンでは利用できません。最新版に更新してください。"
+    )
+case "INSTALL_RATE_LIMITED":
+    return .rateLimited(
+        "短時間の読み取り回数が上限に達しました。少し待ってからお試しください。"
+    )
+case "INSTALL_DAILY_LIMITED":
+    return .rateLimited(
+        "本日の読み取り回数が上限に達しました。明日もう一度お試しください。"
+    )
+case "SERVICE_DAILY_LIMITED":
+    return .rateLimited(
+        "本日のサービス利用上限に達しました。明日もう一度お試しください。"
+    )
+case "SECURITY_SERVICE_UNAVAILABLE":
+    return .securityVerificationUnavailable
+```
+
+The UI continues displaying `LocalizedError.errorDescription`; do not add a new screen or alter consent.
+
+- [ ] **Step 5: Add a disabled-by-default real-device replay test**
+
+`AppAttestLiveSmokeTests` must compile into the test target but skip unless the build includes `-DRUN_LIVE_APP_ATTEST_SMOKE`. In the enabled branch it:
+
+1. obtains one limited-use App Check token;
+2. reads the candidate base URL from `APIBaseURL`;
+3. builds one multipart request from a generated synthetic PNG;
+4. sends the exact same request twice without printing headers or body;
+5. requires first response `200` with a decodable `ExtractionResponse`;
+6. requires second response `401 APP_CHECK_REPLAYED`;
+7. prints only `app_attest_provider=PASS`, `v2_extract=PASS`, and `replay_rejected=PASS`.
+
+Use this compile guard:
+
+```swift
+func testLiveAppAttestAndReplayProtection() async throws {
+    #if RUN_LIVE_APP_ATTEST_SMOKE
+    try await runLiveSmokeWithoutLoggingCredentials()
+    #else
+    throw XCTSkip("RUN_LIVE_APP_ATTEST_SMOKE is not enabled")
+    #endif
+}
+```
+
+The helper must reuse the first request object for the second call; asking the token provider twice does not test replay.
+
+- [ ] **Step 6: Run iOS tests and commit**
+
+```bash
+xcodebuild \
+  -project ios/LifeSnapAction.xcodeproj \
+  -scheme LifeSnapAction \
+  -sdk iphonesimulator \
+  -destination "platform=iOS Simulator,id=${simulator_udid}" \
+  -derivedDataPath /tmp/yotei-security-client \
+  CODE_SIGNING_ALLOWED=NO \
+  test -quiet
+
+git add \
+  ios/LifeSnapAction/Services/APIClient.swift \
+  ios/LifeSnapAction/Models/ExtractionResult.swift \
+  ios/LifeSnapAction/Info.plist \
+  ios/project.yml \
+  ios/LifeSnapActionTests/APIClientSecurityTests.swift \
+  ios/LifeSnapActionTests/AppAttestLiveSmokeTests.swift
+git commit -m "feat: send attested v2 extraction requests"
+```
+
+### Task 11: Update privacy disclosures and Release validation
+
+**Files:**
+- Modify: `server.ts`
+- Modify: `src/shared/__tests__/server-privacy.test.ts`
+- Modify: `docs/app-store/privacy-policy.md`
+- Modify: `docs/app-store/app-privacy-label-draft.md`
+- Modify: `docs/release/app-store-connect-privacy-answers.md`
+- Modify: `docs/app-store/app-review-notes.md`
+- Modify: `scripts/validate-yotei-snap-release.sh`
+- Modify: `docs/release/yotei-snap-v1.1-app-store-release-gate.md`
+
+- [ ] **Step 1: Write failing privacy and Release-contract assertions**
+
+Backend privacy tests must require disclosure of:
+
+- App Check/App Attest integrity processing;
+- a random Keychain installation identifier;
+- only an HMAC digest reaches Firestore;
+- quota counters expire logically after 24 hours/30 days;
+- Firebase replay protection may retain consumed App Check tokens for at most 30 days;
+- no image or extracted document content is stored.
+
+Release validator must require:
+
+```bash
+assert_contains "$entitlements" \
+  '<key>com.apple.developer.devicecheck.appattest-environment</key>' \
+  'App Attest entitlement key'
+assert_contains "$entitlements" \
+  '<string>production</string>' \
+  'App Attest production environment'
+assert_contains "$project_yml" \
+  'exactVersion: 12.17.0' \
+  'Firebase SDK version is pinned'
+assert_contains "$api_client" \
+  '/api/v2/extract' \
+  'Build 4 uses v2 extraction'
+assert_not_contains "$api_client" \
+  'X-Firebase-AppCheck\", \"' \
+  'No hard-coded App Check token'
+```
+
+Also validate `GoogleService-Info.plist` Bundle ID/project/app ID consistency without printing its API key.
+
+- [ ] **Step 2: Verify the new assertions fail**
+
+```bash
+npx vitest run src/shared/__tests__/server-privacy.test.ts
+npm run validate:ios-release
+```
+
+Expected: FAIL until the disclosures and validator inputs are updated.
+
+- [ ] **Step 3: Update the privacy and review documents**
+
+The App Store privacy drafts must classify the app-generated installation UUID/HMAC as an unlinked identifier used for App Functionality and Fraud Prevention, and document Firebase App Check attestation/assertion objects. They must not claim Firebase Analytics, Authentication, Crashlytics, Advertising, tracking, or user profiling.
+
+Keep the distinction:
+
+- Firestore quota records: up to 30 days;
+- App Check replay token handling: Firebase retention up to 30 days;
+- uploaded image/Gemini raw output/extracted content: no application persistence.
+
+Do not mutate App Store Connect in this task.
+
+- [ ] **Step 4: Run focused/full validation and commit**
+
+```bash
+npx vitest run src/shared/__tests__/server-privacy.test.ts
+npm run validate:ios-release
+npm test
+npm run lint
+npm run build
+
+git add \
+  server.ts \
+  src/shared/__tests__/server-privacy.test.ts \
+  docs/app-store/privacy-policy.md \
+  docs/app-store/app-privacy-label-draft.md \
+  docs/release/app-store-connect-privacy-answers.md \
+  docs/app-store/app-review-notes.md \
+  docs/release/yotei-snap-v1.1-app-store-release-gate.md \
+  scripts/validate-yotei-snap-release.sh
+git commit -m "docs: disclose app check quota processing"
+```
+
+### Task 12: Make deployment candidate-only until real-device evidence
+
+**Files:**
+- Modify: `scripts/promote-and-verify.sh`
+- Create: `scripts/promote-verified-candidate.sh`
+- Modify: `cloudbuild.yaml`
+- Modify: `src/shared/__tests__/cloudbuild-contract.test.ts`
+
+- [ ] **Step 1: Write failing release-contract tests**
+
+Add assertions that:
+
+- Cloud Build ends after a tagged zero-traffic candidate;
+- candidate runtime identity equals `lifesnap-runtime@zhang23-23.iam.gserviceaccount.com`;
+- both Secret Manager references exist;
+- `FIREBASE_PROJECT_ID`, exact Firebase app ID, and `FIRESTORE_DATABASE_ID=lifesnap-quota` exist;
+- candidate smoke performs health/privacy, one legacy success, one missing-token v2 rejection, and one invalid-token v2 rejection;
+- negative v2 responses are `401`, `Cache-Control: no-store`, and stable codes;
+- candidate deployment never calls the promotion function;
+- promotion is a separate script requiring exact revision, tag, digest, source commit, and a sanitized real-device evidence file.
+
+Run:
+
+```bash
+npx vitest run src/shared/__tests__/cloudbuild-contract.test.ts
+```
+
+Expected: FAIL because the current script promotes automatically and preserves the old runtime account.
+
+- [ ] **Step 2: Modify candidate payload construction**
+
+Resolve the Firebase app ID from the reviewed plist inside the candidate script:
+
+```bash
+firebase_app_id="$(
+  /usr/libexec/PlistBuddy \
+    -c 'Print :GOOGLE_APP_ID' \
+    ios/LifeSnapAction/GoogleService-Info.plist
+)"
+test -n "${firebase_app_id}"
+
+RUNTIME_SERVICE_ACCOUNT=lifesnap-runtime@zhang23-23.iam.gserviceaccount.com
+FIREBASE_PROJECT_ID=zhang23-23
+FIREBASE_APP_ID="${firebase_app_id}"
+FIRESTORE_DATABASE_ID=lifesnap-quota
+INSTALLATION_HMAC_SECRET=lifesnap-installation-hmac-key
+```
+
+The candidate payload must:
+
+- set `spec.template.spec.serviceAccountName` to the required runtime identity;
+- preserve the existing Gemini Secret reference;
+- add `INSTALLATION_HMAC_KEY` from `lifesnap-installation-hmac-key:latest`;
+- add the three non-secret Firebase/Firestore environment values;
+- set revision label `api-contract=v2-app-check`;
+- keep current production traffic at 100% and add one tagged 0% candidate.
+
+- [ ] **Step 3: Make the orchestrator stop after candidate validation**
+
+The final sequence becomes:
+
+```bash
+install_release_traps
+assert_current_main
+capture_initial_state
+access_token="$(gcloud auth print-access-token)"
+deploy_candidate
+resolve_candidate
+verify_candidate_runtime
+verify_candidate_endpoints
+printf 'candidate_gate=PASS revision=%s url=%s promotion=BLOCKED_BY_DEVICE_SMOKE\n' \
+  "${candidate_revision}" "${candidate_url}"
+candidate_mutation_started=0
+```
+
+Remove automatic calls to `conditionally_promote_candidate` and production extraction from the Cloud Build path. On candidate validation failure, cleanup still removes only the candidate created by this build and restores prior service labels/traffic.
+
+- [ ] **Step 4: Add the explicit promotion script**
+
+The new script must require:
+
+```bash
+: "${CANDIDATE_REVISION:?CANDIDATE_REVISION is required}"
+: "${CANDIDATE_TAG:?CANDIDATE_TAG is required}"
+: "${EXPECTED_IMAGE_DIGEST:?EXPECTED_IMAGE_DIGEST is required}"
+: "${EXPECTED_SOURCE_COMMIT:?EXPECTED_SOURCE_COMMIT is required}"
+: "${DEVICE_SMOKE_EVIDENCE:?DEVICE_SMOKE_EVIDENCE is required}"
+```
+
+Before any mutation it must:
+
+- reject an evidence file outside `docs/verification/yotei-snap-security/`;
+- require it contains `app_attest_provider=PASS`, `v2_extract=PASS`, `replay_rejected=PASS`, and no forbidden fields;
+- compute and print only the evidence SHA-256;
+- re-read the Cloud Run service and candidate revision;
+- require exact tag, 0%, digest, source commit, runtime identity, `api-contract=v2-app-check`, and Ready state;
+- require current production still equals the revision observed before device smoke;
+- conditionally replace the service by `resourceVersion` with one untagged 100% target to the candidate;
+- run health/privacy and negative v2 production smoke;
+- preserve rollback information and conditionally restore only if this promotion still owns the service.
+
+No script accepts or prints an App Check token.
+
+- [ ] **Step 5: Run contract tests and commit**
+
+```bash
+npx vitest run src/shared/__tests__/cloudbuild-contract.test.ts
+npm test
+npm run lint
+npm run build
+git add \
+  cloudbuild.yaml \
+  scripts/promote-and-verify.sh \
+  scripts/promote-verified-candidate.sh \
+  src/shared/__tests__/cloudbuild-contract.test.ts
+git commit -m "feat: gate production on app attest smoke"
+```
+
+### Task 13: Complete Gate A local verification and independent review
+
+**Files:**
+- Modify only if failures reveal in-scope defects
+- Read: all changed files
+
+- [ ] **Step 1: Run every backend gate**
+
+```bash
+npm ci
+npm test
+npm run test:firestore
+npm run lint
+npm run build
+npm run validate:ios-release
+git diff --check
+```
+
+Expected: all pass. Record exact test counts. Do not omit the emulator suite from the report.
+
+- [ ] **Step 2: Run Debug tests and Release build**
+
+```bash
+xcodebuild \
+  -resolvePackageDependencies \
+  -project ios/LifeSnapAction.xcodeproj \
+  -scheme LifeSnapAction
+
+xcodebuild \
+  -project ios/LifeSnapAction.xcodeproj \
+  -scheme LifeSnapAction \
+  -sdk iphonesimulator \
+  -destination "platform=iOS Simulator,id=${simulator_udid}" \
+  -derivedDataPath /tmp/yotei-security-tests \
+  CODE_SIGNING_ALLOWED=NO \
+  test -quiet
+
+xcodebuild \
+  -project ios/LifeSnapAction.xcodeproj \
+  -scheme LifeSnapAction \
+  -configuration Release \
+  -sdk iphonesimulator \
+  -destination 'generic/platform=iOS Simulator' \
+  -derivedDataPath /tmp/yotei-security-release \
+  build -quiet
+```
+
+Expected: all iOS tests pass and Release builds with the production entitlement. This still does not satisfy real-device App Attest.
+
+- [ ] **Step 3: Run secret and privacy scans**
+
+```bash
+rg -n \
+  'X-Firebase-AppCheck.*[A-Za-z0-9_-]{20}|App Check debug token|INSTALLATION_HMAC_KEY=.+' \
+  --glob '!docs/superpowers/**' \
+  .
+
+rg -n \
+  'uploaded image|base64|raw Gemini|installation UUID|App Check token' \
+  docs/app-store \
+  docs/release \
+  server.ts
+```
+
+Expected: the first scan finds no hard-coded token/key; the second confirms accurate disclosures rather than claiming no persistent operational data.
+
+- [ ] **Step 4: Dispatch independent reviews**
+
+Using subagent-driven development, request:
+
+1. spec-compliance review against every section of the approved design;
+2. code-quality/security review focused on fail-closed behavior, quota concurrency, log privacy, IAM scope, rollback ownership, and Release/Debug separation.
+
+Fix every Critical/Important in-scope finding with focused tests and a separate commit. Do not route traffic while either review is unresolved.
+
+- [ ] **Step 5: Confirm clean local state**
+
+```bash
+git log --oneline --decorate -15
+git diff main...HEAD --stat
+git diff --check main...HEAD
+git status --short --branch
+```
+
+Expected: clean worktree and only approved security/rebrand scope.
+
+### Task 14: Deploy zero traffic, prove App Attest on device, and cut over
+
+**Files:**
+- Create: `docs/verification/yotei-snap-security/device-app-attest-smoke.txt`
+- Modify: `docs/release/yotei-snap-v1.1-app-store-release-gate.md`
+- External state: branch publication/merge, Cloud Build, Cloud Run traffic
+
+- [ ] **Step 1: Snapshot and disable the automatic main trigger before publishing**
+
+Identify the one global automatic trigger for this repository's `main` branch by
+its exact trigger UUID. Use the lifecycle helper before the first
+merge. It atomically saves the complete trigger REST representation before any
+PATCH, records the prior boolean `disabled` state, sends a full-trigger PATCH
+with `updateMask=disabled`, and checks a fresh GET differs only in that field.
+The helper derives the same persistent manifest path under the canonical
+current Git worktree's Git directory on every invocation, independently of
+`TMPDIR`, so every command below is safe to run in a new shell. Its state
+directory is user-owned mode `0700`; the manifest is mode `0600`, rejects
+symlinks and hard links, and never stores the access token. The helper
+authoritatively resolves `PROJECT_ID` to project number `788259830737` and
+binds that number in its schema-v3 manifest on every lifecycle invocation.
+
+```bash
+PROJECT_ID=zhang23-23 \
+TRIGGER_REGION=global \
+TRIGGER_ID=33acc4f7-4ae1-478f-8ccf-78e9596e121b \
+  ./scripts/manage-lifesnap-trigger.sh prepare-disable
+```
+
+Keep the durable private manifest until restoration is verified. A retry of
+`prepare-disable` resumes a saved pre-PATCH state or verifies the already
+disabled state; a corrupt, mismatched, or drifted manifest fails closed. If any
+snapshot, PATCH, or verification step fails, stop before publishing. Use the
+finishing-development-branch workflow only after the trigger is proven
+disabled. Push only the reviewed branch, create or update one PR, wait for
+required CI, and merge only if the repository's current branch policy permits
+it. Re-read `origin/main` afterward and require the merge commit contains every
+Gate A commit.
+
+Do not stage with `git add .`; list exact changed paths.
+
+- [ ] **Step 2: Re-run Gate B read-only against the merged source**
+
+After re-reading the reviewed merge from `origin/main`, perform a fresh
+read-only preflight before triggering any build:
+
+- Firebase project, iOS app, and App Attest configuration GET;
+- Firestore database and TTL describe;
+- project, Secret Manager, and runtime identity IAM policy inspection;
+- sanitized Firebase client API-key restriction inspection: identify the key
+  without printing its value, require iOS application restriction for exactly
+  `com.zll.lifesnapaction`, and record the configured API restrictions by API
+  name only.
+
+Bind the preflight record to the exact merged `origin/main` commit. If that
+commit omits any Gate A commit, or any Gate B result differs from the reviewed
+assumptions, stop before candidate creation. A passing preflight is not
+candidate, deployment, traffic, or production acceptance evidence.
+
+```bash
+git fetch origin main
+git rev-parse origin/main
+
+PROJECT_ID=zhang23-23 \
+TRIGGER_REGION=global \
+TRIGGER_ID=33acc4f7-4ae1-478f-8ccf-78e9596e121b \
+  ./scripts/manage-lifesnap-trigger.sh verify-disabled
+```
+
+The fresh Gate B record must name the exact 40-hex SHA printed by
+`git rev-parse origin/main`, and the trigger must remain
+disabled throughout Gate B and the candidate/manual release sequence.
+
+- [ ] **Step 3: Trigger the candidate-only Cloud Build**
+
+Manually run the disabled global trigger against the exact merged SHA. Do not
+re-enable its automatic `main` event to create the candidate:
+
+```bash
+PROJECT_ID=zhang23-23 \
+TRIGGER_REGION=global \
+TRIGGER_ID=33acc4f7-4ae1-478f-8ccf-78e9596e121b \
+MERGED_SHA="$(git rev-parse origin/main)" \
+  ./scripts/manage-lifesnap-trigger.sh run-exact
+```
+
+The helper independently resolves `origin/main` and requires it to equal
+`MERGED_SHA`. It re-verifies the durable manifest and fresh disabled trigger,
+then atomically records an exact-SHA run intent before the one allowed API
+request. A repeated invocation for an accepted SHA returns the recorded
+operation/build without another request. If the response was lost, it recovers
+only from one uniquely matching build for this exact trigger and commit; zero
+or multiple matches fail closed with the intent preserved. The manifest stays
+durable through candidate validation and is removed only after exact trigger
+restoration. The helper validates the trigger-run Operation and nested Build,
+accepts the canonical Build resource name only as
+`projects/788259830737/locations/global/builds/<build-id>`, requires the Build
+`projectId`, trigger ID, and `COMMIT_SHA` to match the exact request, and prints
+the operation name, build ID, and commit. Record:
+
+- build ID;
+- source commit;
+- immutable image digest;
+- candidate revision;
+- candidate tag/URL;
+- old production revision;
+- runtime identity;
+- `promotion=BLOCKED_BY_DEVICE_SMOKE`.
+
+The build must leave production traffic unchanged.
+
+- [ ] **Step 4: Verify Gate C read-only**
+
+After the candidate-only build completes, verify:
+
+- Cloud Run candidate revision describe;
+- candidate `/health` and `/privacy`;
+- candidate v2 missing/invalid token rejection;
+- candidate legacy synthetic extraction.
+
+Check Cloud Logging for the exact candidate window. Prove negative v2 attempts have `gemini_invoked=false`. Do not retrieve or print request bodies.
+
+- [ ] **Step 5: Build a real-device Release pointing to the candidate URL**
+
+Use an installed Apple Development or Distribution identity whose Team ID
+matches Firebase. Resolve exactly one available physical iPhone and reject
+simulators or an ambiguous inventory:
+
+```bash
+physical_device_udid="$(
+  xcrun xcdevice list --timeout 15 |
+    jq -r '
+      [
+        .[] |
+        select(
+          .platform == "com.apple.platform.iphoneos" and
+          .available == true and
+          .simulator == false
+        )
+      ] |
+      if length == 1
+      then .[0].identifier
+      else error("expected exactly one available physical iPhone")
+      end
+    '
+)"
+xcrun devicectl device info details \
+  --device "${physical_device_udid}"
+```
+
+Require the inspected device to run iOS 17 or newer and to be trusted,
+developer-mode enabled, and available. Then run the Release-configured live
+XCTest with the candidate URL as an Xcode build setting:
+
+```bash
+xcodebuild \
+  -project ios/LifeSnapAction.xcodeproj \
+  -scheme LifeSnapAction \
+  -configuration Release \
+  -destination "platform=iOS,id=${physical_device_udid}" \
+  -only-testing:LifeSnapActionTests/AppAttestLiveSmokeTests/testLiveAppAttestAndReplayProtection \
+  API_BASE_URL="${candidate_url}" \
+  'OTHER_SWIFT_FLAGS=$(inherited) -DRUN_LIVE_APP_ATTEST_SMOKE' \
+  test
+```
+
+Then archive the same Release configuration for entitlement inspection:
+
+```bash
+xcodebuild \
+  -project ios/LifeSnapAction.xcodeproj \
+  -scheme LifeSnapAction \
+  -configuration Release \
+  -destination 'generic/platform=iOS' \
+  -archivePath /tmp/YoteiSnap-AppCheck.xcarchive \
+  API_BASE_URL="${candidate_url}" \
+  archive
+```
+
+Never hard-code or commit the candidate URL. The project default remains the current production URL.
+
+Inspect the archive:
+
+```bash
+codesign -d --entitlements :- \
+  /tmp/YoteiSnap-AppCheck.xcarchive/Products/Applications/LifeSnapAction.app
+```
+
+Require the production App Attest entitlement and the expected application identifier.
+
+- [ ] **Step 6: Run the candidate real-device smoke**
+
+On a physical iOS 17+ device:
+
+1. require the Release-configured live XCTest to pass on a physical iOS 17+ device;
+2. require its first request to return HTTP 200 with a schema-complete result;
+3. require its second, byte-identical request to return `401 APP_CHECK_REPLAYED`;
+4. verify logs show one Gemini invocation for the valid request and zero for replay;
+5. record only PASS/FAIL, timestamps, app version/build, candidate revision/digest, provider type, response status/code, and sanitized log query.
+
+The evidence file must contain:
+
+```text
+app_attest_provider=PASS
+v2_extract=PASS
+replay_rejected=PASS
+gemini_valid_request_count=1
+gemini_replay_request_count=0
+```
+
+Do not record token, installation UUID/HMAC, image contents, or extracted JSON fields.
+
+- [ ] **Step 7: Promote the exact candidate**
+
+Run the separate promotion script with the exact observed values and evidence file:
+
+```bash
+promotion_state_directory="$(mktemp -d "${TMPDIR:-/tmp}/lifesnap-gate-e.XXXXXXXX")"
+chmod 700 "${promotion_state_directory}"
+promotion_state_file="${promotion_state_directory}/pending-promotion.json"
+
+PROMOTION_MODE=promote \
+PROMOTION_STATE_FILE="${promotion_state_file}" \
+CANDIDATE_REVISION="${candidate_revision}" \
+CANDIDATE_TAG="${candidate_tag}" \
+EXPECTED_IMAGE_DIGEST="${image_digest}" \
+EXPECTED_SOURCE_COMMIT="${source_commit}" \
+DEVICE_SMOKE_EVIDENCE="docs/verification/yotei-snap-security/device-app-attest-smoke.txt" \
+PROJECT_ID=zhang23-23 \
+DEPLOY_REGION=asia-northeast1 \
+SERVICE_NAME=lifesnap-action \
+./scripts/promote-verified-candidate.sh
+```
+
+Expected: a resource-version-conditional promotion to one untagged 100%
+candidate target followed by `promotion_result=PENDING_GATE_E`. Before the
+conditional PUT, the script durably persists a sanitized `0600`, schema-v2
+write-ahead state with `phase=prepared`, the pre-promotion resource version,
+traffic, provenance, and every candidate/ownership binding. Only after the
+mutation and built-in production smokes pass does it atomically advance the
+same state to `phase=pending_gate_e` with the promoted resource version.
+
+The state directory must be a canonical user-owned `0700` directory; the
+script enforces that boundary. The private directory prevents other UIDs from
+changing the pathname, but POSIX does not provide an atomic
+verify-inode-and-unlink operation against a malicious same-UID process. The
+script therefore verifies the file descriptor, inode, digest, mode, link
+count, and parent immediately before directory-relative unlink and fsyncs the
+parent, without overstating protection from a hostile same-UID process.
+Preserve the state without editing it until Gate E is finalized or rolled
+back. If the process stops around the PUT, run `PROMOTION_MODE=rollback`; it
+will consume an exact already-restored/pre-promotion state, conditionally
+restore an exact owned promoted state, or preserve a foreign/ambiguous state
+without mutation.
+
+Rollback ownership is deliberately independent of promotion health: an exact
+owned candidate spec and immutable revision identity may be restored even when
+status traffic is stale or `Ready` is false/missing. Finalize still requires
+exact reconciled status and readiness, and rollback deletes the WAL only after
+the restored spec, status, readiness, and observed generation all reconcile.
+If `RELEASE_WORKSPACE` is supplied, it must already be a canonical safe parent:
+either current-user-owned without group/other write access, or a root-owned
+sticky shared directory such as the resolved canonical path of `/tmp`
+(`/private/tmp` on macOS). The built-in `TMPDIR`/`/tmp` default is resolved to
+its canonical path before the same ownership and mode checks.
+
+- [ ] **Step 8: Run Gate E production smoke**
+
+Verify:
+
+- unchanged public URL;
+- `/health` 200;
+- `/privacy` current text;
+- v2 no token and invalid token rejected/no-store/no Gemini;
+- physical Release app valid v2 request succeeds once;
+- replay is rejected;
+- one legacy synthetic request succeeds unless the 50/day cap is already reached;
+- actual service identity is the dedicated account;
+- production traffic, latest created/ready, image digest, source labels, secrets, environment, and contract label are exact;
+- logs contain no forbidden values.
+
+If every Gate E check passes, finalize the exact pending ownership before
+distributing Build 4:
+
+```bash
+PROMOTION_MODE=finalize \
+PROMOTION_STATE_FILE="${promotion_state_file}" \
+PROJECT_ID=zhang23-23 \
+DEPLOY_REGION=asia-northeast1 \
+SERVICE_NAME=lifesnap-action \
+./scripts/promote-verified-candidate.sh
+```
+
+If any Gate E check fails, run the ownership-safe pending rollback instead:
+
+```bash
+PROMOTION_MODE=rollback \
+PROMOTION_STATE_FILE="${promotion_state_file}" \
+PROJECT_ID=zhang23-23 \
+DEPLOY_REGION=asia-northeast1 \
+SERVICE_NAME=lifesnap-action \
+./scripts/promote-verified-candidate.sh
+```
+
+Finalize must re-read and match the saved resource version, ownership,
+exclusive candidate traffic, source commit, image digest, runtime identity,
+and concurrency before deleting the state. Rollback must make a conditional
+replacement only while those values remain owned, restore the exact saved
+pre-promotion traffic and provenance, verify reconciliation, and then delete
+the state. Any failure preserves the state for investigation and a deliberate
+retry. Do not weaken App Check or quota.
+
+- [ ] **Step 9: Commit sanitized evidence**
+
+```bash
+git add \
+  docs/verification/yotei-snap-security/device-app-attest-smoke.txt \
+  docs/release/yotei-snap-v1.1-app-store-release-gate.md
+git commit -m "docs: record app check production evidence"
+```
+
+Publish this sanitized evidence through the same reviewed branch/PR/CI policy,
+merge it, and re-read `origin/main`. Do not restore the automatic trigger before
+all release and evidence mutations to `main` are complete.
+
+- [ ] **Step 10: Restore the exact prior automatic-trigger disabled state**
+
+Only after every release/evidence mutation is merged and verified on
+`origin/main`, restore the same trigger. The helper re-derives and validates the
+durable manifest, requires the current trigger to match the saved snapshot
+except for `disabled`, sends a full-trigger PATCH back to the saved state, and
+requires a fresh GET to equal the exact original snapshot. It deletes the
+manifest only after that verification. If PATCH or verification fails, it
+keeps the manifest and the trigger must be reported as not restored.
+
+An unresolved run intent blocks restoration. Re-run `run-exact` with the same
+`MERGED_SHA="$(git rev-parse origin/main)"` so the helper performs its read-only
+exact-trigger-and-commit recovery. Only one canonical matching Build may
+advance the durable state to accepted. If recovery finds zero or multiple
+matches, stop for explicit Cloud Build investigation: preserve the manifest,
+do not delete it, do not PATCH or re-enable the trigger, and do not use
+`restore`. Restoration is allowed only when no run was ever requested or the
+exact run is accepted or uniquely recovered.
+
+```bash
+PROJECT_ID=zhang23-23 \
+TRIGGER_REGION=global \
+TRIGGER_ID=33acc4f7-4ae1-478f-8ccf-78e9596e121b \
+  ./scripts/manage-lifesnap-trigger.sh restore
+```
+
+### Task 15: Establish the legacy retirement observation gate
+
+**Files:**
+- Create: `docs/release/yotei-snap-legacy-retirement.md`
+- Modify: `docs/release/yotei-snap-v1.1-app-store-release-gate.md`
+- No route removal or App Store Connect mutation
+
+- [ ] **Step 1: Write the gate as an explicit state machine**
+
+Create the retirement record with these machine-readable fields:
+
+```text
+build4_public_at=NOT_STARTED
+minimum_observation_days=30
+legacy_share_window_days=7
+legacy_share_threshold_percent=5
+day60_manual_review=REQUIRED_IF_NOT_ELIGIBLE
+app_attest_incidents_open=UNKNOWN
+retirement_authorization=NOT_GRANTED
+route_state=OPEN_CAPPED_50_PER_TOKYO_DAY
+```
+
+Document the allowed transitions:
+
+1. `NOT_STARTED` → dated observation only after Build 4 is confirmed publicly
+   available in the Japan storefront;
+2. `OBSERVING` → `ELIGIBLE_FOR_REVIEW` only after at least 30 public days,
+   seven complete consecutive Tokyo calendar days below 5% legacy share, and no
+   unresolved App Attest compatibility incident;
+3. `ELIGIBLE_FOR_REVIEW` does not remove the route; it requires separate user
+   approval and a new implementation plan;
+4. day 60 without eligibility becomes `MANUAL_REVIEW_REQUIRED`, never automatic
+   closure or indefinite silent retention.
+
+- [ ] **Step 2: Record a reproducible, privacy-safe query**
+
+Use route-category log counts only:
+
+```bash
+observation_start="2026-07-31T00:00:00Z"
+observation_end="2026-08-01T00:00:00Z"
+logging_filter="resource.type=\"cloud_run_revision\" AND
+resource.labels.service_name=\"lifesnap-action\" AND
+jsonPayload.event=\"extraction_completed\" AND
+(jsonPayload.route_category=\"v2\" OR jsonPayload.route_category=\"legacy\") AND
+timestamp>=\"${observation_start}\" AND
+timestamp<\"${observation_end}\""
+gcloud logging read "${logging_filter}" \
+  --project=zhang23-23 \
+  --format='value(jsonPayload.route_category)'
+```
+
+For each complete Asia/Tokyo day, calculate:
+
+```text
+legacy_share_percent = legacy_count / (legacy_count + v2_count) * 100
+```
+
+If the denominator is zero, mark the day `NO_TRAFFIC`; it does not count toward
+the seven qualifying days. Store only dates, aggregate counts, computed
+percentages, query window, and query timestamp. Do not store request IDs,
+tokens, installation identifiers, images, or extracted content.
+
+- [ ] **Step 3: Verify the clock has not started prematurely**
+
+Because App Store upload/review/public release is outside this security rollout,
+leave `build4_public_at=NOT_STARTED` unless storefront evidence is actually
+observed. Confirm `/api/extract` remains open behind the 50-per-Tokyo-day hard
+cap and that no script contains an automatic legacy shutdown.
+
+Run:
+
+```bash
+rg -n \
+  'build4_public_at=NOT_STARTED|retirement_authorization=NOT_GRANTED|route_state=OPEN_CAPPED_50_PER_TOKYO_DAY' \
+  docs/release/yotei-snap-legacy-retirement.md
+rg -n \
+  'delete.*api/extract|disable.*api/extract|retire.*api/extract' \
+  scripts cloudbuild.yaml src server.ts
+```
+
+Expected: the first command finds all three fail-closed states. The second finds
+no automatic shutdown implementation; any documentation-only match is reviewed
+manually.
+
+- [ ] **Step 4: Commit the observation gate**
+
+```bash
+git add \
+  docs/release/yotei-snap-legacy-retirement.md \
+  docs/release/yotei-snap-v1.1-app-store-release-gate.md
+git commit -m "docs: establish legacy retirement gate"
+```
+
+### Task 16: Final verification and handoff
+
+**Files:**
+- Modify: `docs/release/yotei-snap-v1.1-app-store-release-gate.md`
+- Modify: `docs/app-store/app-review-notes.md`
+- No App Store Connect mutation
+
+- [ ] **Step 1: Re-run local gates from the final source**
+
+```bash
+npm ci
+npm test
+npm run test:firestore
+npm run lint
+npm run build
+npm run validate:ios-release
+
+xcodebuild \
+  -project ios/LifeSnapAction.xcodeproj \
+  -scheme LifeSnapAction \
+  -sdk iphonesimulator \
+  -destination "platform=iOS Simulator,id=${simulator_udid}" \
+  -derivedDataPath /tmp/yotei-security-final \
+  CODE_SIGNING_ALLOWED=NO \
+  test -quiet
+
+git diff --check
+git status --short --branch
+```
+
+- [ ] **Step 2: Re-run final cloud read-only verification**
+
+Capture exact:
+
+- Firebase app ID and App Attest TTL;
+- Firestore database/location/delete protection/TTL;
+- runtime service account roles and conditions;
+- Secret resource bindings;
+- Cloud Run generation, revision, digest, source commit, service identity, traffic;
+- v2/legacy route results and no-store;
+- sanitized logging query results.
+
+Do not call Cloud Billing API, print Secret values, or perform App Store actions.
+
+- [ ] **Step 3: Update the release gate without overstating state**
+
+Mark the backend security gate `PASS` only if Gate E and both independent reviews pass. Keep Archive, export validation, Build 4 upload, metadata save, App Review submission, approval, and storefront availability at their actually observed states.
+
+The final report must include:
+
+- files changed by task;
+- every verification command and result;
+- exact commits;
+- live revision/digest/runtime identity/traffic;
+- remaining risks, including App Check replay protection beta and the temporary legacy route;
+- next action: Apple signing/archive/upload remains a separate approval boundary.
+
+- [ ] **Step 4: Final Git review**
+
+```bash
+git log --oneline --decorate main..HEAD
+git diff --stat main...HEAD
+git diff --check main...HEAD
+git status --short --branch
+```
+
+Expected: clean state. Do not mark the overall App Store release `GO` merely because backend security is complete.

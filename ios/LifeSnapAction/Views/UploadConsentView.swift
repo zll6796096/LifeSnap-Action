@@ -1,15 +1,15 @@
 import SwiftUI
 
 enum ConsentCopy {
-    static let title = "AI解析の前に確認してください"
+    static let title = "画像の送信を確認"
     static let cancelButtonTitle = "キャンセル"
     static let privacyLinkTitle = "プライバシーポリシー"
     static let disclosureBody = """
-    この書類画像は、予定・タスク情報を抽出する目的で LifeSnap の Google Cloud Run バックエンドと第三者AIサービス Google Gemini（Google LLC）へ送信されます。
+    この書類画像は、予定・タスク情報を抽出する目的で よていスナップ の Google Cloud Run バックエンドと第三者AIサービス Google Gemini（Google LLC）へ送信されます。
 
     画像には、氏名、住所、日付、金額、機関名、予約情報などの個人情報が含まれる場合があります。
 
-    LifeSnap はリクエスト処理中にメモリ上で画像を扱い、画像、base64、OCR内容、抽出結果をデータベース・オブジェクトストレージ・ファイルへ永続保存しません。
+    よていスナップ はリクエスト処理中にメモリ上で画像を扱い、画像、base64、OCR内容、抽出結果をデータベース・オブジェクトストレージ・ファイルへ永続保存しません。
 
     Google Gemini Paid Service では、入力と出力は Google 製品の改善に使用されません。ただし、安全性、セキュリティ、不正利用防止、法的義務のために限定された期間ログ処理が行われる場合があり、処理は国や地域をまたぐ可能性があります。
 
@@ -23,41 +23,48 @@ struct UploadConsentView: View {
     let onAgree: () -> Void
     let onCancel: () -> Void
 
+    @State private var showsDetails = false
+
     var body: some View {
         ZStack {
-            Color(hex: "0F0F1A")
+            AppTheme.screen
                 .ignoresSafeArea()
 
             ScrollView {
-                VStack(alignment: .leading, spacing: 24) {
+                VStack(alignment: .leading, spacing: 22) {
                     header
                     imagePreview
-                    disclosure
-                    actions
+                    summary
+                    detailedDisclosure
+                    privacyLink
                 }
-                .padding(.horizontal, 24)
-                .padding(.top, 28)
-                .padding(.bottom, 34)
+                .padding(.horizontal, 20)
+                .padding(.top, 24)
+                .padding(.bottom, 24)
                 .frame(maxWidth: 680)
                 .frame(maxWidth: .infinity)
             }
         }
+        .safeAreaInset(edge: .bottom) {
+            actions
+        }
     }
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Image(systemName: "shield.lefthalf.filled")
-                .font(.system(size: 34, weight: .semibold))
-                .foregroundColor(Color(hex: "48C6EF"))
+        VStack(alignment: .leading, spacing: 8) {
+            Image(systemName: "hand.raised.fill")
+                .font(.title2.weight(.semibold))
+                .foregroundStyle(AppTheme.accent)
+                .accessibilityHidden(true)
 
             Text(ConsentCopy.title)
-                .font(.system(size: 26, weight: .bold, design: .rounded))
-                .foregroundColor(.white)
+                .font(.largeTitle.bold())
+                .foregroundStyle(.primary)
                 .fixedSize(horizontal: false, vertical: true)
 
             Text("この確認は、画像を送信するたびに表示されます。")
-                .font(.subheadline)
-                .foregroundColor(.white.opacity(0.64))
+                .font(.body)
+                .foregroundStyle(.secondary)
         }
     }
 
@@ -66,67 +73,98 @@ struct UploadConsentView: View {
             .resizable()
             .scaledToFit()
             .frame(maxWidth: .infinity)
-            .frame(maxHeight: 260)
-            .clipShape(RoundedRectangle(cornerRadius: 8))
-            .overlay(
-                RoundedRectangle(cornerRadius: 8)
-                    .stroke(Color.white.opacity(0.16), lineWidth: 1)
-            )
+            .frame(maxHeight: 210)
+            .background(AppTheme.surface)
+            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .stroke(AppTheme.separator.opacity(0.5), lineWidth: 0.5)
+            }
             .accessibilityLabel("送信前の書類画像プレビュー")
     }
 
-    private var disclosure: some View {
+    private var summary: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text(ConsentCopy.disclosureBody)
-                .font(.body)
-                .lineSpacing(4)
-                .foregroundColor(.white.opacity(0.82))
-                .fixedSize(horizontal: false, vertical: true)
+            Text("送信内容")
+                .font(.headline)
 
-            Link(destination: APIClient.privacyPolicyURL) {
-                HStack(spacing: 8) {
-                    Image(systemName: "lock.text")
-                    Text(ConsentCopy.privacyLinkTitle)
-                        .underline()
-                }
-                .font(.subheadline.weight(.semibold))
-                .foregroundColor(Color(hex: "48C6EF"))
-            }
-            .accessibilityIdentifier("privacyPolicyLink")
+            DisclosureSummaryRow(
+                icon: "doc.text.magnifyingglass",
+                title: "目的",
+                value: "予定・タスク情報の読み取り"
+            )
+
+            Divider()
+
+            DisclosureSummaryRow(
+                icon: "arrow.up.forward.app",
+                title: "送信先",
+                value: "よていスナップ と Google Gemini"
+            )
+
+            Divider()
+
+            DisclosureSummaryRow(
+                icon: "person.text.rectangle",
+                title: "含まれる可能性",
+                value: "氏名、住所、日付、金額など"
+            )
+
+            Divider()
+
+            DisclosureSummaryRow(
+                icon: "externaldrive.badge.xmark",
+                title: "保存",
+                value: "よていスナップ は画像や抽出内容を永続保存しません"
+            )
         }
+        .appSectionStyle()
+    }
+
+    private var detailedDisclosure: some View {
+        DisclosureGroup("データの取り扱い詳細", isExpanded: $showsDetails) {
+            Text(ConsentCopy.disclosureBody)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .lineSpacing(3)
+                .padding(.top, 12)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .font(.body.weight(.medium))
+        .tint(AppTheme.accent)
+        .appSectionStyle()
+    }
+
+    private var privacyLink: some View {
+        Link(destination: APIClient.privacyPolicyURL) {
+            Label(ConsentCopy.privacyLinkTitle, systemImage: "lock.text")
+                .font(.footnote.weight(.medium))
+        }
+        .accessibilityIdentifier("privacyPolicyLink")
     }
 
     private var actions: some View {
-        VStack(spacing: 12) {
-            Button {
-                onAgree()
-            } label: {
-                HStack(spacing: 10) {
-                    Image(systemName: "sparkles")
-                    Text(purpose.primaryButtonTitle)
-                        .fontWeight(.semibold)
-                }
-                .font(.headline)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 17)
-                .background(Color(hex: "6C63FF"))
-                .foregroundColor(.white)
-                .clipShape(RoundedRectangle(cornerRadius: 8))
+        VStack(spacing: 8) {
+            Button(action: onAgree) {
+                PrimaryActionLabel(
+                    title: purpose.primaryButtonTitle,
+                    systemImage: "checkmark.shield"
+                )
             }
+            .buttonStyle(.borderedProminent)
+            .buttonBorderShape(.roundedRectangle(radius: 14))
+            .tint(AppTheme.accent)
             .accessibilityIdentifier("agreeToAnalyzeButton")
 
-            Button {
-                onCancel()
-            } label: {
-                Text(ConsentCopy.cancelButtonTitle)
-                    .font(.headline)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 16)
-                    .foregroundColor(.white.opacity(0.78))
-                    .background(Color.white.opacity(0.08))
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
-            }
-            .accessibilityIdentifier("cancelConsentButton")
+            Button(ConsentCopy.cancelButtonTitle, action: onCancel)
+                .font(.body.weight(.medium))
+                .frame(maxWidth: .infinity)
+                .frame(minHeight: 44)
+                .accessibilityIdentifier("cancelConsentButton")
         }
+        .padding(.horizontal, 20)
+        .padding(.top, 12)
+        .padding(.bottom, 8)
+        .background(.bar)
     }
 }

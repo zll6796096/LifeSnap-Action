@@ -1,12 +1,14 @@
-# App Review Notes Draft
+# よていスナップ (Yotei Snap) App Review Notes Draft
+
+Prepared for the 1.1 Build 4 release candidate on 2026-08-01 JST. These notes describe the Build 4 App Check data flow and must not be submitted until the matching backend has independently passed its deployment and production acceptance gates. This document update does not change App Store Connect or production state.
 
 ## App Summary
 
-LifeSnap Action helps users turn selected document images into calendar events. The core flow is:
+よていスナップ helps users turn selected document images into calendar events. The core flow is:
 
 1. Scan or select a document image.
 2. Review the explicit AI upload consent screen.
-3. Tap `同意してAI解析を開始` to upload the image for AI analysis, or tap `キャンセル` to refuse.
+3. Tap `同意して続ける` to upload the image for AI analysis, or tap `キャンセル` to refuse.
 4. Review the extracted calendar-action candidate.
 5. Add the confirmed event to the iOS system calendar.
 
@@ -24,31 +26,45 @@ LifeSnap Action helps users turn selected document images into calendar events. 
 - Privacy policy: `https://lifesnap-action-sxielk4wua-an.a.run.app/privacy`
 - The Gemini API key is held only by the backend and is not included in the iOS app.
 - Production deployment uses Secret Manager injection for `GEMINI_API_KEY`.
-- The production Gemini API key has been verified to belong to an active-billing Google Cloud project, so Gemini is used as a Paid Service.
+- Current Gemini Paid Plan verification is `VERIFIED` as of 2026-07-31 JST: AI Studio displayed `Paid 1`; the LifeSnap key belongs to project `zhang23-23` and displayed `Tier 1` / prepaid; the masked AI Studio key identity matched Secret Manager `lifesnap-gemini-api-key:latest`.
+- The Cloud Billing API was not enabled or called, and no billing or payment setting was changed.
+- Production revision `lifesnap-action-00039-rwn` runs Cloud Build `14c3eff7-a07c-479b-81c5-453b0d5e7256` source `8e1b6f5eb679c95a420c7307f5bedf4fe5a5a50d` at image digest `sha256:8bb5f60e05db572fa9232c1bec894620567025ee61b1d19f44cd3fe3ce338a26`.
+- The zero-traffic candidate and unchanged production URL both passed strict `/health`, current `/privacy`, and synthetic `/api/extract` smoke checks. The extraction response was schema-complete with `Cache-Control: no-store`; no document contents or raw AI output were recorded.
+- Production traffic is one untagged `100%` target to `lifesnap-action-00039-rwn`; rollback revision `lifesnap-action-00037-89l` is at `0%`.
 - `MOCK_MODE` is development-only and forbidden in production.
+
+## App Integrity and Quota Protection
+
+- Build 4 sends extraction requests to `/api/v2/extract` with a fresh Firebase App Check token backed by Apple App Attest. Apple and Firebase process the attestation/assertion objects needed to validate app integrity and reject replayed tokens.
+- The app generates a random installation UUID on first use and stores it only in the device Keychain. It sends that UUID in the extraction request header for quota enforcement.
+- The backend immediately derives an HMAC digest. Firestore stores only the HMAC digest and quota counters, never the original UUID.
+- This unlinked identifier is used only for App Functionality and Fraud Prevention. It is not used for advertising, cross-app tracking, or user profiling.
+- Short-window Firestore quota counters expire logically after 24 hours. Daily quota records expire within 30 days.
+- Separately, Firebase may retain consumed App Check tokens for replay protection for up to 30 days. This is not the Firestore quota-record retention.
 
 ## AI Upload Consent
 
-Before each image upload, including retries, LifeSnap shows a dedicated consent screen. The screen discloses:
+Before each image upload, including retries, よていスナップ shows a dedicated consent screen. The screen discloses:
 
 - The selected document image may contain names, addresses, dates, amounts, organizations, appointment details, and other personal information.
-- The image is sent to the LifeSnap Google Cloud Run backend and third-party AI service Google Gemini by Google LLC.
+- The image is sent to the よていスナップ Google Cloud Run backend and third-party AI service Google Gemini by Google LLC.
 - The purpose is only to extract schedule or task information.
-- LifeSnap processes the image in request-time memory and does not persist uploaded images, base64 payloads, OCR text, raw Gemini output, titles, names, addresses, amounts, or summaries.
+- よていスナップ processes the image in request-time memory and does not persist uploaded images, base64 payloads, OCR text, raw Gemini output, titles, names, addresses, amounts, or summaries.
 - Google does not use Gemini Paid Service inputs or outputs to improve Google products, but may process limited logs for safety, security, abuse prevention, and legal obligations.
-- Users can refuse. If the user taps `キャンセル`, no `/api/extract` request is made, the pending image is cleared, and no calendar event is created.
+- Users can refuse. If the user taps `キャンセル`, no `/api/v2/extract` request is made, the pending image is cleared, and no calendar event is created.
 
 ## Reviewer Test Steps
 
-1. Launch the app.
-2. Tap `カメラで撮影` or `ライブラリから選択`.
-3. After selecting an image, confirm that the AI consent screen appears before any processing screen.
-4. Tap `キャンセル`; the app returns to the capture screen without uploading.
-5. Select the image again and tap `同意してAI解析を開始`.
+1. Launch よていスナップ.
+2. Tap `カメラで撮影` (`写真を撮る`) or `写真から選ぶ` (`写真を選ぶ`).
+3. Confirm that the upload-consent screen appears before processing.
+4. Tap `キャンセル`; verify that no image is uploaded and the pending image is cleared (`画像を削除`).
+5. Select the sample again and tap `同意して続ける`.
 6. Review the proposed event fields.
-7. Grant calendar access when prompted.
-8. Add the confirmed event to the system calendar.
-9. If analysis fails and retry is shown, tap retry and confirm that `同意して再解析` appears before the image is uploaded again.
+7. Tap `カレンダーの使用を許可`.
+8. Grant Calendar access when prompted.
+9. Tap `カレンダーに追加`, then `追加する`, to add the confirmed event (`予定を追加`).
+10. If retry appears, verify that `同意してもう一度試す` is required before another upload.
 
 ## Expected Permission Prompts
 
@@ -58,4 +74,6 @@ Before each image upload, including retries, LifeSnap shows a dedicated consent 
 
 ## Privacy Notes
 
-LifeSnap does not persist uploaded images or extracted document contents. Existing calendar contents are not uploaded. Production application logs are structured operational metadata only and do not include image bytes, request bodies, raw Gemini output, OCR text, titles, names, addresses, amounts, or summaries.
+よていスナップ does not persist uploaded images, raw Gemini output, or extracted document contents. Existing calendar contents are not uploaded. Production application logs are structured operational metadata only and do not include image bytes, request bodies, raw Gemini output, OCR text, titles, names, addresses, amounts, or summaries.
+
+The only application-persisted server data introduced for quota enforcement is the HMAC digest/counter record described above, retained for no longer than its 24-hour or 30-day expiry window. The original random UUID remains only in the device Keychain; the backend receives it in a request header but does not persist it. The app does not use Firebase Analytics, Firebase Authentication, Crashlytics, advertising services, tracking, or profiling.

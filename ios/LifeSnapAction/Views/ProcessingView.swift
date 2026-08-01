@@ -2,126 +2,84 @@ import SwiftUI
 
 // MARK: - Processing View
 
-/// Loading screen shown while Gemini analyzes the image.
 struct ProcessingView: View {
     let error: String?
     let onCancel: () -> Void
     let onRetry: () -> Void
 
-    @State private var rotation: Double = 0
-    @State private var pulse: Bool = false
-
     var body: some View {
         ZStack {
-            Color(hex: "0F0F1A")
+            AppTheme.screen
                 .ignoresSafeArea()
 
-            VStack(spacing: 32) {
+            VStack(spacing: 28) {
                 Spacer()
 
                 if let error {
-                    // Error state
                     errorView(message: error)
                 } else {
-                    // Loading state
                     loadingView
                 }
 
                 Spacer()
 
-                // Cancel / Back button
-                Button {
-                    onCancel()
-                } label: {
-                    Text("キャンセル")
-                        .font(.subheadline)
-                        .foregroundColor(.white.opacity(0.5))
-                }
-                .padding(.bottom, 40)
+                Button("キャンセル", action: onCancel)
+                    .font(.body.weight(.medium))
+                    .frame(minHeight: 44)
+                    .padding(.bottom, 24)
             }
+            .padding(.horizontal, 24)
+            .frame(maxWidth: 560)
         }
     }
-
-    // MARK: - Loading View
 
     private var loadingView: some View {
-        VStack(spacing: 24) {
-            // Animated scanning icon
-            ZStack {
-                Circle()
-                    .stroke(Color(hex: "6C63FF").opacity(0.2), lineWidth: 3)
-                    .frame(width: 100, height: 100)
+        VStack(spacing: 18) {
+            ProgressView()
+                .controlSize(.large)
+                .tint(AppTheme.accent)
+                .accessibilityLabel("予定を読み取り中")
 
-                Circle()
-                    .trim(from: 0, to: 0.3)
-                    .stroke(
-                        LinearGradient(
-                            colors: [Color(hex: "6C63FF"), Color(hex: "48C6EF")],
-                            startPoint: .leading,
-                            endPoint: .trailing
-                        ),
-                        style: StrokeStyle(lineWidth: 3, lineCap: .round)
-                    )
-                    .frame(width: 100, height: 100)
-                    .rotationEffect(.degrees(rotation))
+            Text("予定を読み取っています")
+                .font(.title2.bold())
+                .foregroundStyle(.primary)
+                .multilineTextAlignment(.center)
 
-                Image(systemName: "doc.text.magnifyingglass")
-                    .font(.system(size: 36, weight: .light))
-                    .foregroundColor(Color(hex: "6C63FF"))
-                    .scaleEffect(pulse ? 1.1 : 1.0)
-            }
-
-            Text("書類を解析中...")
-                .font(.title3.weight(.medium))
-                .foregroundColor(.white)
-
-            Text("AIが予定情報を抽出しています")
-                .font(.subheadline)
-                .foregroundColor(.white.opacity(0.5))
-        }
-        .onAppear {
-            withAnimation(.linear(duration: 1.5).repeatForever(autoreverses: false)) {
-                rotation = 360
-            }
-            withAnimation(.easeInOut(duration: 1.0).repeatForever(autoreverses: true)) {
-                pulse = true
-            }
+            Text("日付・時間・場所を確認しています")
+                .font(.body)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
         }
     }
 
-    // MARK: - Error View
-
     private func errorView(message: String) -> some View {
-        VStack(spacing: 20) {
+        VStack(spacing: 18) {
             Image(systemName: "exclamationmark.triangle.fill")
-                .font(.system(size: 48))
-                .foregroundColor(Color(hex: "FF6B6B"))
+                .font(.system(size: 44))
+                .foregroundStyle(.red)
+                .accessibilityHidden(true)
 
-            Text("解析エラー")
-                .font(.title3.weight(.semibold))
-                .foregroundColor(.white)
+            Text("読み取りできませんでした")
+                .font(.title2.bold())
+                .foregroundStyle(.primary)
+                .multilineTextAlignment(.center)
 
             Text(message)
-                .font(.subheadline)
-                .foregroundColor(.white.opacity(0.6))
+                .font(.body)
+                .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
-                .padding(.horizontal, 32)
+                .fixedSize(horizontal: false, vertical: true)
 
-            Button {
-                onRetry()
-            } label: {
-                HStack(spacing: 8) {
-                    Image(systemName: "arrow.clockwise")
-                    Text("再解析の同意へ")
-                }
-                .font(.headline)
-                .padding(.horizontal, 32)
-                .padding(.vertical, 14)
-                .background(Color(hex: "6C63FF"))
-                .foregroundColor(.white)
-                .clipShape(RoundedRectangle(cornerRadius: 12))
+            Button(action: onRetry) {
+                PrimaryActionLabel(
+                    title: "もう一度送信を確認",
+                    systemImage: "arrow.clockwise"
+                )
             }
-            .padding(.top, 8)
+            .buttonStyle(.borderedProminent)
+            .buttonBorderShape(.roundedRectangle(radius: 14))
+            .tint(AppTheme.accent)
+            .padding(.top, 6)
         }
     }
 }

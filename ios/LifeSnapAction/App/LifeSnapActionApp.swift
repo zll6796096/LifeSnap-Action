@@ -4,9 +4,14 @@ import SwiftUI
 
 @main
 struct LifeSnapActionApp: App {
+    init() {
+        AppCheckBootstrap.configure()
+    }
+
     var body: some Scene {
         WindowGroup {
             ContentView()
+                .environment(\.locale, Locale(identifier: "ja_JP"))
         }
     }
 }
@@ -14,7 +19,8 @@ struct LifeSnapActionApp: App {
 // MARK: - Content View (Navigation Root)
 
 struct ContentView: View {
-    @State private var coordinator = AppFlowCoordinator()
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var coordinator = ContentView.makeCoordinator()
 
     var body: some View {
         Group {
@@ -58,16 +64,18 @@ struct ContentView: View {
 
             case .review(let task):
                 ReviewView(
+                    sourceImage: coordinator.reviewImage,
                     task: task,
                     calendarVM: coordinator.calendarVM,
                     onConfirm: {
-                        coordinator.currentScreen = .success(task)
+                        coordinator.showSuccess(for: task)
                     },
                     onBack: { coordinator.resetToCapture() }
                 )
 
             case .needsReview(let task):
                 NeedsReviewView(
+                    sourceImage: coordinator.reviewImage,
                     task: task,
                     onConfirm: { editedTask in
                         editedTask.route = .calendarAction
@@ -86,7 +94,10 @@ struct ContentView: View {
                 )
             }
         }
-        .animation(.easeInOut(duration: 0.3), value: screenKey)
+        .animation(
+            reduceMotion ? nil : .easeInOut(duration: 0.25),
+            value: screenKey
+        )
     }
 
     // MARK: - Navigation Helpers
@@ -101,5 +112,23 @@ struct ContentView: View {
         case .noAction: return "noAction"
         case .success: return "success"
         }
+    }
+
+    @MainActor
+    private static func makeCoordinator() -> AppFlowCoordinator {
+        #if DEBUG
+        let environment = ProcessInfo.processInfo.environment
+        let scenario = environment["LIFESNAP_UI_SCENARIO"]
+            .flatMap(VerificationScenario.init(rawValue:))
+        let image = environment["LIFESNAP_UI_IMAGE_PATH"]
+            .flatMap(UIImage.init(contentsOfFile:))
+
+        return AppFlowCoordinator(
+            verificationScenario: scenario,
+            verificationImage: image
+        )
+        #else
+        return AppFlowCoordinator()
+        #endif
     }
 }

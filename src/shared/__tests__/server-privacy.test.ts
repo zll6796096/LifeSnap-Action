@@ -2,6 +2,7 @@ import http from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
 import { createApp, type PrivacySafeLogger } from "../../../server";
+import { createGeminiExtractionService } from "../../extraction/extraction-service";
 
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 
@@ -25,6 +26,35 @@ afterEach(async () => {
 });
 
 describe("privacy and extraction API behavior", () => {
+  it("serves the privacy policy with the current brand and user actions", async () => {
+    await withServer(createApp({ env: testEnv() }), async (baseUrl) => {
+      const response = await fetch(`${baseUrl}/privacy`);
+      const body = await response.text();
+
+      expect(response.status).toBe(200);
+      expect(body).toContain("よていスナップ");
+      expect(body).toContain("紙の案内を予定に変える");
+      expect(body).toContain("「カメラで撮影」");
+      expect(body).toContain("「写真から選ぶ」");
+      expect(body).toContain("「同意して続ける」");
+      expect(body).toContain("「同意してもう一度試す」");
+      expect(body).toContain("「キャンセル」");
+      expect(body).toContain("「カレンダーの使用を許可」");
+      expect(body).toContain("「カレンダーに追加」");
+      expect(body).toContain("「追加する」");
+
+      const permissionAction = body.indexOf("「カレンダーの使用を許可」");
+      const addAction = body.indexOf("「カレンダーに追加」");
+      const confirmAction = body.indexOf("「追加する」");
+      expect(permissionAction).toBeLessThan(addAction);
+      expect(addAction).toBeLessThan(confirmAction);
+
+      expect(body).not.toMatch(/\bLifeSnap(?: Action)?\b/);
+      expect(body).not.toContain("同意してAI解析を開始");
+      expect(body).not.toContain("同意して再解析");
+    });
+  });
+
   it("serves the privacy policy with required Gemini Paid Service disclosures", async () => {
     await withServer(createApp({ env: testEnv() }), async (baseUrl) => {
       const response = await fetch(`${baseUrl}/privacy`);
@@ -40,12 +70,40 @@ describe("privacy and extraction API behavior", () => {
       expect(body).toContain("HTTPS");
       expect(body).toContain("キャンセルした場合、画像は送信されず");
       expect(body).toContain("削除");
-      expect(body).toContain("2026-07-10");
+      expect(body).toContain("2026-08-01");
+    });
+  });
+
+  it("discloses App Check integrity, installation quota, and retention boundaries", async () => {
+    await withServer(createApp({ env: testEnv() }), async (baseUrl) => {
+      const response = await fetch(`${baseUrl}/privacy`);
+      const body = await response.text();
+
+      expect(response.status).toBe(200);
+      expect(body).toContain("Firebase App Check（Apple App Attest）");
+      expect(body).toContain("アプリの完全性");
+      expect(body).toContain(
+        "attestation / assertion オブジェクトが Apple と Firebase により処理",
+      );
+      expect(body).toContain("Keychain");
+      expect(body).toContain("ランダムなインストール UUID");
+      expect(body).toContain("リクエストヘッダーとしてバックエンドへ送られます");
+      expect(body).toContain(
+        "Firestore には HMAC ダイジェストとクォータのカウンターだけを保存します",
+      );
+      expect(body).toContain("元の UUID は Firestore に保存しません");
+      expect(body).toContain("ユーザーにリンクされない識別子");
+      expect(body).toContain("App Functionality と Fraud Prevention");
+      expect(body).toContain("24 時間後に論理的に期限切れ");
+      expect(body).toContain("クォータ記録は最長 30 日");
+      expect(body).toContain("使用済みの App Check トークン");
+      expect(body).toContain("Firebase が最長 30 日保持");
+      expect(body).toContain("アップロード画像、Gemini の生レスポンス、抽出内容を永続保存しません");
     });
   });
 
   it("rejects missing, invalid, and oversized images without leaking details", async () => {
-    await withServer(createApp({ env: testEnv() }), async (baseUrl) => {
+    await withServer(createApp({ env: testEnv(), security: testSecurity() }), async (baseUrl) => {
       const missing = await fetch(`${baseUrl}/api/extract`, { method: "POST" });
       await expectStablePublicError(missing, 400, "IMAGE_REQUIRED");
 
@@ -67,7 +125,12 @@ describe("privacy and extraction API behavior", () => {
     await withServer(
       createApp({
         env: testEnv({ GEMINI_API_KEY: "test-key" }),
-        createGeminiClient: () => fakeGeminiClient(successGeminiText()),
+        security: testSecurity(),
+        extractionService: createGeminiExtractionService({
+          apiKey: "test-key",
+          model: "gemini-2.5-flash",
+          createClient: () => fakeGeminiClient(successGeminiText()),
+        }),
       }),
       async (baseUrl) => {
         const response = await fetch(`${baseUrl}/api/extract`, {
@@ -85,13 +148,12 @@ describe("privacy and extraction API behavior", () => {
     await withServer(
       createApp({
         env: testEnv({ NODE_ENV: "production", GEMINI_API_KEY: "test-key" }),
-        createGeminiClient: () => ({
-          models: {
-            generateContent: async () => {
-              throw new Error("SECRET_INTERNAL_CONTEXT");
-            },
+        security: testSecurity(),
+        extractionService: {
+          extract: async () => {
+            throw new Error("SECRET_INTERNAL_CONTEXT");
           },
-        }),
+        },
       }),
       async (baseUrl) => {
         const response = await fetch(`${baseUrl}/api/extract`, {
@@ -113,7 +175,12 @@ describe("privacy and extraction API behavior", () => {
       createApp({
         env: testEnv({ GEMINI_API_KEY: "test-key" }),
         logger,
-        createGeminiClient: () => fakeGeminiClient(successGeminiText(sentinel)),
+        security: testSecurity(),
+        extractionService: createGeminiExtractionService({
+          apiKey: "test-key",
+          model: "gemini-2.5-flash",
+          createClient: () => fakeGeminiClient(successGeminiText(sentinel)),
+        }),
       }),
       async (baseUrl) => {
         const response = await fetch(`${baseUrl}/api/extract`, {
@@ -136,7 +203,10 @@ describe("privacy and extraction API behavior", () => {
   });
 
   it("keeps mock extraction schema-valid without an external Gemini call", async () => {
-    await withServer(createApp({ env: testEnv({ MOCK_MODE: "true" }) }), async (baseUrl) => {
+    await withServer(createApp({
+      env: testEnv({ MOCK_MODE: "true" }),
+      security: testSecurity(),
+    }), async (baseUrl) => {
       const response = await fetch(`${baseUrl}/api/extract`, {
         method: "POST",
         body: imageForm("image/png", 16),
@@ -159,6 +229,19 @@ function testEnv(overrides: Partial<NodeJS.ProcessEnv> = {}) {
     MOCK_MODE: "false",
     GEMINI_API_KEY: "",
     ...overrides,
+  };
+}
+
+function testSecurity() {
+  return {
+    appCheckVerifier: {
+      verify: async () => ({ appId: "unused-by-legacy-route" }),
+    },
+    quotaStore: {
+      consume: async () => ({ allowed: true as const }),
+    },
+    hashInstallationId: () => "a".repeat(64),
+    now: () => new Date("2026-07-31T01:00:00Z"),
   };
 }
 

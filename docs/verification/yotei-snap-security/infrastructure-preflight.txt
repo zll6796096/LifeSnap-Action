@@ -1,0 +1,130 @@
+Yotei Snap security infrastructure evidence
+Initial capture: 2026-07-31 21:27 JST
+Service-boundary reconciliation: 2026-07-31 22:32 JST
+Project: zhang23-23
+Project number: 788259830737
+Region: asia-northeast1
+
+Scope and safety
+- This record covers Task 7 Firebase, App Check, Firestore, Secret Manager, IAM provisioning, and the subsequent reconciliation of automatically enabled Google services.
+- No Cloud Run deployment, revision, traffic, environment, or service-identity change was performed.
+- No App Store action, iOS source change, Dockerfile change, default-service-account role change, or unrelated IAM change was performed.
+- No force, cascade, dependency bypass, or broad disable operation was used. Every successful disable was an ordinary single-service operation followed by a core-service regression check.
+- No access token, API error-detail credential, Secret payload, private key, client API-key value, personal account, raw IAM policy, image, or extraction content was recorded.
+
+Approved Apple identity resolution
+- Team ID: YMUG864233.
+- Provenance: explicitly approved by the user from project-specific prior release evidence on 2026-07-31.
+- The global installed-certificate inventory returned two Team IDs, so it was not used to guess the project Team ID.
+
+Initial API intent and evidence boundary
+- The intended core API set was firebase.googleapis.com, firebaseappcheck.googleapis.com, firestore.googleapis.com, and secretmanager.googleapis.com.
+- secretmanager.googleapis.com was already enabled; the other three core APIs were enabled explicitly.
+- The initial preflight directly proved only identitytoolkit.googleapis.com was DISABLED.
+- The preflight state of the other 16 services later found in audit logs was not individually captured and is therefore UNKNOWN. A later BatchEnable event does not prove that every service in that batch had previously been disabled.
+- The initial statement that related Firebase services remained disabled was not supported by sufficient per-service evidence and is superseded by this reconciled record.
+
+Automatic service expansion observed in Cloud Audit Logs
+- At 2026-07-31T12:12:08Z, the explicit core batch requested firebase.googleapis.com, firebaseappcheck.googleapis.com, firestore.googleapis.com, and secretmanager.googleapis.com.
+- At 2026-07-31T12:15:12Z, attaching Firebase automatically requested: securetoken.googleapis.com, cloudapis.googleapis.com, storage-component.googleapis.com, appengine.googleapis.com, firebaserules.googleapis.com, identitytoolkit.googleapis.com, testing.googleapis.com, fcm.googleapis.com, firebaseremoteconfig.googleapis.com, firebaseremoteconfigrealtime.googleapis.com, pubsub.googleapis.com, cloudresourcemanager.googleapis.com, firebasehosting.googleapis.com, and runtimeconfig.googleapis.com.
+- At 2026-07-31T12:15:51Z, creating the iOS app automatically requested: identitytoolkit.googleapis.com, securetoken.googleapis.com, firebaseinstallations.googleapis.com, firebaseappdistribution.googleapis.com, and fcmregistrations.googleapis.com.
+- The two automatic batches contained 17 unique services; identitytoolkit.googleapis.com and securetoken.googleapis.com appeared in both workflows.
+
+Approved reconciliation and dependency handling
+- The user approved option A: reclaim low-risk automatically enabled services while preserving the four core services and any service whose removal had an observed dependency or insufficiently bounded blast radius.
+- identitytoolkit.googleapis.com, securetoken.googleapis.com, fcm.googleapis.com, and fcmregistrations.googleapis.com were each disabled successfully. A full four-core-service read-back passed after each operation.
+- The first ordinary attempt to disable firebaseinstallations.googleapis.com failed with COMMON_SU_SERVICE_HAS_DEPENDENT_SERVICES; the sanitized audit response identified firebaseremoteconfig.googleapis.com as an active dependent service. No force, cascade, or bypass was used.
+- With explicit user approval, the dependency-safe reverse sequence succeeded: firebaseremoteconfigrealtime.googleapis.com, then firebaseremoteconfig.googleapis.com, then firebaseinstallations.googleapis.com, then firebaseappdistribution.googleapis.com. A full four-core-service read-back passed after each operation.
+- The ordinary attempt to disable firebaserules.googleapis.com failed because core Firestore depended on it. No force, cascade, or bypass was used. The user approved retaining Firebase Rules.
+- The user then approved disabling runtimeconfig.googleapis.com only. That operation succeeded and the complete final read-back passed.
+
+Final service boundary
+- Disabled, 9 of 9: identitytoolkit.googleapis.com, securetoken.googleapis.com, fcm.googleapis.com, fcmregistrations.googleapis.com, firebaseinstallations.googleapis.com, firebaseappdistribution.googleapis.com, firebaseremoteconfig.googleapis.com, firebaseremoteconfigrealtime.googleapis.com, and runtimeconfig.googleapis.com.
+- Retained enabled, 8 of 8: appengine.googleapis.com, cloudapis.googleapis.com, cloudresourcemanager.googleapis.com, pubsub.googleapis.com, storage-component.googleapis.com, firebasehosting.googleapis.com, testing.googleapis.com, and firebaserules.googleapis.com.
+- Core enabled, 4 of 4: firebase.googleapis.com, firebaseappcheck.googleapis.com, firestore.googleapis.com, and secretmanager.googleapis.com.
+
+Why the eight non-core services remain enabled
+- appengine.googleapis.com: the project has an existing SERVING App Engine application in us-central and an existing default Datastore-mode database.
+- cloudapis.googleapis.com: it is a broad platform dependency and its disable blast radius was not bounded by available evidence.
+- cloudresourcemanager.googleapis.com: it is the active project and IAM control plane used by this task.
+- pubsub.googleapis.com: four existing Container Analysis topics were observed.
+- storage-component.googleapis.com: two existing build/source buckets were observed.
+- firebasehosting.googleapis.com: the default site exists but is empty, with zero versions and zero releases on the default channel; it was retained because deletion or disable was not required for this task.
+- testing.googleapis.com: available evidence was insufficient to prove a safe disable boundary.
+- firebaserules.googleapis.com: an ordinary disable was blocked by the core firestore.googleapis.com dependency.
+
+Firebase project and iOS app
+- Firebase project: zhang23-23 / 788259830737 / ACTIVE.
+- Firebase was attached only after the target-project GET returned HTTP 404.
+- ACTIVE iOS apps matching com.zll.lifesnapaction: exactly 1.
+- Firebase App ID: 1:788259830737:ios:a2f98135f554376697bef0.
+- Display name: よていスナップ.
+- Bundle ID: com.zll.lifesnapaction.
+- Team ID: YMUG864233.
+- State: ACTIVE; etag present.
+- App Attest resource: projects/788259830737/apps/1:788259830737:ios:a2f98135f554376697bef0/appAttestConfig.
+- App Attest token TTL: 3600s.
+- The App Attest resource already had the exact TTL after app registration, so no corrective patch was needed.
+
+Reviewed Firebase plist
+- Repository path: ios/LifeSnapAction/GoogleService-Info.plist.
+- BUNDLE_ID, PROJECT_ID, and GOOGLE_APP_ID match the selected Firebase app exactly.
+- Analytics and Ads flags are false.
+- OAuth client, reversed client, tracking, and Ads app identifiers are absent.
+- Firebase-generated legacy GCM and Sign-In flags are present, but the final service boundary disables Authentication, Messaging, Installations, App Distribution, and Remote Config service APIs. No corresponding SDKs were added by Task 7.
+- The plist API key exists as required by Firebase client configuration; its value is intentionally omitted from this evidence.
+
+Firestore
+- Database: projects/zhang23-23/databases/lifesnap-quota.
+- Location: asia-northeast1.
+- Type: FIRESTORE_NATIVE.
+- Edition: STANDARD.
+- Delete protection: ENABLED.
+- Version retention period reported by the service: 3600s.
+- expires_at TTL on install_minute: ACTIVE.
+- expires_at TTL on install_day: ACTIVE.
+- expires_at TTL on service_day: ACTIVE.
+
+Secrets
+- lifesnap-gemini-api-key: automatic replication; 1 enabled version; latest state ENABLED.
+- Existing Gemini Secret payload and versions were not accessed or modified.
+- lifesnap-installation-hmac-key: automatic replication; exactly 1 enabled version; latest state ENABLED.
+- The HMAC payload was piped directly from openssl to Secret Manager and was never printed, persisted locally, read back, or compared.
+
+Runtime identity and IAM
+- Runtime service account: lifesnap-runtime@zhang23-23.iam.gserviceaccount.com; enabled.
+- Project role: roles/firebaseappcheck.tokenVerifier; unconditional.
+- Project role: roles/datastore.user.
+- Datastore condition title: LifeSnapQuotaDatabase.
+- Datastore condition description: LifeSnap quota database only.
+- Datastore condition expression: resource.name=="projects/zhang23-23/databases/lifesnap-quota".
+- No other project role is bound to the runtime principal.
+- roles/secretmanager.secretAccessor is bound to the runtime principal separately on lifesnap-gemini-api-key and lifesnap-installation-hmac-key only.
+- Deployment principal: apps-cloud-build@zhang23-23.iam.gserviceaccount.com.
+- roles/iam.serviceAccountUser is bound to that deployment principal only on the lifesnap-runtime service-account resource.
+- The deployment principal has no project-level roles/iam.serviceAccountUser binding.
+- The only service-account identifiers recorded in this evidence are expected project service principals, not personal identities.
+
+Cloud Run non-mutation proof
+- Service: lifesnap-action in asia-northeast1.
+- Runtime remains 788259830737-compute@developer.gserviceaccount.com.
+- Latest ready revision remains lifesnap-action-00039-rwn.
+- Traffic remains 100 percent on lifesnap-action-00039-rwn.
+- No deployment or traffic mutation occurred in this task.
+
+Final read-back acceptance
+- Service matrix: disabled 9 of 9; retained enabled 8 of 8; core enabled 4 of 4.
+- Firebase project, unique iOS app, and App Attest GET: PASS.
+- Firestore database properties and 3 of 3 TTL policies: PASS.
+- Secret metadata and enabled-version-state checks: PASS; payload access was not used.
+- Runtime project roles: exactly 2 planned roles; unexpected roles: 0.
+- Secret accessor resources: exactly 2 planned Secrets.
+- Runtime resource actAs binding: exactly 1 expected deployment principal.
+- Deployment principal project-level roles/iam.serviceAccountUser bindings: 0.
+- Cloud Run identity, revision, and traffic unchanged: PASS.
+- Plist syntax and identity fields: PASS.
+
+Remaining release gates
+- Cloud Run still uses the default Compute service account until the separately reviewed zero-traffic deployment task attaches lifesnap-runtime.
+- Infrastructure provisioning does not prove a real-device Release App Attest request.
+- No production traffic cutover or App Store release authorization is implied by this record.

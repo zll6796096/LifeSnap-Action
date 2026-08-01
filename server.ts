@@ -1,18 +1,40 @@
 import crypto from "node:crypto";
-import express, { type ErrorRequestHandler, type Request, type Response } from "express";
+import express, {
+  type ErrorRequestHandler,
+  type NextFunction,
+  type Request,
+  type RequestHandler,
+  type Response,
+} from "express";
 import dotenv from "dotenv";
 import multer from "multer";
 import { GoogleGenAI } from "@google/genai";
 import {
-  geminiResponseSchema,
-  GEMINI_EXTRACTION_PROMPT,
-  validateGeminiExtraction,
-} from "./src/shared/gemini-schema";
+  createGeminiExtractionService,
+  type ExtractionService,
+  type GeminiClient,
+  type ImageInput,
+} from "./src/extraction/extraction-service";
+import type {
+  QuotaDecision,
+  QuotaDeniedCode,
+  QuotaStore,
+} from "./src/quota/contracts";
+import type { AppCheckRequestErrorCode } from "./src/security/app-check";
+import { buildRuntimeSecurity } from "./src/runtime/firebase";
+import { validateGeminiExtraction } from "./src/shared/gemini-schema";
+import {
+  createPublicHttpError,
+  normalizePublicHttpError,
+  type PublicErrorKey,
+  type PublicHttpErrorSnapshot,
+} from "./src/shared/http-error";
 
 dotenv.config({ quiet: true });
 
 const PORT = parseInt(process.env.PORT || "8080", 10);
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+const MAX_MULTIPART_FIELD_NAME_CHARACTERS = 64;
 const ALLOWED_IMAGE_MIME_TYPES = new Set(["image/jpeg", "image/png", "image/webp", "image/jpg"]);
 const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash";
 
@@ -24,18 +46,27 @@ export type PrivacySafeLogger = {
   error: (event: string, metadata: LogMetadata) => void;
 };
 
-type GeminiClient = {
-  models: {
-    generateContent: (request: unknown) => Promise<{ text?: string }>;
-  };
-};
+type AppEnvironment = Partial<
+  Pick<
+    NodeJS.ProcessEnv,
+    "NODE_ENV" | "MOCK_MODE" | "GEMINI_API_KEY"
+  >
+>;
 
-type AppEnvironment = Pick<NodeJS.ProcessEnv, "NODE_ENV" | "MOCK_MODE" | "GEMINI_API_KEY">;
+export type SecurityDependencies = {
+  appCheckVerifier: {
+    verify(token: string | undefined): Promise<{ appId: string }>;
+  };
+  quotaStore: QuotaStore;
+  hashInstallationId(value: string): string;
+  now(): Date;
+};
 
 export type CreateAppOptions = {
   env?: AppEnvironment;
   logger?: PrivacySafeLogger;
-  createGeminiClient?: (apiKey: string) => GeminiClient;
+  extractionService?: ExtractionService;
+  security?: SecurityDependencies;
 };
 
 const defaultLogger: PrivacySafeLogger = {
@@ -44,12 +75,50 @@ const defaultLogger: PrivacySafeLogger = {
   error: (event, metadata) => console.error(JSON.stringify({ level: "error", event, ...metadata })),
 };
 
+function absorbLoggerResult(result: unknown) {
+  try {
+    void Promise.resolve(result).catch(() => undefined);
+  } catch {
+    // Hostile or revoked thenables are logging failures and are ignored.
+  }
+}
+
+function createSafeLogger(candidate: PrivacySafeLogger): PrivacySafeLogger {
+  const invoke = (
+    level: keyof PrivacySafeLogger,
+    event: string,
+    metadata: LogMetadata,
+  ) => {
+    try {
+      const method = candidate[level];
+      if (typeof method !== "function") {
+        return;
+      }
+      const result: unknown = Reflect.apply(method, candidate, [
+        event,
+        Object.freeze({ ...metadata }),
+      ]);
+      absorbLoggerResult(result);
+    } catch {
+      // Logging must never change request processing or public responses.
+    }
+  };
+
+  return Object.freeze({
+    info: (event, metadata) => invoke("info", event, metadata),
+    warn: (event, metadata) => invoke("warn", event, metadata),
+    error: (event, metadata) => invoke("error", event, metadata),
+  });
+}
+
+const safeDefaultLogger = createSafeLogger(defaultLogger);
+
 const PRIVACY_POLICY_HTML = `<!doctype html>
 <html lang="ja">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>LifeSnap Action Privacy Policy</title>
+  <title>よていスナップ プライバシーポリシー</title>
   <style>
     body { font-family: -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Noto Sans JP", sans-serif; line-height: 1.65; margin: 0; padding: 32px 20px; color: #15151f; background: #fff; }
     main { max-width: 820px; margin: 0 auto; }
@@ -62,54 +131,49 @@ const PRIVACY_POLICY_HTML = `<!doctype html>
 </head>
 <body>
   <main>
-    <h1>LifeSnap Action Privacy Policy</h1>
-    <p class="updated">Last updated: 2026-07-10</p>
+    <h1>よていスナップ プライバシーポリシー</h1>
+    <p class="updated">Last updated: 2026-08-01</p>
 
     <h2>日本語</h2>
-    <p>LifeSnap Action は、ユーザーが選択した書類画像から予定やタスク候補を抽出し、ユーザーが確認した場合だけ iOS カレンダーへ追加するアプリです。</p>
+    <p>よていスナップ（紙の案内を予定に変える）は、ユーザーが選択した書類画像から予定やタスク候補を抽出し、ユーザーが確認した場合だけ iOS カレンダーへ追加するアプリです。</p>
 
     <h2>送信されるデータときっかけ</h2>
-    <p>ユーザーが写真を撮影または選択したあと、アップロード前の確認画面で「同意してAI解析を開始」を選んだ場合に限り、その書類画像が LifeSnap の Google Cloud Run バックエンドへ HTTPS で送信されます。画像には、氏名、住所、日付、金額、機関名、予約情報などの個人情報が含まれる場合があります。</p>
+    <p>ユーザーは「カメラで撮影」で写真を撮るか、「写真から選ぶ」で写真を選ぶことができます。アップロード前の確認画面で初回は「同意して続ける」、再試行時は「同意してもう一度試す」を選んだ場合に限り、その書類画像が よていスナップ の Google Cloud Run バックエンドへ HTTPS で送信されます。画像には、氏名、住所、日付、金額、機関名、予約情報などの個人情報が含まれる場合があります。</p>
 
     <h2>処理の流れと目的</h2>
-    <p>LifeSnap のバックエンドは、予定やタスク候補を抽出する目的だけで画像を Google Gemini（Google LLC）へ送信します。Gemini API キーはバックエンドだけに保存され、iOS アプリには含まれません。</p>
+    <p>よていスナップ のバックエンドは、予定やタスク候補を抽出する目的だけで画像を Google Gemini（Google LLC）へ送信します。Gemini API キーはバックエンドだけに保存され、iOS アプリには含まれません。</p>
+
+    <h2>アプリの完全性確認と不正利用防止</h2>
+    <p>よていスナップ は、正規のアプリからのリクエストであることを確認するため、Firebase App Check（Apple App Attest）を使用します。この処理では、アプリの完全性確認に必要な attestation / assertion オブジェクトが Apple と Firebase により処理され、使用済みトークンの再利用を防ぎます。</p>
+    <p>アプリは初回利用時にランダムなインストール UUID を生成し、端末の Keychain にだけ保存します。この UUID はクォータ管理用のリクエストヘッダーとしてバックエンドへ送られます。バックエンドは直ちに HMAC ダイジェストへ変換し、Firestore には HMAC ダイジェストとクォータのカウンターだけを保存します。元の UUID は Firestore に保存しません。このユーザーにリンクされない識別子は、App Functionality と Fraud Prevention の目的だけに使用します。</p>
 
     <h2>保存期間</h2>
-    <p>LifeSnap は、アップロードされた画像、base64 データ、Gemini の生レスポンス、OCR 内容、抽出されたタイトル、氏名、住所、金額、要約をデータベース、オブジェクトストレージ、ファイルへ永続保存しません。画像はリクエスト処理中のメモリ上で扱われ、処理後に破棄されます。</p>
+    <p>よていスナップ は、アップロード画像、Gemini の生レスポンス、抽出内容を永続保存しません。これには base64 データ、OCR 内容、抽出されたタイトル、氏名、住所、金額、要約が含まれます。画像はリクエスト処理中のメモリ上で扱われ、処理後に破棄されます。</p>
+    <p>Firestore のクォータ記録では、短時間枠のカウンターは 24 時間後に論理的に期限切れとなり、日次カウンターを含むクォータ記録は最長 30 日で期限切れとなります。これは書類内容の保存ではありません。これとは別に、再利用防止のため使用済みの App Check トークンを Firebase が最長 30 日保持する場合があります。</p>
 
     <h2>Google Gemini Paid Service</h2>
     <p>本番環境の Gemini API キーは active billing が有効な Google Cloud Project に属する Paid Service として運用されます。Google は Paid Service の入力・出力を Google 製品の改善には使用しないと説明しています。ただし、安全性、セキュリティ、不正利用防止、法的義務のために、Google が限定された期間ログを処理する場合があります。また、Google の処理は国や地域をまたぐ場合があります。</p>
 
     <h2>同意しない場合</h2>
-    <p>ユーザーはアップロード前の確認画面でキャンセルできます。キャンセルした場合、画像は送信されず、AI 解析も行われず、カレンダーにも追加されません。</p>
+    <p>ユーザーはアップロード前の確認画面で「キャンセル」を選べます。キャンセルした場合、画像は送信されず、選択中の画像を削除し、AI 解析も予定の追加も行いません。</p>
 
     <h2>カレンダー</h2>
-    <p>カレンダー権限は、ユーザーが確認した予定を iOS のシステムカレンダーへ追加するためだけに使います。既存のカレンダー内容を LifeSnap バックエンドへアップロードしません。</p>
+    <p>カレンダー権限は、ユーザーが抽出結果を確認したあと、初回は「カレンダーの使用を許可」を選んでシステムの権限を許可し、その後「カレンダーに追加」を選び、確認画面で「追加する」を選んで予定を追加するためだけに使います。既存のカレンダー内容を よていスナップ のバックエンドへアップロードしません。</p>
 
     <h2>ログ</h2>
     <p>本番アプリケーションログは、request_id、MIME type、画像サイズ、処理時間、モデル名、HTTP status、抽出ルートなどの運用メタデータに限定します。画像、base64、リクエスト本文、Gemini の生レスポンス、OCR 内容、タイトル、氏名、住所、金額、要約は記録しません。</p>
 
     <h2>削除と撤回</h2>
-    <p>LifeSnap はアカウント、サーバー上の書類アーカイブ、履歴保存を提供していないため、アップロード済み画像のサーバー側削除依頼対象となる LifeSnap 永続データはありません。今後アップロード前の同意を撤回したい場合は、確認画面でキャンセルしてください。</p>
+    <p>よていスナップ はアカウント、サーバー上の書類アーカイブ、履歴保存を提供していません。アップロード済み画像や抽出内容のサーバー側記録はありません。クォータ用 HMAC ダイジェストとカウンターは上記の期限で失効し、元の UUID はバックエンドに保存されません。アップロードしない場合は、確認画面で「キャンセル」を選んでください。</p>
 
     <h2>連絡先と更新</h2>
     <p>プライバシーに関する問い合わせは App Store のサポート連絡先から行ってください。このポリシーを更新する場合は、このページの更新日を変更します。</p>
 
     <h2>English Summary</h2>
-    <p>LifeSnap sends a selected document image to its Google Cloud Run backend and Google Gemini only after the user explicitly taps the upload consent button. LifeSnap does not persist uploaded images or extracted document contents. Google Gemini is used as a Paid Service under an active-billing Google Cloud project; Google does not use Paid Service inputs or outputs to improve Google products, but may process limited logs for safety, abuse prevention, security, and legal obligations.</p>
+    <p>Yotei Snap (よていスナップ) sends a selected document image to its Google Cloud Run backend and Google Gemini only after the user explicitly taps the upload consent button. It uses Firebase App Check with Apple App Attest for app-integrity and replay protection. A random installation UUID remains in the device Keychain; the backend receives it in a request header and stores only an HMAC digest and quota counters in Firestore. Quota records expire within 24 hours or 30 days depending on the counter, while Firebase may retain consumed App Check tokens for replay protection for up to 30 days. Yotei Snap does not persist uploaded images, raw Gemini output, or extracted document contents.</p>
   </main>
 </body>
 </html>`;
-
-class PublicHttpError extends Error {
-  constructor(
-    readonly statusCode: number,
-    readonly code: string,
-    readonly publicMessage: string,
-  ) {
-    super(publicMessage);
-  }
-}
 
 function isAllowedImageMimeType(mimeType: string): boolean {
   return ALLOWED_IMAGE_MIME_TYPES.has(mimeType.toLowerCase());
@@ -126,23 +190,58 @@ function createDefaultGeminiClient(apiKey: string): GeminiClient {
   }) as GeminiClient;
 }
 
-function safeErrorMetadata(error: unknown): LogMetadata {
-  const record = typeof error === "object" && error !== null ? (error as Record<string, unknown>) : {};
-  const name = typeof record.name === "string" ? record.name : "Error";
-  const code =
-    typeof record.code === "string" || typeof record.code === "number" ? record.code : undefined;
-  const status =
-    typeof record.status === "number"
-      ? record.status
-      : typeof record.statusCode === "number"
-        ? record.statusCode
-        : undefined;
-
-  return { error_name: name, upstream_code: code, upstream_status: status };
+function readProperty(
+  value: Record<PropertyKey, unknown>,
+  key: PropertyKey,
+): unknown {
+  try {
+    return value[key];
+  } catch {
+    return undefined;
+  }
 }
 
-function sendJsonError(res: Response, statusCode: number, code: string, message: string) {
-  return res.status(statusCode).json({ code, error: message });
+function safeErrorMetadata(error: unknown): LogMetadata {
+  const record =
+    typeof error === "object" && error !== null
+      ? (error as Record<PropertyKey, unknown>)
+      : undefined;
+  const rawName = record === undefined ? undefined : readProperty(record, "name");
+  const safeNames = new Set([
+    "ApiError",
+    "Error",
+    "PublicHttpError",
+    "SyntaxError",
+    "ZodError",
+  ]);
+  const name =
+    typeof rawName === "string" && safeNames.has(rawName)
+      ? rawName
+      : "Error";
+
+  return { error_name: name };
+}
+
+function publicErrorSnapshot(
+  key: PublicErrorKey,
+): PublicHttpErrorSnapshot {
+  const snapshot = normalizePublicHttpError(
+    createPublicHttpError(key),
+  );
+  if (snapshot === undefined) {
+    throw new Error("PUBLIC_ERROR_CATALOG_INVALID");
+  }
+  return snapshot;
+}
+
+function sendPublicError(
+  res: Response,
+  error: PublicHttpErrorSnapshot,
+) {
+  return res.status(error.statusCode).json({
+    code: error.code,
+    error: error.publicMessage,
+  });
 }
 
 function setExtractNoStoreHeaders(res: Response) {
@@ -150,24 +249,250 @@ function setExtractNoStoreHeaders(res: Response) {
   res.setHeader("Pragma", "no-cache");
 }
 
-function buildUploadMiddleware() {
-  return multer({
+type ExtractionRouteCategory = "legacy" | "v2";
+
+type ExtractionRequestContext = Readonly<{
+  requestId: string;
+  routeCategory: ExtractionRouteCategory;
+}>;
+
+const EXTRACTION_CONTEXTS = new WeakSet<object>();
+
+function startExtractionRequest(
+  routeCategory: ExtractionRouteCategory,
+): RequestHandler {
+  return (_req, res, next) => {
+    setExtractNoStoreHeaders(res);
+    const context = Object.freeze({
+      requestId: crypto.randomUUID(),
+      routeCategory,
+    });
+    EXTRACTION_CONTEXTS.add(context);
+    res.locals.extractionContext = context;
+    next();
+  };
+}
+
+function extractionRequestContext(
+  res: Response,
+): ExtractionRequestContext | undefined {
+  const context = res.locals.extractionContext;
+  if (
+    typeof context !== "object" ||
+    context === null ||
+    !EXTRACTION_CONTEXTS.has(context)
+  ) {
+    return undefined;
+  }
+  return context as ExtractionRequestContext;
+}
+
+const UNCODED_MULTIPART_PARSER_MESSAGES = new Set([
+  "Malformed part header",
+  "Multipart: Boundary not found",
+  "Unexpected end of form",
+]);
+
+function isUncodedMultipartParserError(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) {
+    return false;
+  }
+  const record = error as Record<PropertyKey, unknown>;
+  return (
+    readProperty(record, "code") === undefined &&
+    UNCODED_MULTIPART_PARSER_MESSAGES.has(
+      String(readProperty(record, "message")),
+    )
+  );
+}
+
+function buildUploadMiddleware(
+  invalidTypeError:
+    | "LEGACY_UNSUPPORTED_IMAGE_TYPE"
+    | "V2_UNSUPPORTED_IMAGE_TYPE",
+): RequestHandler {
+  // Multer 2.2 enforces fieldNestingDepth even though @types/multer 1.4
+  // has not added it yet. Busboy 1.6 independently hard-caps each part at
+  // 2,000 headers and 16 KiB of header bytes; its headerPairs option is inert.
+  const uploadLimits: NonNullable<multer.Options["limits"]> & {
+    fieldNestingDepth: number;
+  } = {
+    fieldNameSize: MAX_MULTIPART_FIELD_NAME_CHARACTERS,
+    fieldNestingDepth: 0,
+    fieldSize: 0,
+    fields: 0,
+    fileSize: MAX_IMAGE_BYTES,
+    files: 1,
+    // Busboy 1.6 emits partsLimit when count reaches the cutoff, so 2
+    // permits exactly one image part and rejects any second part.
+    parts: 2,
+  };
+
+  const parseSingleImage = multer({
     storage: multer.memoryStorage(),
-    limits: { fileSize: MAX_IMAGE_BYTES, files: 1 },
+    limits: uploadLimits,
     fileFilter: (_req, file, cb) => {
       if (isAllowedImageMimeType(file.mimetype)) {
         cb(null, true);
       } else {
-        cb(
-          new PublicHttpError(
-            400,
-            "UNSUPPORTED_IMAGE_TYPE",
-            "許可されていない画像形式です。JPEG、PNG、WebP画像のみアップロード可能です。",
-          ),
-        );
+        cb(createPublicHttpError(invalidTypeError));
       }
     },
-  });
+  }).single("image");
+
+  return (req, res, next) => {
+    parseSingleImage(req, res, (error) => {
+      next(
+        isUncodedMultipartParserError(error)
+          ? createPublicHttpError("MULTIPART_REQUEST_INVALID")
+          : error,
+      );
+    });
+  };
+}
+
+function asyncHandler(
+  handler: (
+    req: Request,
+    res: Response,
+    next: NextFunction,
+  ) => Promise<void>,
+): RequestHandler {
+  return (req, res, next) => {
+    void handler(req, res, next).catch(next);
+  };
+}
+
+function requireImage(req: Request): ImageInput {
+  if (!req.file) {
+    throw createPublicHttpError("IMAGE_REQUIRED");
+  }
+
+  return {
+    buffer: req.file.buffer,
+    mimeType: req.file.mimetype,
+  };
+}
+
+const APP_CHECK_ERROR_CODES = new Set<AppCheckRequestErrorCode>([
+  "APP_CHECK_REQUIRED",
+  "APP_CHECK_INVALID",
+  "APP_CHECK_REPLAYED",
+  "APP_ID_FORBIDDEN",
+  "SECURITY_SERVICE_UNAVAILABLE",
+]);
+
+const MALFORMED_MULTIPART_ERROR_CODES = new Set([
+  "LIMIT_FIELD_COUNT",
+  "LIMIT_FIELD_KEY",
+  "LIMIT_FIELD_NESTING",
+  "LIMIT_FIELD_VALUE",
+  "LIMIT_FILE_COUNT",
+  "LIMIT_PART_COUNT",
+  "LIMIT_UNEXPECTED_FILE",
+  "MISSING_FIELD_NAME",
+]);
+
+function appCheckHttpError(error: unknown): Error {
+  if (typeof error === "object" && error !== null) {
+    const code = readProperty(
+      error as Record<PropertyKey, unknown>,
+      "code",
+    );
+    if (
+      typeof code === "string" &&
+      APP_CHECK_ERROR_CODES.has(code as AppCheckRequestErrorCode)
+    ) {
+      return createPublicHttpError(
+        code as AppCheckRequestErrorCode,
+      );
+    }
+  }
+
+  return createPublicHttpError("SECURITY_SERVICE_UNAVAILABLE");
+}
+
+function installationHttpError(error: unknown): Error {
+  if (typeof error === "object" && error !== null) {
+    const code = readProperty(
+      error as Record<PropertyKey, unknown>,
+      "code",
+    );
+    if (code === "INSTALLATION_ID_INVALID") {
+      return createPublicHttpError("INSTALLATION_ID_INVALID");
+    }
+  }
+
+  return createPublicHttpError("SECURITY_SERVICE_UNAVAILABLE");
+}
+
+function quotaHttpError(code: QuotaDeniedCode): Error {
+  return createPublicHttpError(code);
+}
+
+function securityUnavailableError(): Error {
+  return createPublicHttpError("SECURITY_SERVICE_UNAVAILABLE");
+}
+
+function normalizeQuotaDecision(decision: unknown): QuotaDecision {
+  if (typeof decision !== "object" || decision === null) {
+    throw securityUnavailableError();
+  }
+
+  try {
+    const record = decision as Record<PropertyKey, unknown>;
+    const allowed = record.allowed;
+    if (allowed === true) {
+      const crossedThreshold = record.crossedThreshold;
+      if (
+        crossedThreshold !== undefined &&
+        crossedThreshold !== 70 &&
+        crossedThreshold !== 90 &&
+        crossedThreshold !== 100
+      ) {
+        throw securityUnavailableError();
+      }
+      return Object.freeze(
+        crossedThreshold === undefined
+          ? { allowed: true as const }
+          : {
+              allowed: true as const,
+              crossedThreshold,
+            },
+      );
+    }
+
+    if (allowed !== false) {
+      throw securityUnavailableError();
+    }
+
+    const code = record.code;
+    const retryAfterSeconds = record.retryAfterSeconds;
+    if (
+      code !== "INSTALL_RATE_LIMITED" &&
+      code !== "INSTALL_DAILY_LIMITED" &&
+      code !== "SERVICE_DAILY_LIMITED"
+    ) {
+      throw securityUnavailableError();
+    }
+    const maximumRetrySeconds =
+      code === "INSTALL_RATE_LIMITED" ? 60 : 86_400;
+    if (
+      typeof retryAfterSeconds !== "number" ||
+      !Number.isSafeInteger(retryAfterSeconds) ||
+      retryAfterSeconds < 1 ||
+      retryAfterSeconds > maximumRetrySeconds
+    ) {
+      throw securityUnavailableError();
+    }
+    return Object.freeze({
+      allowed: false as const,
+      code,
+      retryAfterSeconds,
+    });
+  } catch {
+    throw securityUnavailableError();
+  }
 }
 
 function buildMockExtraction() {
@@ -199,11 +524,25 @@ function buildMockExtraction() {
 export function createApp(options: CreateAppOptions = {}) {
   const app = express();
   const env = options.env ?? process.env;
-  const logger = options.logger ?? defaultLogger;
-  const createGeminiClient = options.createGeminiClient ?? createDefaultGeminiClient;
+  const logger = createSafeLogger(options.logger ?? defaultLogger);
   const isProduction = env.NODE_ENV === "production";
   const mockModeEnabled = env.MOCK_MODE === "true";
-  const upload = buildUploadMiddleware();
+  const legacyUpload = buildUploadMiddleware(
+    "LEGACY_UNSUPPORTED_IMAGE_TYPE",
+  );
+  const v2Upload = buildUploadMiddleware(
+    "V2_UNSUPPORTED_IMAGE_TYPE",
+  );
+  const security = options.security;
+  const extractionService =
+    options.extractionService ??
+    (env.GEMINI_API_KEY
+      ? createGeminiExtractionService({
+          apiKey: env.GEMINI_API_KEY,
+          model: GEMINI_MODEL,
+          createClient: createDefaultGeminiClient,
+        })
+      : undefined);
 
   if (isProduction && mockModeEnabled) {
     throw new Error("MOCK_MODE must not be enabled when NODE_ENV=production.");
@@ -233,30 +572,98 @@ export function createApp(options: CreateAppOptions = {}) {
     res.type("html").send(PRIVACY_POLICY_HTML);
   });
 
-  app.post("/api/extract", upload.single("image"), async (req, res): Promise<void> => {
-    const requestId = crypto.randomUUID();
-    const startedAt = Date.now();
-    setExtractNoStoreHeaders(res);
+  const requireSecurity: RequestHandler = (_req, _res, next) => {
+    if (security === undefined) {
+      next(createPublicHttpError("SECURITY_SERVICE_UNAVAILABLE"));
+      return;
+    }
+    next();
+  };
+
+  const verifyAppCheck: RequestHandler = asyncHandler(
+    async (req, _res, next) => {
+      try {
+        await security?.appCheckVerifier.verify(
+          req.get("X-Firebase-AppCheck"),
+        );
+      } catch (error) {
+        throw appCheckHttpError(error);
+      }
+      next();
+    },
+  );
+
+  const hashInstallationHeader: RequestHandler = (req, res, next) => {
+    const installationId = req.headers["x-lifesnap-install-id"];
+    if (
+      security === undefined ||
+      typeof installationId !== "string" ||
+      installationId.trim().length === 0
+    ) {
+      next(createPublicHttpError("INSTALLATION_ID_INVALID"));
+      return;
+    }
 
     try {
-      if (!req.file) {
-        sendJsonError(res, 400, "IMAGE_REQUIRED", "画像データが必要です。multipart/form-data の image フィールドで送信してください。");
-        return;
-      }
+      res.locals.installationHash =
+        security.hashInstallationId(installationId);
+      next();
+    } catch (error) {
+      next(installationHttpError(error));
+    }
+  };
 
-      const finalMimeType = req.file.mimetype;
-      const imageSizeBytes = req.file.size;
+  async function consumeQuota(
+    scope:
+      | { kind: "legacy" }
+      | { kind: "v2"; installationHash: string },
+  ): Promise<QuotaDecision> {
+    if (security === undefined) {
+      throw createPublicHttpError("SECURITY_SERVICE_UNAVAILABLE");
+    }
 
-      if (!isAllowedImageMimeType(finalMimeType)) {
-        sendJsonError(res, 400, "UNSUPPORTED_IMAGE_TYPE", "許可されていない画像形式です。JPEG、PNG、WebP画像のみアップロード可能です。");
-        return;
-      }
+    try {
+      const decision = await security.quotaStore.consume(
+        scope,
+        security.now(),
+      );
+      return normalizeQuotaDecision(decision);
+    } catch {
+      throw securityUnavailableError();
+    }
+  }
 
+  function logThreshold(
+    decision: QuotaDecision,
+    routeCategory: "legacy" | "v2",
+  ) {
+    if (decision.allowed && decision.crossedThreshold !== undefined) {
+      logger.warn("quota_threshold", {
+        route_category: routeCategory,
+        threshold_percent: decision.crossedThreshold,
+      });
+    }
+  }
+
+  async function handleExtraction(
+    res: Response,
+    image: ImageInput,
+  ): Promise<void> {
+    const context = extractionRequestContext(res);
+    if (context === undefined) {
+      throw createPublicHttpError("INTERNAL_ERROR");
+    }
+    const requestId = context.requestId;
+    const routeCategory = context.routeCategory;
+    const startedAt = Date.now();
+
+    try {
       logger.info("extract_request", {
         request_id: requestId,
-        mime: finalMimeType,
-        bytes: imageSizeBytes,
+        mime: image.mimeType,
+        bytes: image.buffer.length,
         model: GEMINI_MODEL,
+        route_category: routeCategory,
       });
 
       if (mockModeEnabled) {
@@ -268,8 +675,8 @@ export function createApp(options: CreateAppOptions = {}) {
         const mockResult = buildMockExtraction();
         logger.info("extract_success", {
           request_id: requestId,
-          mime: finalMimeType,
-          bytes: imageSizeBytes,
+          mime: image.mimeType,
+          bytes: image.buffer.length,
           latency_ms: Date.now() - startedAt,
           model: "mock",
           status: 200,
@@ -279,48 +686,16 @@ export function createApp(options: CreateAppOptions = {}) {
         return;
       }
 
-      const geminiApiKey = env.GEMINI_API_KEY;
-      if (!geminiApiKey) {
-        logger.error("extract_configuration_error", {
-          request_id: requestId,
-          code: "GEMINI_KEY_MISSING",
-          status: 503,
-        });
-        sendJsonError(res, 503, "AI_SERVICE_UNAVAILABLE", "AI解析サービスを一時的に利用できません。しばらくしてからもう一度お試しください。");
-        return;
+      if (extractionService === undefined) {
+        throw createPublicHttpError("AI_SERVICE_UNAVAILABLE");
       }
 
-      const ai = createGeminiClient(geminiApiKey);
-      const response = await ai.models.generateContent({
-        model: GEMINI_MODEL,
-        contents: [
-          {
-            inlineData: {
-              mimeType: finalMimeType,
-              data: req.file.buffer.toString("base64"),
-            },
-          },
-          {
-            text: GEMINI_EXTRACTION_PROMPT,
-          },
-        ],
-        config: {
-          responseMimeType: "application/json",
-          responseSchema: geminiResponseSchema,
-        },
-      });
-
-      if (!response.text) {
-        throw new PublicHttpError(502, "AI_EMPTY_RESPONSE", "AI解析サービスから有効な応答を取得できませんでした。");
-      }
-
-      const parsedRaw = JSON.parse(response.text);
-      const validated = validateGeminiExtraction(parsedRaw);
+      const validated = await extractionService.extract(image);
 
       logger.info("extract_success", {
         request_id: requestId,
-        mime: finalMimeType,
-        bytes: imageSizeBytes,
+        mime: image.mimeType,
+        bytes: image.buffer.length,
         latency_ms: Date.now() - startedAt,
         model: GEMINI_MODEL,
         status: 200,
@@ -330,9 +705,8 @@ export function createApp(options: CreateAppOptions = {}) {
       res.json(validated);
     } catch (error: unknown) {
       const publicError =
-        error instanceof PublicHttpError
-          ? error
-          : new PublicHttpError(502, "AI_EXTRACTION_FAILED", "画像の解析中にエラーが発生しました。しばらくしてからもう一度お試しください。");
+        normalizePublicHttpError(error) ??
+        publicErrorSnapshot("AI_EXTRACTION_FAILED");
 
       logger.error("extract_failed", {
         request_id: requestId,
@@ -342,33 +716,130 @@ export function createApp(options: CreateAppOptions = {}) {
         ...safeErrorMetadata(error),
       });
 
-      sendJsonError(res, publicError.statusCode, publicError.code, publicError.publicMessage);
+      sendPublicError(res, publicError);
     }
-  });
+  }
+
+  app.post(
+    "/api/v2/extract",
+    startExtractionRequest("v2"),
+    requireSecurity,
+    verifyAppCheck,
+    hashInstallationHeader,
+    v2Upload,
+    asyncHandler(async (req, res) => {
+      const image = requireImage(req);
+      const decision = await consumeQuota({
+        kind: "v2",
+        installationHash: res.locals.installationHash as string,
+      });
+      if (!decision.allowed) {
+        res.setHeader(
+          "Retry-After",
+          String(decision.retryAfterSeconds),
+        );
+        throw quotaHttpError(decision.code);
+      }
+      const context = extractionRequestContext(res);
+      if (context === undefined) {
+        throw createPublicHttpError("INTERNAL_ERROR");
+      }
+      logThreshold(decision, context.routeCategory);
+      await handleExtraction(res, image);
+    }),
+  );
+
+  app.post(
+    "/api/extract",
+    startExtractionRequest("legacy"),
+    requireSecurity,
+    legacyUpload,
+    asyncHandler(async (req, res) => {
+      const image = requireImage(req);
+      const decision = await consumeQuota({ kind: "legacy" });
+      if (!decision.allowed) {
+        res.setHeader(
+          "Retry-After",
+          String(decision.retryAfterSeconds),
+        );
+        throw quotaHttpError(decision.code);
+      }
+      const context = extractionRequestContext(res);
+      if (context === undefined) {
+        throw createPublicHttpError("INTERNAL_ERROR");
+      }
+      logThreshold(decision, context.routeCategory);
+      await handleExtraction(res, image);
+    }),
+  );
 
   const errorHandler: ErrorRequestHandler = (err, req: Request, res: Response, _next) => {
-    if (req.path === "/api/extract") {
+    const context = extractionRequestContext(res);
+    const isExtractionRoute = context !== undefined;
+    const routeCategory = context?.routeCategory;
+    const requestId = context?.requestId ?? crypto.randomUUID();
+    if (isExtractionRoute) {
       setExtractNoStoreHeaders(res);
     }
 
-    if (err instanceof PublicHttpError) {
-      sendJsonError(res, err.statusCode, err.code, err.publicMessage);
+    const publicError = normalizePublicHttpError(err);
+    if (publicError !== undefined) {
+      logger.warn("extract_rejected", {
+        request_id: requestId,
+        route_category: routeCategory,
+        status: publicError.statusCode,
+        code: publicError.code,
+      });
+      sendPublicError(res, publicError);
       return;
     }
 
-    if (err instanceof multer.MulterError && err.code === "LIMIT_FILE_SIZE") {
-      sendJsonError(res, 400, "IMAGE_TOO_LARGE", "画像サイズが大きすぎます。10MB以下の画像をアップロードしてください。");
+    const errorCode =
+      typeof err === "object" && err !== null
+        ? readProperty(err as Record<PropertyKey, unknown>, "code")
+        : undefined;
+    if (errorCode === "LIMIT_FILE_SIZE" && isExtractionRoute) {
+      const tooLargeError = publicErrorSnapshot(
+        routeCategory === "v2"
+          ? "V2_IMAGE_TOO_LARGE"
+          : "LEGACY_IMAGE_TOO_LARGE",
+      );
+      logger.warn("extract_rejected", {
+        request_id: requestId,
+        route_category: routeCategory,
+        status: tooLargeError.statusCode,
+        code: tooLargeError.code,
+      });
+      sendPublicError(res, tooLargeError);
+      return;
+    }
+    if (
+      typeof errorCode === "string" &&
+      MALFORMED_MULTIPART_ERROR_CODES.has(errorCode) &&
+      isExtractionRoute
+    ) {
+      const multipartError = publicErrorSnapshot(
+        "MULTIPART_REQUEST_INVALID",
+      );
+      logger.warn("extract_rejected", {
+        request_id: requestId,
+        route_category: routeCategory,
+        status: multipartError.statusCode,
+        code: multipartError.code,
+      });
+      sendPublicError(res, multipartError);
       return;
     }
 
+    const internalError = publicErrorSnapshot("INTERNAL_ERROR");
     logger.error("request_failed", {
-      request_id: crypto.randomUUID(),
+      request_id: requestId,
       route: req.path,
-      status: 500,
+      status: internalError.statusCode,
       ...safeErrorMetadata(err),
     });
 
-    sendJsonError(res, 500, "INTERNAL_ERROR", "サーバーエラーが発生しました。");
+    sendPublicError(res, internalError);
   };
 
   app.use(errorHandler);
@@ -376,8 +847,31 @@ export function createApp(options: CreateAppOptions = {}) {
   return app;
 }
 
+export type ProductionAppDependencies = {
+  buildRuntimeSecurity: (
+    env: NodeJS.ProcessEnv,
+  ) => SecurityDependencies;
+  createApp: (
+    options: CreateAppOptions,
+  ) => ReturnType<typeof createApp>;
+};
+
+const productionAppDependencies: ProductionAppDependencies = {
+  buildRuntimeSecurity,
+  createApp,
+};
+
+export function createProductionApp(
+  env: NodeJS.ProcessEnv = process.env,
+  dependencies: ProductionAppDependencies =
+    productionAppDependencies,
+) {
+  const security = dependencies.buildRuntimeSecurity(env);
+  return dependencies.createApp({ env, security });
+}
+
 if (!process.env.VITEST && process.env.NODE_ENV !== "test") {
-  createApp().listen(PORT, "0.0.0.0", () => {
-    defaultLogger.info("server_started", { port: PORT });
+  createProductionApp().listen(PORT, "0.0.0.0", () => {
+    safeDefaultLogger.info("server_started", { port: PORT });
   });
 }

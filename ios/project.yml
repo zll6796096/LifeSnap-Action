@@ -1,6 +1,10 @@
 name: LifeSnapAction
 options:
   bundleIdPrefix: com.zll
+packages:
+  Firebase:
+    url: https://github.com/firebase/firebase-ios-sdk
+    exactVersion: 12.17.0
 targets:
   LifeSnapAction:
     type: application
@@ -10,17 +14,25 @@ targets:
       - path: LifeSnapAction
         excludes:
           - Info.plist
+    dependencies:
+      - package: Firebase
+        product: FirebaseCore
+      - package: Firebase
+        product: FirebaseAppCheck
+      - sdk: Security.framework
     settings:
+      API_BASE_URL: https://lifesnap-action-sxielk4wua-an.a.run.app
       PRODUCT_BUNDLE_IDENTIFIER: com.zll.lifesnapaction
       INFOPLIST_FILE: LifeSnapAction/Info.plist
       GENERATE_INFOPLIST_FILE: "NO"
       TARGETED_DEVICE_FAMILY: "1"
-      MARKETING_VERSION: "1.0"
-      CURRENT_PROJECT_VERSION: "3"
+      MARKETING_VERSION: "1.1"
+      CURRENT_PROJECT_VERSION: "4"
       ASHER_IS_IPHONE_TARGET: "YES"
       IPHONEOS_DEPLOYMENT_TARGET: "17.0"
       SWIFT_VERSION: "5.9"
       DEVELOPMENT_TEAM: "" # Leave empty for local building
+      CODE_SIGN_ENTITLEMENTS: LifeSnapAction/LifeSnapAction.entitlements
   LifeSnapActionTests:
     type: bundle.unit-test
     platform: iOS

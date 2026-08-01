@@ -10,6 +10,9 @@ coverage/
 # macOS
 .DS_Store
 
+# Isolated development worktrees
+.worktrees/
+
 # Xcode / iOS
 *.xcuserdata/
 xcuserdata/

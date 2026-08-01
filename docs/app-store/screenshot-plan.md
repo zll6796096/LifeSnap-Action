@@ -1,10 +1,10 @@
-# LifeSnap Action Screenshot Plan
+# よていスナップ Screenshot Plan
 
 ## Required Devices
 
-- iPhone 6.7-inch or current App Store Connect required large iPhone size.
-- iPhone 6.1-inch or current App Store Connect required standard iPhone size.
-- iPad screenshots only if the release is submitted as an iPad app. Current target device family includes iPhone and iPad, so confirm whether iPad support is intentional before submission.
+- The current app target is iPhone-only (`TARGETED_DEVICE_FAMILY = 1`); do not prepare or upload iPad screenshots.
+- Prepare one Japanese 6.9-inch iPhone portrait set using one Apple-accepted size consistently: 1260 × 2736, 1290 × 2796, or 1320 × 2868 pixels.
+- Provide between one and ten screenshots. Use the highest-resolution set so App Store Connect can scale it for smaller iPhone displays.
 
 ## Screenshots
 
@@ -22,3 +22,5 @@
 - Do not show real names, addresses, financial amounts, phone numbers, student names, or private calendar data.
 - Use Japanese screenshots for the Japanese App Store listing.
 - Keep the displayed flow aligned with Scan -> Confirm -> Schedule.
+- Screenshots must use the approved Apple-native UI and the よていスナップ brand.
+- Do not show the old LifeSnap icon, old launch name, mock badges, or personal document data.
