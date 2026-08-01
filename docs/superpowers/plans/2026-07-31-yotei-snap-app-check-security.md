@@ -4941,9 +4941,57 @@ Expected: clean worktree and only approved security/rebrand scope.
 - Modify: `docs/release/yotei-snap-v1.1-app-store-release-gate.md`
 - External state: branch publication/merge, Cloud Build, Cloud Run traffic
 
-- [ ] **Step 1: Publish the reviewed source needed by the release provenance gate**
+- [ ] **Step 1: Snapshot and disable the automatic main trigger before publishing**
 
-Use the finishing-development-branch workflow. Push only the reviewed branch, create or update one PR, wait for required CI, and merge only if the repository’s current branch policy permits it. Re-read `origin/main` afterward and require the merge commit contains every Gate A commit.
+Identify the one global automatic trigger for this repository's `main` branch by
+its exact regional trigger UUID. Before the first merge, capture its complete
+REST representation to a private local file, record its prior boolean
+`disabled` state, disable only that field with `updateMask=disabled`, and verify
+the read-back. Do not print the access token or the snapshot contents.
+
+```bash
+umask 077
+project_id=zhang23-23
+trigger_region=asia-northeast1
+trigger_id="<exact reviewed main-trigger UUID>"
+trigger_api="https://cloudbuild.googleapis.com/v1/projects/${project_id}/locations/${trigger_region}/triggers/${trigger_id}"
+trigger_snapshot_path="$(mktemp "${TMPDIR:-/tmp}/lifesnap-main-trigger.XXXXXXXX.json")"
+trigger_patch_path="$(mktemp "${TMPDIR:-/tmp}/lifesnap-main-trigger-patch.XXXXXXXX.json")"
+trigger_readback_path="$(mktemp "${TMPDIR:-/tmp}/lifesnap-main-trigger-readback.XXXXXXXX.json")"
+chmod 600 "${trigger_snapshot_path}" "${trigger_patch_path}" "${trigger_readback_path}"
+access_token="$(gcloud auth print-access-token)"
+
+curl --fail --silent --show-error \
+  --header "Authorization: Bearer ${access_token}" \
+  --output "${trigger_snapshot_path}" \
+  "${trigger_api}"
+prior_trigger_disabled="$(
+  jq -er 'if has("disabled") then .disabled else false end | select(type == "boolean")' \
+    "${trigger_snapshot_path}"
+)"
+jq -n '{disabled: true}' > "${trigger_patch_path}"
+curl --fail --silent --show-error \
+  --request PATCH \
+  --header "Authorization: Bearer ${access_token}" \
+  --header 'Content-Type: application/json' \
+  --data-binary "@${trigger_patch_path}" \
+  --output "${trigger_readback_path}" \
+  "${trigger_api}?updateMask=disabled"
+jq -e '.disabled == true' "${trigger_readback_path}" >/dev/null
+curl --fail --silent --show-error \
+  --header "Authorization: Bearer ${access_token}" \
+  "${trigger_api}" |
+  jq -e '.disabled == true' >/dev/null
+unset access_token
+```
+
+Keep the private snapshot until restoration is verified. If any snapshot,
+PATCH, or verification step fails, stop before publishing. Use the
+finishing-development-branch workflow only after the trigger is proven
+disabled. Push only the reviewed branch, create or update one PR, wait for
+required CI, and merge only if the repository's current branch policy permits
+it. Re-read `origin/main` afterward and require the merge commit contains every
+Gate A commit.
 
 Do not stage with `git add .`; list exact changed paths.
 
@@ -4965,9 +5013,34 @@ commit omits any Gate A commit, or any Gate B result differs from the reviewed
 assumptions, stop before candidate creation. A passing preflight is not
 candidate, deployment, traffic, or production acceptance evidence.
 
+```bash
+git fetch origin main
+merged_sha="$(git rev-parse origin/main)"
+test -n "${merged_sha}"
+access_token="$(gcloud auth print-access-token)"
+curl --fail --silent --show-error \
+  --header "Authorization: Bearer ${access_token}" \
+  "${trigger_api}" |
+  jq -e '.disabled == true' >/dev/null
+unset access_token
+```
+
+The fresh Gate B record must name `${merged_sha}` and the trigger must remain
+disabled throughout Gate B and the candidate/manual release sequence.
+
 - [ ] **Step 3: Trigger the candidate-only Cloud Build**
 
-Submit the exact merged `origin/main` source through the existing regional trigger or an equivalent build whose `COMMIT_SHA` equals remote main. Record:
+Manually run the disabled regional trigger against the exact merged SHA. Do not
+re-enable its automatic `main` event to create the candidate:
+
+```bash
+gcloud builds triggers run "${trigger_id}" \
+  --project="${project_id}" \
+  --region="${trigger_region}" \
+  --sha="${merged_sha}"
+```
+
+Require the resulting build's `COMMIT_SHA` to equal `${merged_sha}`. Record:
 
 - build ID;
 - source commit;
@@ -5086,6 +5159,12 @@ Do not record token, installation UUID/HMAC, image contents, or extracted JSON f
 Run the separate promotion script with the exact observed values and evidence file:
 
 ```bash
+promotion_state_directory="$(mktemp -d "${TMPDIR:-/tmp}/lifesnap-gate-e.XXXXXXXX")"
+chmod 700 "${promotion_state_directory}"
+promotion_state_file="${promotion_state_directory}/pending-promotion.json"
+
+PROMOTION_MODE=promote \
+PROMOTION_STATE_FILE="${promotion_state_file}" \
 CANDIDATE_REVISION="${candidate_revision}" \
 CANDIDATE_TAG="${candidate_tag}" \
 EXPECTED_IMAGE_DIGEST="${image_digest}" \
@@ -5097,7 +5176,13 @@ SERVICE_NAME=lifesnap-action \
 ./scripts/promote-verified-candidate.sh
 ```
 
-Expected: a resource-version-conditional promotion to one untagged 100% candidate target. If any ownership or digest check differs, no mutation occurs.
+Expected: a resource-version-conditional promotion to one untagged 100%
+candidate target followed by `promotion_result=PENDING_GATE_E`. The script
+persists a sanitized `0600` pending-state file only after its built-in
+production smokes pass. Preserve that file without editing it until Gate E is
+finalized or rolled back. If any pre-persistence ownership, digest, or smoke
+check fails, the in-process conditional rollback remains responsible for
+restoring the previous traffic.
 
 - [ ] **Step 8: Run Gate E production smoke**
 
@@ -5114,7 +5199,36 @@ Verify:
 - production traffic, latest created/ready, image digest, source labels, secrets, environment, and contract label are exact;
 - logs contain no forbidden values.
 
-If the valid production v2 smoke fails, use the promotion script’s ownership-safe rollback before distributing Build 4. Do not weaken App Check or quota.
+If every Gate E check passes, finalize the exact pending ownership before
+distributing Build 4:
+
+```bash
+PROMOTION_MODE=finalize \
+PROMOTION_STATE_FILE="${promotion_state_file}" \
+PROJECT_ID=zhang23-23 \
+DEPLOY_REGION=asia-northeast1 \
+SERVICE_NAME=lifesnap-action \
+./scripts/promote-verified-candidate.sh
+```
+
+If any Gate E check fails, run the ownership-safe pending rollback instead:
+
+```bash
+PROMOTION_MODE=rollback \
+PROMOTION_STATE_FILE="${promotion_state_file}" \
+PROJECT_ID=zhang23-23 \
+DEPLOY_REGION=asia-northeast1 \
+SERVICE_NAME=lifesnap-action \
+./scripts/promote-verified-candidate.sh
+```
+
+Finalize must re-read and match the saved resource version, ownership,
+exclusive candidate traffic, source commit, image digest, runtime identity,
+and concurrency before deleting the state. Rollback must make a conditional
+replacement only while those values remain owned, restore the exact saved
+pre-promotion traffic and provenance, verify reconciliation, and then delete
+the state. Any failure preserves the state for investigation and a deliberate
+retry. Do not weaken App Check or quota.
 
 - [ ] **Step 9: Commit sanitized evidence**
 
@@ -5123,6 +5237,46 @@ git add \
   docs/verification/yotei-snap-security/device-app-attest-smoke.txt \
   docs/release/yotei-snap-v1.1-app-store-release-gate.md
 git commit -m "docs: record app check production evidence"
+```
+
+Publish this sanitized evidence through the same reviewed branch/PR/CI policy,
+merge it, and re-read `origin/main`. Do not restore the automatic trigger before
+all release and evidence mutations to `main` are complete.
+
+- [ ] **Step 10: Restore the exact prior automatic-trigger disabled state**
+
+Only after the release/evidence merge is verified on `origin/main`, PATCH the
+same trigger's `disabled` field back to the saved boolean. Verify a fresh GET
+matches the saved value, then remove the private trigger files. If PATCH or
+verification fails, keep the snapshot and report the trigger as not restored.
+
+```bash
+access_token="$(gcloud auth print-access-token)"
+jq -n \
+  --argjson disabled "${prior_trigger_disabled}" \
+  '{disabled: $disabled}' > "${trigger_patch_path}"
+curl --fail --silent --show-error \
+  --request PATCH \
+  --header "Authorization: Bearer ${access_token}" \
+  --header 'Content-Type: application/json' \
+  --data-binary "@${trigger_patch_path}" \
+  --output "${trigger_readback_path}" \
+  "${trigger_api}?updateMask=disabled"
+jq -e \
+  --argjson disabled "${prior_trigger_disabled}" \
+  '(.disabled // false) == $disabled' \
+  "${trigger_readback_path}" >/dev/null
+curl --fail --silent --show-error \
+  --header "Authorization: Bearer ${access_token}" \
+  "${trigger_api}" |
+  jq -e \
+    --argjson disabled "${prior_trigger_disabled}" \
+    '(.disabled // false) == $disabled' >/dev/null
+unset access_token
+rm -f -- \
+  "${trigger_snapshot_path}" \
+  "${trigger_patch_path}" \
+  "${trigger_readback_path}"
 ```
 
 ### Task 15: Establish the legacy retirement observation gate

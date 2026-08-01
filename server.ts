@@ -287,11 +287,29 @@ function extractionRequestContext(
   return context as ExtractionRequestContext;
 }
 
+const UNCODED_MULTIPART_PARSER_MESSAGES = new Set([
+  "Multipart: Boundary not found",
+  "Unexpected end of form",
+]);
+
+function isUncodedMultipartParserError(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) {
+    return false;
+  }
+  const record = error as Record<PropertyKey, unknown>;
+  return (
+    readProperty(record, "code") === undefined &&
+    UNCODED_MULTIPART_PARSER_MESSAGES.has(
+      String(readProperty(record, "message")),
+    )
+  );
+}
+
 function buildUploadMiddleware(
   invalidTypeError:
     | "LEGACY_UNSUPPORTED_IMAGE_TYPE"
     | "V2_UNSUPPORTED_IMAGE_TYPE",
-) {
+): RequestHandler {
   // Multer 2.2 enforces fieldNestingDepth even though @types/multer 1.4
   // has not added it yet. Busboy 1.6 independently hard-caps each part at
   // 2,000 headers and 16 KiB of header bytes; its headerPairs option is inert.
@@ -309,7 +327,7 @@ function buildUploadMiddleware(
     parts: 2,
   };
 
-  return multer({
+  const parseSingleImage = multer({
     storage: multer.memoryStorage(),
     limits: uploadLimits,
     fileFilter: (_req, file, cb) => {
@@ -319,7 +337,17 @@ function buildUploadMiddleware(
         cb(createPublicHttpError(invalidTypeError));
       }
     },
-  });
+  }).single("image");
+
+  return (req, res, next) => {
+    parseSingleImage(req, res, (error) => {
+      next(
+        isUncodedMultipartParserError(error)
+          ? createPublicHttpError("MULTIPART_REQUEST_INVALID")
+          : error,
+      );
+    });
+  };
 }
 
 function asyncHandler(
@@ -697,7 +725,7 @@ export function createApp(options: CreateAppOptions = {}) {
     requireSecurity,
     verifyAppCheck,
     hashInstallationHeader,
-    v2Upload.single("image"),
+    v2Upload,
     asyncHandler(async (req, res) => {
       const image = requireImage(req);
       const decision = await consumeQuota({
@@ -724,7 +752,7 @@ export function createApp(options: CreateAppOptions = {}) {
     "/api/extract",
     startExtractionRequest("legacy"),
     requireSecurity,
-    legacyUpload.single("image"),
+    legacyUpload,
     asyncHandler(async (req, res) => {
       const image = requireImage(req);
       const decision = await consumeQuota({ kind: "legacy" });

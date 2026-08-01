@@ -1,11 +1,14 @@
 import { spawnSync } from "node:child_process";
 import {
   chmod,
+  link,
+  lstat,
   mkdir,
   mkdtemp,
   readdir,
   readFile,
   realpath,
+  rename,
   rm,
   symlink,
   writeFile,
@@ -20,6 +23,10 @@ const repoRoot = fileURLToPath(new URL("../../../", import.meta.url));
 const configPath = join(repoRoot, "cloudbuild.yaml");
 const dockerfilePath = join(repoRoot, "Dockerfile");
 const packagePath = join(repoRoot, "package.json");
+const securityPlanPath = join(
+  repoRoot,
+  "docs/superpowers/plans/2026-07-31-yotei-snap-app-check-security.md",
+);
 const releaseScriptPath = join(repoRoot, "scripts/promote-and-verify.sh");
 const promotionScriptPath = join(
   repoRoot,
@@ -349,10 +356,15 @@ describe("Cloud Build release contract", () => {
 
   it("smokes legacy success and stable no-store v2 rejections", async () => {
     const script = await readFile(releaseScriptPath, "utf8");
+    const legacyEndpoint = script.indexOf('"${candidate_url}/api/extract"');
+    const legacyCommandStart = script.lastIndexOf("\n  curl ", legacyEndpoint);
+    const legacyCommand = script.slice(legacyCommandStart, legacyEndpoint);
 
     expect(script).toContain('"${candidate_url}/health"');
     expect(script).toContain('"${candidate_url}/privacy"');
     expect(script).toContain('"${candidate_url}/api/extract"');
+    expect(legacyCommand).not.toContain("--retry");
+    expect(legacyCommand).not.toContain("--retry-all-errors");
     expect(script.match(/  verify_negative_v2_response \\$/gm)).toHaveLength(2);
     expect(script).toContain('"missing-token"');
     expect(script).toContain('"invalid-token"');
@@ -388,6 +400,20 @@ describe("Cloud Build release contract", () => {
     expect(script).not.toContain("APP_CHECK_TOKEN");
   });
 
+  it("documents disabled-trigger exact-SHA execution and two-phase cutover commands", async () => {
+    const plan = await readFile(securityPlanPath, "utf8");
+
+    expect(plan).toContain("trigger_snapshot_path=");
+    expect(plan).toContain("updateMask=disabled");
+    expect(plan).toContain("'{disabled: true}'");
+    expect(plan).toContain('--sha="${merged_sha}"');
+    expect(plan).toContain("prior_trigger_disabled");
+    expect(plan).toContain("PROMOTION_MODE=promote");
+    expect(plan).toContain("PROMOTION_MODE=finalize");
+    expect(plan).toContain("PROMOTION_MODE=rollback");
+    expect(plan).toContain("PROMOTION_STATE_FILE");
+  });
+
   it("promotes only the exact candidate named by sanitized device evidence", async () => {
     const fixture = await createReleaseFixture();
     const candidateResult = runReleaseScript(fixture);
@@ -407,6 +433,234 @@ describe("Cloud Build release contract", () => {
     expect(state.metadata.labels).toMatchObject({
       "managed-by": "verified-device-promotion",
       "source-commit": fixture.commitSha,
+    });
+  });
+
+  it("persists a sanitized private pending state and finalizes the exact owned promotion", async () => {
+    const fixture = await createReleaseFixture();
+    expect(runReleaseScript(fixture).status).toBe(0);
+    const evidence = await writeDeviceEvidence(fixture);
+
+    const promotion = runPromotionScript(fixture, evidence);
+
+    expect(promotion.status, promotion.stderr).toBe(0);
+    expect(promotion.stdout).toContain("promotion_result=PENDING_GATE_E");
+    const details = await lstat(fixture.promotionState);
+    expect(details.isFile()).toBe(true);
+    expect(details.isSymbolicLink()).toBe(false);
+    expect(details.mode & 0o777).toBe(0o600);
+    const pending = JSON.parse(
+      await readFile(fixture.promotionState, "utf8"),
+    ) as Record<string, unknown>;
+    expect(Object.keys(pending).sort()).toEqual([
+      "candidate_container_concurrency",
+      "candidate_revision",
+      "candidate_tag",
+      "deploy_region",
+      "expected_image_digest",
+      "expected_source_commit",
+      "prepromotion_provenance",
+      "prepromotion_status_traffic",
+      "prepromotion_traffic",
+      "project_id",
+      "promoted_resource_version",
+      "promotion_owner",
+      "runtime_service_account",
+      "schema_version",
+      "service_name",
+    ].sort());
+    expect(pending).toMatchObject({
+      schema_version: 1,
+      project_id: "test-project",
+      deploy_region: "asia-northeast1",
+      service_name: "lifesnap-action",
+      candidate_revision: fixture.candidateRevision,
+      candidate_tag: fixture.candidateTag,
+      expected_image_digest: fixture.imageDigest,
+      expected_source_commit: fixture.commitSha,
+      runtime_service_account:
+        "lifesnap-runtime@zhang23-23.iam.gserviceaccount.com",
+      candidate_container_concurrency: 4,
+    });
+    expect(JSON.stringify(pending)).not.toMatch(
+      /access[_-]?token|credential|installation|request[_-]?id|secret/i,
+    );
+
+    const finalized = runPromotionScript(fixture, evidence, {
+      mode: "finalize",
+    });
+
+    expect(finalized.status, finalized.stderr).toBe(0);
+    expect(finalized.stdout).toContain("promotion_finalize=PASS");
+    await expect(lstat(fixture.promotionState)).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  });
+
+  it("rolls back a pending owned promotion to exact pre-promotion traffic", async () => {
+    const fixture = await createReleaseFixture();
+    expect(runReleaseScript(fixture).status).toBe(0);
+    const evidence = await writeDeviceEvidence(fixture);
+    const promoted = runPromotionScript(fixture, evidence);
+    expect(promoted.status, promoted.stderr).toBe(0);
+
+    const rolledBack = runPromotionScript(fixture, evidence, {
+      mode: "rollback",
+    });
+    const state = await readServiceState(fixture);
+
+    expect(rolledBack.status, rolledBack.stderr).toBe(0);
+    expect(rolledBack.stderr).toContain(
+      `promotion_rollback=PASS revision=${fixture.rollbackRevision}`,
+    );
+    expect(state.spec.traffic).toEqual([
+      { percent: 100, revisionName: fixture.rollbackRevision },
+      {
+        latestRevision: true,
+        percent: 0,
+        tag: fixture.candidateTag,
+      },
+    ]);
+    await expect(lstat(fixture.promotionState)).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  });
+
+  it("preserves pending state when finalize no longer owns the resource version", async () => {
+    const fixture = await createReleaseFixture();
+    expect(runReleaseScript(fixture).status).toBe(0);
+    const evidence = await writeDeviceEvidence(fixture);
+    const promoted = runPromotionScript(fixture, evidence);
+    expect(promoted.status, promoted.stderr).toBe(0);
+    const state = await readServiceState(fixture);
+    state.metadata.resourceVersion = "rv-99";
+    await writeFile(fixture.serviceState, `${JSON.stringify(state)}\n`);
+
+    const finalized = runPromotionScript(fixture, evidence, {
+      mode: "finalize",
+    });
+
+    expect(finalized.status).not.toBe(0);
+    expect(finalized.stderr).toContain("resourceVersion");
+    expect((await lstat(fixture.promotionState)).isFile()).toBe(true);
+  });
+
+  it("rejects corrupt, symlinked, and hard-linked pending state", async () => {
+    for (const stateForm of ["corrupt", "symlink", "hardlink"] as const) {
+      const fixture = await createReleaseFixture();
+      expect(runReleaseScript(fixture).status).toBe(0);
+      const evidence = await writeDeviceEvidence(fixture);
+      expect(runPromotionScript(fixture, evidence).status).toBe(0);
+
+      if (stateForm === "corrupt") {
+        await writeFile(fixture.promotionState, "{not-json}\n");
+      } else if (stateForm === "symlink") {
+        const originalState = `${fixture.promotionState}.original`;
+        await rename(fixture.promotionState, originalState);
+        await symlink(originalState, fixture.promotionState);
+      } else {
+        await link(fixture.promotionState, `${fixture.promotionState}.hardlink`);
+      }
+
+      const finalized = runPromotionScript(fixture, evidence, {
+        mode: "finalize",
+      });
+
+      expect(finalized.status, stateForm).not.toBe(0);
+      const details = await lstat(fixture.promotionState);
+      if (stateForm === "symlink") {
+        expect(details.isSymbolicLink()).toBe(true);
+      } else {
+        expect(details.isFile()).toBe(true);
+      }
+    }
+  }, 15_000);
+
+  it("preserves a post-load replacement instead of deleting a different inode", async () => {
+    const fixture = await createReleaseFixture();
+    expect(runReleaseScript(fixture).status).toBe(0);
+    const evidence = await writeDeviceEvidence(fixture);
+    expect(runPromotionScript(fixture, evidence).status).toBe(0);
+    fixture.env.REPLACE_PROMOTION_STATE_ON_AUTH = "1";
+
+    const finalized = runPromotionScript(fixture, evidence, {
+      mode: "finalize",
+    });
+
+    expect(finalized.status).not.toBe(0);
+    expect(finalized.stderr).toContain("identity changed");
+    expect((await lstat(fixture.promotionState)).isFile()).toBe(true);
+  });
+
+  it("preserves pending state and traffic when rollback ownership is foreign", async () => {
+    const fixture = await createReleaseFixture();
+    expect(runReleaseScript(fixture).status).toBe(0);
+    const evidence = await writeDeviceEvidence(fixture);
+    expect(runPromotionScript(fixture, evidence).status).toBe(0);
+    const state = await readServiceState(fixture);
+    state.spec.traffic = [
+      { percent: 100, revisionName: "lifesnap-action-00100-foreign" },
+    ];
+    state.status.traffic = state.spec.traffic;
+    await writeFile(fixture.serviceState, `${JSON.stringify(state)}\n`);
+    const callsBefore = await readFile(fixture.curlLog, "utf8");
+
+    const rolledBack = runPromotionScript(fixture, evidence, {
+      mode: "rollback",
+    });
+    const callsAfter = await readFile(fixture.curlLog, "utf8");
+
+    expect(rolledBack.status).not.toBe(0);
+    expect(rolledBack.stderr).toContain("traffic no longer matches");
+    expect(mutationCalls(callsAfter)).toEqual(mutationCalls(callsBefore));
+    expect((await lstat(fixture.promotionState)).isFile()).toBe(true);
+  });
+
+  it("preserves pending state when rollback reconciliation fails", async () => {
+    const fixture = await createReleaseFixture({
+      delayRollbackReconciliation: true,
+      neverRollbackReconciliation: true,
+    });
+    fixture.env.ROLLBACK_MAX_ATTEMPTS = "2";
+    expect(runReleaseScript(fixture).status).toBe(0);
+    const evidence = await writeDeviceEvidence(fixture);
+    expect(runPromotionScript(fixture, evidence).status).toBe(0);
+
+    const rolledBack = runPromotionScript(fixture, evidence, {
+      mode: "rollback",
+    });
+
+    expect(rolledBack.status).not.toBe(0);
+    expect(rolledBack.stderr).toContain(
+      "promotion_rollback_reconciliation=TIMEOUT attempts=2",
+    );
+    expect(rolledBack.stderr).not.toContain("promotion_rollback=PASS");
+    expect((await lstat(fixture.promotionState)).isFile()).toBe(true);
+  });
+
+  it("recovers owned traffic after SIGTERM before pending state persistence", async () => {
+    const fixture = await createReleaseFixture({ termAfterPromotion: true });
+    expect(runReleaseScript(fixture).status).toBe(0);
+    const evidence = await writeDeviceEvidence(fixture);
+
+    const promotion = runPromotionScript(fixture, evidence);
+    const state = await readServiceState(fixture);
+
+    expect(promotion.status).not.toBe(0);
+    expect(promotion.stderr).toContain(
+      `promotion_rollback=PASS revision=${fixture.rollbackRevision}`,
+    );
+    expect(state.metadata.labels).toEqual(fixture.initialLabels);
+    expect(state.spec.traffic).toEqual([
+      { percent: 100, revisionName: fixture.rollbackRevision },
+      {
+        latestRevision: true,
+        percent: 0,
+        tag: fixture.candidateTag,
+      },
+    ]);
+    await expect(lstat(fixture.promotionState)).rejects.toMatchObject({
+      code: "ENOENT",
     });
   });
 
@@ -667,7 +921,8 @@ describe("Cloud Build release contract", () => {
     const evidence = await writeDeviceEvidence(fixture);
 
     expect(runPromotionScript(fixture, evidence).status).toBe(0);
-    runPromotionScript(fixture, evidence);
+    expect(runPromotionScript(fixture, evidence, { mode: "finalize" }).status)
+      .toBe(0);
     const calls = await readFile(fixture.curlLog, "utf8");
     const scratchEntries = calls
       .split("\n")
@@ -803,6 +1058,7 @@ type ReleaseFixture = {
   initialLabels: Record<string, string>;
   rollbackRevision: string;
   serviceState: string;
+  promotionState: string;
   workspace: string;
 };
 
@@ -832,6 +1088,7 @@ async function createReleaseFixture(
   const rollbackRevision = "lifesnap-action-00098-safe";
   const candidateTag = "candidate-aaaaaaa-build123";
   const serviceState = join(root, "service-state.json");
+  const promotionState = join(root, "pending-promotion.json");
   const candidateSnapshot = join(root, "candidate-snapshot.json");
   const curlLog = join(root, "curl.log");
   const staleInjectionFlag = join(root, "stale-injected");
@@ -943,6 +1200,18 @@ const value = (prefix) => {
   return item ? item.slice(prefix.length + 1) : "";
 };
 if (text === "auth print-access-token") {
+  if (
+    process.env.REPLACE_PROMOTION_STATE_ON_AUTH === "1" &&
+    fs.existsSync(process.env.PROMOTION_STATE_FILE)
+  ) {
+    const replacement = process.env.PROMOTION_STATE_FILE + ".replacement";
+    fs.writeFileSync(
+      replacement,
+      fs.readFileSync(process.env.PROMOTION_STATE_FILE),
+      { mode: 0o600 },
+    );
+    fs.renameSync(replacement, process.env.PROMOTION_STATE_FILE);
+  }
   process.stdout.write("fake-access-token\\n");
 } else if (text.includes("run services describe ")) {
   process.stdout.write(JSON.stringify(readState()) + "\\n");
@@ -1368,6 +1637,7 @@ if (url === serviceUrl && method === "GET") {
         options.neverRollbackReconciliation ? "1" : "0",
       PATH: `${binDirectory}:${process.env.PATH}`,
       PROJECT_ID: "test-project",
+      PROMOTION_STATE_FILE: promotionState,
       RELEASE_WORKSPACE: workspace,
       ROLLBACK_MAX_ATTEMPTS: "5",
       ROLLBACK_PENDING_FLAG: rollbackPendingFlag,
@@ -1387,6 +1657,7 @@ if (url === serviceUrl && method === "GET") {
     initialLabels,
     rollbackRevision,
     serviceState,
+    promotionState,
     workspace,
   };
 }
@@ -1403,7 +1674,7 @@ function runReleaseScript(fixture: ReleaseFixture) {
 function runPromotionScript(
   fixture: ReleaseFixture,
   evidence: string,
-  options: { cwd?: string } = {},
+  options: { cwd?: string; mode?: "finalize" | "promote" | "rollback" } = {},
 ) {
   return spawnSync("bash", [promotionScriptPath], {
     cwd: options.cwd ?? repoRoot,
@@ -1415,6 +1686,8 @@ function runPromotionScript(
       DEVICE_SMOKE_EVIDENCE: evidence,
       EXPECTED_IMAGE_DIGEST: fixture.imageDigest,
       EXPECTED_SOURCE_COMMIT: fixture.commitSha,
+      PROMOTION_MODE: options.mode ?? "promote",
+      PROMOTION_STATE_FILE: fixture.promotionState,
     },
     timeout: 5_000,
   });

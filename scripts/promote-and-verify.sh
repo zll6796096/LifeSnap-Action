@@ -649,7 +649,7 @@ verify_candidate_endpoints() {
   grep -qi privacy \
     "${release_workspace}/lifesnap-candidate-privacy.html"
   curl --fail --silent --show-error \
-    --retry 2 --retry-all-errors --retry-delay 5 --max-time 120 \
+    --max-time 120 \
     --form "image=@test-assets/service_notice.png;type=image/png" \
     --output "${release_workspace}/lifesnap-candidate-extract.json" \
     "${candidate_url}/api/extract"

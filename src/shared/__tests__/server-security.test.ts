@@ -577,6 +577,65 @@ describe("protected extraction routes", () => {
     expect(harness.extraction.extract).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["legacy", "/api/extract", undefined, undefined],
+    ["v2", "/api/v2/extract", "valid", VALID_INSTALLATION_ID],
+  ] as const)(
+    "maps a missing multipart boundary on %s to a stable parser error",
+    async (_route, path, token, installationId) => {
+      const harness = securityHarness();
+
+      const response = await requestOnce(harness.app, path, {
+        token,
+        installationId,
+        contentType: "multipart/form-data",
+        body: "not-a-valid-multipart-body",
+      });
+
+      await expectStablePublicError(
+        response,
+        400,
+        "MULTIPART_REQUEST_INVALID",
+      );
+      expect(response.headers.get("cache-control")).toBe("no-store");
+      expect(harness.quota.consume).not.toHaveBeenCalled();
+      expect(harness.extraction.extract).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    ["legacy", "/api/extract", undefined, undefined],
+    ["v2", "/api/v2/extract", "valid", VALID_INSTALLATION_ID],
+  ] as const)(
+    "maps a corrupt multipart boundary on %s to a stable parser error",
+    async (_route, path, token, installationId) => {
+      const harness = securityHarness();
+      const boundary = "lifesnap-corrupt-boundary";
+
+      const response = await requestOnce(harness.app, path, {
+        token,
+        installationId,
+        contentType: `multipart/form-data; boundary=${boundary}`,
+        body: [
+          `--${boundary}`,
+          'Content-Disposition: form-data; name="image"; filename="fixture.png"',
+          "Content-Type: image/png",
+          "",
+          "unterminated-image-bytes",
+        ].join("\r\n"),
+      });
+
+      await expectStablePublicError(
+        response,
+        400,
+        "MULTIPART_REQUEST_INVALID",
+      );
+      expect(response.headers.get("cache-control")).toBe("no-store");
+      expect(harness.quota.consume).not.toHaveBeenCalled();
+      expect(harness.extraction.extract).not.toHaveBeenCalled();
+    },
+  );
+
   it("caps legacy requests before Gemini", async () => {
     const harness = securityHarness({
       quotaDecision: {
@@ -1151,7 +1210,12 @@ describe("Gemini extraction service contract", () => {
 async function requestOnce(
   app: ReturnType<typeof createApp>,
   path: string,
-  input: { token?: string; installationId?: string; body?: FormData },
+  input: {
+    token?: string;
+    installationId?: string;
+    contentType?: string;
+    body?: FormData | string;
+  },
 ) {
   const server = app.listen(0);
   openServers.push(server);
@@ -1164,6 +1228,7 @@ async function requestOnce(
       ...(input.installationId
         ? { "X-LifeSnap-Install-ID": input.installationId }
         : {}),
+      ...(input.contentType ? { "Content-Type": input.contentType } : {}),
     },
     body: input.body,
   });
