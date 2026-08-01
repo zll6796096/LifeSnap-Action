@@ -469,6 +469,12 @@ describe("Cloud Build release contract", () => {
     expect((triggerPlan.match(/33acc4f7-4ae1-478f-8ccf-78e9596e121b/g) ?? []).length)
       .toBe(4);
     expect(triggerPlan).toContain('MERGED_SHA="$(git rev-parse origin/main)"');
+    expect(triggerPlan).toContain(
+      "An unresolved run intent blocks restoration",
+    );
+    expect(triggerPlan).toContain(
+      "projects/788259830737/locations/global/builds/<build-id>",
+    );
     expect(triggerPlan).not.toContain("<exact reviewed 40-hex origin/main SHA>");
     expect(triggerPlan).not.toContain("trigger_snapshot_path=");
     expect(triggerPlan).not.toContain("prior_trigger_disabled=");

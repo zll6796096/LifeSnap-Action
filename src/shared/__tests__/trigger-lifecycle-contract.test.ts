@@ -23,6 +23,7 @@ const helperPath = join(repoRoot, "scripts/manage-lifesnap-trigger.sh");
 const temporaryDirectories: string[] = [];
 const triggerId = "33acc4f7-4ae1-478f-8ccf-78e9596e121b";
 const triggerRegion = "global";
+const projectNumber = "788259830737";
 
 type TriggerFixture = Awaited<ReturnType<typeof createTriggerFixture>>;
 
@@ -48,6 +49,7 @@ describe("Cloud Build trigger lifecycle helper", () => {
     const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as {
       prior_disabled: boolean;
       project_id: string;
+      project_number: string;
       run_state: null | Record<string, unknown>;
       schema_version: number;
       trigger_id: string;
@@ -62,8 +64,9 @@ describe("Cloud Build trigger lifecycle helper", () => {
     expect(manifest).toEqual({
       prior_disabled: false,
       project_id: "test-project",
+      project_number: projectNumber,
       run_state: null,
-      schema_version: 2,
+      schema_version: 3,
       trigger_id: triggerId,
       trigger_region: triggerRegion,
       trigger_snapshot: original,
@@ -83,7 +86,7 @@ describe("Cloud Build trigger lifecycle helper", () => {
     expect(run.status, run.stderr).toBe(0);
     const runLog = await readFile(fixture.runLog, "utf8");
     expect(run.stdout, `stderr=${run.stderr} runLog=${runLog}`).toContain(
-      `trigger_lifecycle=RUN operation_name=operations/build/test-project/operation-123 build_id=build-123 commit=${mergedSha}`,
+      `trigger_lifecycle=RUN operation_name=operations/build/${projectNumber}/operation-123 build_id=build-123 commit=${mergedSha}`,
     );
     expect(runLog.trim().split("\n")).toEqual([
       `RUN trigger=${triggerId} sha=${mergedSha}`,
@@ -93,7 +96,7 @@ describe("Cloud Build trigger lifecycle helper", () => {
     ) as { run_state: Record<string, unknown> };
     expect(acceptedManifest.run_state).toEqual({
       build_id: "build-123",
-      operation_name: "operations/build/test-project/operation-123",
+      operation_name: `operations/build/${projectNumber}/operation-123`,
       sha: mergedSha,
       status: "accepted",
     });
@@ -241,6 +244,55 @@ describe("Cloud Build trigger lifecycle helper", () => {
     expect(await readFile(fixture.runLog, "utf8")).toBe("");
   });
 
+  it("rejects malformed authoritative project-number discovery before trigger mutation", async () => {
+    const fixture = await createTriggerFixture();
+
+    const prepared = runHelper(fixture, "prepare-disable", {
+      PROJECT_NUMBER_RESPONSE: "test-project",
+    });
+
+    expect(prepared.status).not.toBe(0);
+    expect(prepared.stderr).toMatch(/project number/i);
+    expect(await readFile(fixture.patchLog, "utf8")).toBe("");
+    expect((await readTrigger(fixture)).disabled).toBeUndefined();
+    await expect(lstat(fixture.manifestFile)).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  });
+
+  it("accepts an LRO Build bound to the exact numeric project resource name", async () => {
+    const fixture = await createTriggerFixture();
+    expect(runHelper(fixture, "prepare-disable").status).toBe(0);
+
+    const result = runHelper(fixture, "run-exact", {
+      MERGED_SHA: fixture.mergedSha,
+    });
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain(
+      `operation_name=operations/build/${projectNumber}/operation-123`,
+    );
+    expect(result.stdout).toContain("build_id=build-123");
+  });
+
+  it("rejects an LRO Build whose canonical name has a different project number", async () => {
+    const fixture = await createTriggerFixture();
+    expect(runHelper(fixture, "prepare-disable").status).toBe(0);
+
+    const result = runHelper(fixture, "run-exact", {
+      MERGED_SHA: fixture.mergedSha,
+      MISMATCH_BUILD_PROJECT_NUMBER: "1",
+    });
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toMatch(/resource name|identity/i);
+    const manifest = JSON.parse(
+      await readFile(fixture.manifestFile, "utf8"),
+    ) as { run_state: { status: string } };
+    expect(manifest.run_state.status).toBe("intent");
+    expect((await readTrigger(fixture)).disabled).toBe(true);
+  });
+
   it("returns the durable accepted run without invoking the same SHA twice", async () => {
     const fixture = await createTriggerFixture();
     expect(runHelper(fixture, "prepare-disable").status).toBe(0);
@@ -282,6 +334,56 @@ describe("Cloud Build trigger lifecycle helper", () => {
     expect((await readFile(fixture.runLog, "utf8")).trim().split("\n")).toEqual([
       `RUN trigger=${triggerId} sha=${fixture.mergedSha}`,
     ]);
+    const restored = runHelper(fixture, "restore");
+    expect(restored.status, restored.stderr).toBe(0);
+    await expect(lstat(manifestPath)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("rejects recovery when the matching Build name has a different project number", async () => {
+    const fixture = await createTriggerFixture();
+    expect(runHelper(fixture, "prepare-disable").status).toBe(0);
+    const lost = runHelper(fixture, "run-exact", {
+      LOSE_RUN_RESPONSE: "1",
+      MERGED_SHA: fixture.mergedSha,
+      MISMATCH_BUILD_PROJECT_NUMBER: "1",
+    });
+    expect(lost.status).not.toBe(0);
+
+    const recovered = runHelper(fixture, "run-exact", {
+      MERGED_SHA: fixture.mergedSha,
+    });
+
+    expect(recovered.status).not.toBe(0);
+    expect(recovered.stderr).toMatch(/none|resource name|identity/i);
+    const manifest = JSON.parse(
+      await readFile(fixture.manifestFile, "utf8"),
+    ) as { run_state: { status: string } };
+    expect(manifest.run_state.status).toBe("intent");
+  });
+
+  it("blocks restore while an exact-SHA run intent remains unresolved", async () => {
+    const fixture = await createTriggerFixture();
+    expect(runHelper(fixture, "prepare-disable").status).toBe(0);
+    const failed = runHelper(fixture, "run-exact", {
+      DROP_RUN_BEFORE_ACCEPT: "1",
+      LOSE_RUN_RESPONSE: "1",
+      MERGED_SHA: fixture.mergedSha,
+    });
+    expect(failed.status).not.toBe(0);
+    const patchLogBeforeRestore = await readFile(fixture.patchLog, "utf8");
+
+    const restored = runHelper(fixture, "restore");
+
+    expect(restored.status).not.toBe(0);
+    expect(restored.stderr).toMatch(/intent|unresolved/i);
+    expect(await readFile(fixture.patchLog, "utf8")).toBe(
+      patchLogBeforeRestore,
+    );
+    expect((await readTrigger(fixture)).disabled).toBe(true);
+    const manifest = JSON.parse(
+      await readFile(fixture.manifestFile, "utf8"),
+    ) as { run_state: { status: string } };
+    expect(manifest.run_state.status).toBe("intent");
   });
 
   it("never duplicates an unresolved run intent when recovery sees zero or ambiguous builds", async () => {
@@ -423,17 +525,20 @@ if (method === "POST" && url.endsWith(":run")) {
     process.exit(22);
   }
   fs.appendFileSync(process.env.RUN_LOG, "RUN trigger=${triggerId} sha=" + sha + "\\n");
+  const buildProjectNumber = process.env.MISMATCH_BUILD_PROJECT_NUMBER === "1"
+    ? "999999999999"
+    : "${projectNumber}";
   const build = {
     buildTriggerId: "${triggerId}",
     id: "build-123",
-    name: "projects/test-project/locations/global/builds/build-123",
+    name: "projects/" + buildProjectNumber + "/locations/global/builds/build-123",
     projectId: "test-project",
     status: "QUEUED",
     substitutions: { COMMIT_SHA: sha },
   };
   if (process.env.DROP_RUN_BEFORE_ACCEPT !== "1") {
     const builds = process.env.MAKE_ACCEPT_AMBIGUOUS === "1"
-      ? [build, { ...build, id: "build-456", name: "projects/test-project/locations/global/builds/build-456" }]
+      ? [build, { ...build, id: "build-456", name: "projects/" + buildProjectNumber + "/locations/global/builds/build-456" }]
       : [build];
     fs.writeFileSync(process.env.BUILDS_STATE, JSON.stringify(builds) + "\\n");
   }
@@ -442,7 +547,7 @@ if (method === "POST" && url.endsWith(":run")) {
     process.exit(22);
   }
   respond({
-    name: "operations/build/test-project/operation-123",
+    name: "operations/build/${projectNumber}/operation-123",
     metadata: {
       "@type": "type.googleapis.com/google.devtools.cloudbuild.v1.BuildOperationMetadata",
       build,
@@ -490,6 +595,18 @@ const fs = require("node:fs");
 const args = process.argv.slice(2);
 if (args[0] === "auth" && args[1] === "print-access-token") {
   process.stdout.write("fixture-access-token\\n");
+  process.exit(0);
+}
+if (args[0] === "projects" && args[1] === "describe") {
+  if (
+    args[2] !== "test-project" ||
+    !args.includes("--project=test-project") ||
+    !args.includes("--format=value(projectNumber)")
+  ) {
+    process.stderr.write("invalid project-number discovery\\n");
+    process.exit(1);
+  }
+  process.stdout.write((process.env.PROJECT_NUMBER_RESPONSE || "${projectNumber}") + "\\n");
   process.exit(0);
 }
 if (args[0] === "builds" && args[1] === "list") {

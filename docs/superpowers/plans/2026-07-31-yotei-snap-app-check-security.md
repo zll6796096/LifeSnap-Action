@@ -4952,7 +4952,9 @@ The helper derives the same persistent manifest path under the canonical
 current Git worktree's Git directory on every invocation, independently of
 `TMPDIR`, so every command below is safe to run in a new shell. Its state
 directory is user-owned mode `0700`; the manifest is mode `0600`, rejects
-symlinks and hard links, and never stores the access token.
+symlinks and hard links, and never stores the access token. The helper
+authoritatively resolves `PROJECT_ID` to project number `788259830737` and
+binds that number in its schema-v3 manifest on every lifecycle invocation.
 
 ```bash
 PROJECT_ID=zhang23-23 \
@@ -5027,8 +5029,10 @@ only from one uniquely matching build for this exact trigger and commit; zero
 or multiple matches fail closed with the intent preserved. The manifest stays
 durable through candidate validation and is removed only after exact trigger
 restoration. The helper validates the trigger-run Operation and nested Build,
-requires the Build `COMMIT_SHA` to equal `MERGED_SHA`, and prints the operation
-name, build ID, and commit. Record:
+accepts the canonical Build resource name only as
+`projects/788259830737/locations/global/builds/<build-id>`, requires the Build
+`projectId`, trigger ID, and `COMMIT_SHA` to match the exact request, and prints
+the operation name, build ID, and commit. Record:
 
 - build ID;
 - source commit;
@@ -5264,6 +5268,15 @@ except for `disabled`, sends a full-trigger PATCH back to the saved state, and
 requires a fresh GET to equal the exact original snapshot. It deletes the
 manifest only after that verification. If PATCH or verification fails, it
 keeps the manifest and the trigger must be reported as not restored.
+
+An unresolved run intent blocks restoration. Re-run `run-exact` with the same
+`MERGED_SHA="$(git rev-parse origin/main)"` so the helper performs its read-only
+exact-trigger-and-commit recovery. Only one canonical matching Build may
+advance the durable state to accepted. If recovery finds zero or multiple
+matches, stop for explicit Cloud Build investigation: preserve the manifest,
+do not delete it, do not PATCH or re-enable the trigger, and do not use
+`restore`. Restoration is allowed only when no run was ever requested or the
+exact run is accepted or uniquely recovered.
 
 ```bash
 PROJECT_ID=zhang23-23 \

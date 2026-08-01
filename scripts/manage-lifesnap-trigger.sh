@@ -113,6 +113,19 @@ manifest_identity=""
 manifest_preexisting="false"
 trigger_api="https://cloudbuild.googleapis.com/v1/projects/${PROJECT_ID}/locations/${TRIGGER_REGION}/triggers/${TRIGGER_ID}"
 access_token=""
+project_number=""
+
+resolve_project_number() {
+  project_number="$(
+    gcloud projects describe "${PROJECT_ID}" \
+      --project="${PROJECT_ID}" \
+      --format='value(projectNumber)'
+  )"
+  if [[ ! "${project_number}" =~ ^[0-9]+$ ]]; then
+    printf 'Authoritative project number is invalid\n' >&2
+    return 1
+  fi
+}
 
 validate_trigger_snapshot() {
   local snapshot_path="$1"
@@ -146,6 +159,7 @@ store_manifest() {
     "${snapshot_path}" \
     "${manifest_file}" \
     "${PROJECT_ID}" \
+    "${project_number}" \
     "${TRIGGER_REGION}" \
     "${TRIGGER_ID}" <<'PY'
 import json
@@ -154,11 +168,12 @@ import secrets
 import sys
 from pathlib import Path
 
-snapshot_path, target, project_id, region, trigger_id = sys.argv[1:]
+snapshot_path, target, project_id, project_number, region, trigger_id = sys.argv[1:]
 snapshot = json.loads(Path(snapshot_path).read_text())
 manifest = {
-    "schema_version": 2,
+    "schema_version": 3,
     "project_id": project_id,
+    "project_number": project_number,
     "trigger_region": region,
     "trigger_id": trigger_id,
     "prior_disabled": snapshot.get("disabled", False),
@@ -197,6 +212,7 @@ load_manifest() {
     "${manifest_file}" \
     "${manifest_copy}" \
     "${PROJECT_ID}" \
+    "${project_number}" \
     "${TRIGGER_REGION}" \
     "${TRIGGER_ID}" <<'PY'
 import hashlib
@@ -205,7 +221,7 @@ import os
 import stat
 import sys
 
-source, destination, project_id, region, trigger_id = sys.argv[1:]
+source, destination, project_id, project_number, region, trigger_id = sys.argv[1:]
 flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
 try:
     descriptor = os.open(source, flags)
@@ -237,6 +253,7 @@ except (UnicodeDecodeError, json.JSONDecodeError) as error:
 expected_keys = {
     "schema_version",
     "project_id",
+    "project_number",
     "trigger_region",
     "trigger_id",
     "prior_disabled",
@@ -245,10 +262,11 @@ expected_keys = {
 }
 if not isinstance(manifest, dict) or set(manifest) != expected_keys:
     raise SystemExit("Trigger manifest schema is invalid")
-if manifest["schema_version"] != 2:
+if manifest["schema_version"] != 3:
     raise SystemExit("Trigger manifest schema version is unsupported")
 if (
     manifest["project_id"] != project_id
+    or manifest["project_number"] != project_number
     or manifest["trigger_region"] != region
     or manifest["trigger_id"] != trigger_id
 ):
@@ -618,13 +636,15 @@ PY
     recovered_build="$(python3 - \
       "${recovery_builds}" \
       "${PROJECT_ID}" \
+      "${project_number}" \
+      "${TRIGGER_REGION}" \
       "${TRIGGER_ID}" \
       "${normalized_sha}" <<'PY'
 import json
 import sys
 from pathlib import Path
 
-path, project_id, trigger_id, expected_commit = sys.argv[1:]
+path, project_id, project_number, region, trigger_id, expected_commit = sys.argv[1:]
 try:
     builds = json.loads(Path(path).read_text())
 except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
@@ -639,14 +659,21 @@ matches = [
     and build.get("buildTriggerId") == trigger_id
     and build.get("substitutions", {}).get("COMMIT_SHA", "").lower()
     == expected_commit
-    and isinstance(build.get("id"), str)
-    and build["id"]
 ]
 if not matches:
     raise SystemExit("Trigger run intent recovery found none; refusing a duplicate run")
 if len(matches) != 1:
     raise SystemExit("Trigger run intent recovery is ambiguous; refusing a duplicate run")
-print(matches[0]["id"])
+build = matches[0]
+build_id = build.get("id")
+if (
+    not isinstance(build_id, str)
+    or not build_id
+    or build.get("name")
+    != f"projects/{project_number}/locations/{region}/builds/{build_id}"
+):
+    raise SystemExit("Trigger run intent recovery Build identity is invalid")
+print(build_id)
 PY
 )"
     set_run_state accepted "${normalized_sha}" "" "${recovered_build}"
@@ -684,6 +711,7 @@ PY
   operation_identity="$(python3 - \
     "${build_response}" \
     "${PROJECT_ID}" \
+    "${project_number}" \
     "${TRIGGER_REGION}" \
     "${TRIGGER_ID}" \
     "${normalized_sha}" <<'PY'
@@ -692,7 +720,7 @@ import re
 import sys
 from pathlib import Path
 
-path, project_id, region, trigger_id, expected_commit = sys.argv[1:]
+path, project_id, project_number, region, trigger_id, expected_commit = sys.argv[1:]
 try:
     operation = json.loads(Path(path).read_text())
 except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
@@ -700,9 +728,12 @@ except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
 if not isinstance(operation, dict) or "error" in operation:
     raise SystemExit("Trigger run did not return a successful Operation")
 operation_name = operation.get("name")
-if not isinstance(operation_name, str) or not re.fullmatch(
-    r"(?:operations/build/[^/\s]+/[^/\s]+|projects/[^/\s]+/locations/[^/\s]+/operations/[^/\s]+)",
-    operation_name,
+operation_patterns = (
+    rf"operations/build/{re.escape(project_number)}/[^/\s]+",
+    rf"projects/{re.escape(project_number)}/locations/{re.escape(region)}/operations/[^/\s]+",
+)
+if not isinstance(operation_name, str) or not any(
+    re.fullmatch(pattern, operation_name) for pattern in operation_patterns
 ):
     raise SystemExit("Trigger run Operation name is invalid")
 candidates = []
@@ -733,9 +764,7 @@ def identity(build):
     ):
         raise SystemExit("Trigger run Operation Build identity is invalid")
     build_name = build.get("name")
-    if build_name is not None and build_name != (
-        f"projects/{project_id}/locations/{region}/builds/{build_id}"
-    ):
+    if build_name != f"projects/{project_number}/locations/{region}/builds/{build_id}":
         raise SystemExit("Trigger run Operation Build resource name is invalid")
     return build_id
 
@@ -755,6 +784,20 @@ PY
 
 restore_trigger() {
   ensure_manifest_loaded
+  local run_status
+  run_status="$(python3 - "${manifest_copy}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+state = json.loads(Path(sys.argv[1]).read_text()).get("run_state")
+print("none" if state is None else state["status"])
+PY
+)"
+  if [[ "${run_status}" == "intent" ]]; then
+    printf 'Trigger run intent is unresolved; refusing restore\n' >&2
+    return 1
+  fi
   access_token="$(gcloud auth print-access-token)"
   get_trigger "${current_trigger}"
   local current_classification
@@ -775,6 +818,8 @@ PY
   delete_manifest
   printf 'trigger_lifecycle=RESTORED\n'
 }
+
+resolve_project_number
 
 case "${mode}" in
   prepare-disable) prepare_disable ;;
