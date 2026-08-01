@@ -447,7 +447,11 @@ if status != "401":
 if "cache-control: no-store" not in Path(headers_path).read_text().lower():
     raise SystemExit("Production negative v2 smoke is cacheable")
 body = json.loads(Path(body_path).read_text())
-if body.get("error", {}).get("code") != expected_code:
+if (
+    not isinstance(body, dict)
+    or body.get("code") != expected_code
+    or not isinstance(body.get("error"), str)
+):
     raise SystemExit("Production negative v2 smoke returned an unstable code")
 PY
 }

@@ -1202,9 +1202,8 @@ if (url === serviceUrl && method === "GET") {
     const invalid = requestHeaders.includes("X-Firebase-AppCheck: invalid");
     respond(
       JSON.stringify({
-        error: {
-          code: invalid ? "APP_CHECK_INVALID" : "APP_CHECK_REQUIRED",
-        },
+        code: invalid ? "APP_CHECK_INVALID" : "APP_CHECK_REQUIRED",
+        error: "Fixture public error",
       }),
       401,
       ["Cache-Control: no-store"],
@@ -1265,9 +1264,8 @@ if (url === serviceUrl && method === "GET") {
     const invalid = requestHeaders.includes("X-Firebase-AppCheck: invalid");
     respond(
       JSON.stringify({
-        error: {
-          code: invalid ? "APP_CHECK_INVALID" : "APP_CHECK_REQUIRED",
-        },
+        code: invalid ? "APP_CHECK_INVALID" : "APP_CHECK_REQUIRED",
+        error: "Fixture public error",
       }),
       401,
       ["Cache-Control: no-store"],

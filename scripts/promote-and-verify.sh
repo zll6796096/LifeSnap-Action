@@ -616,7 +616,11 @@ headers = Path(headers_path).read_text().lower()
 if "cache-control: no-store" not in headers:
     raise SystemExit("Negative v2 response is cacheable")
 body = json.loads(Path(body_path).read_text())
-if body.get("error", {}).get("code") != expected_code:
+if (
+    not isinstance(body, dict)
+    or body.get("code") != expected_code
+    or not isinstance(body.get("error"), str)
+):
     raise SystemExit("Negative v2 response code is unstable")
 PY
 }
