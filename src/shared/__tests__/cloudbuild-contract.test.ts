@@ -393,6 +393,14 @@ describe("Cloud Build release contract", () => {
     expect(script).toContain('"invalid-token"');
     expect(script).toContain('expected_code="APP_CHECK_REQUIRED"');
     expect(script).toContain('expected_code="APP_CHECK_INVALID"');
+    expect(script).toContain('<html lang="ja">');
+    expect(script).toContain(
+      '<title>よていスナップ プライバシーポリシー</title>',
+    );
+    expect(promotionScript).toContain('<html lang="ja">');
+    expect(promotionScript).toContain(
+      '<title>よていスナップ プライバシーポリシー</title>',
+    );
     for (const source of [script, promotionScript]) {
       expect(source).toContain('name.lower() == "cache-control"');
       expect(source).toContain('"no-store" in directives');
@@ -1622,6 +1630,25 @@ describe("Cloud Build release contract", () => {
     });
   });
 
+  it("rejects a privacy page that does not match the Japanese product identity", async () => {
+    const fixture = await createReleaseFixture({
+      invalidPrivacyPage: true,
+    });
+
+    const result = runReleaseScript(fixture);
+    const state = await readServiceState(fixture);
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("privacy page identity is invalid");
+    expect(state.metadata.labels).toEqual(fixture.initialLabels);
+    expect(state.spec.traffic).toEqual([
+      {
+        percent: 100,
+        revisionName: fixture.rollbackRevision,
+      },
+    ]);
+  });
+
   it("preserves a concurrent candidate while cleaning its failed candidate", async () => {
     const fixture = await createReleaseFixture({
       concurrentCandidateOnFailure: true,
@@ -1698,6 +1725,7 @@ type ReleaseFixtureOptions = {
   failCandidateValidation?: boolean;
   failProductionValidation?: boolean;
   injectStalePromotion?: boolean;
+  invalidPrivacyPage?: boolean;
   mutateCandidateProvenance?: boolean;
   neverRollbackReconciliation?: boolean;
   promotionNeverHealthy?: boolean;
@@ -2220,7 +2248,11 @@ if (url === serviceUrl && method === "GET") {
   if (url.endsWith("/health")) {
     respond('{"status":"ok"}');
   } else if (url.endsWith("/privacy")) {
-    respond("Privacy Policy");
+    respond(process.env.INVALID_PRIVACY_PAGE === "1"
+      ? "Privacy Policy"
+      : '<!doctype html><html lang="ja"><head>' +
+        '<title>よていスナップ プライバシーポリシー</title>' +
+        '</head><body>Last updated: 2026-07-30</body></html>');
   } else if (url.endsWith("/api/extract")) {
     respond(
       '{"title":"test","summary":"test","route":"calendar_action",' +
@@ -2282,7 +2314,11 @@ if (url === serviceUrl && method === "GET") {
   } else if (url.endsWith("/health")) {
     respond('{"status":"ok"}');
   } else if (url.endsWith("/privacy")) {
-    respond("Privacy Policy");
+    respond(
+      '<!doctype html><html lang="ja"><head>' +
+      '<title>よていスナップ プライバシーポリシー</title>' +
+      '</head><body>Last updated: 2026-07-30</body></html>',
+    );
   } else if (url.endsWith("/api/extract")) {
     respond(
       '{"title":"test","summary":"test","route":"calendar_action",' +
@@ -2333,6 +2369,7 @@ if (url === serviceUrl && method === "GET") {
       FAIL_PRODUCTION_VALIDATION: options.failProductionValidation ? "1" : "0",
       IMAGE_DIGEST: imageDigest,
       INJECT_STALE_PROMOTION: options.injectStalePromotion ? "1" : "0",
+      INVALID_PRIVACY_PAGE: options.invalidPrivacyPage ? "1" : "0",
       MUTATE_CANDIDATE_PROVENANCE: options.mutateCandidateProvenance
         ? "1"
         : "0",

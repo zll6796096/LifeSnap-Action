@@ -1600,7 +1600,19 @@ verify_production_endpoints() {
   curl --fail --silent --show-error \
     --output "${release_workspace}/lifesnap-production-privacy.html" \
     "${production_url}/privacy"
-  grep -qi privacy "${release_workspace}/lifesnap-production-privacy.html"
+  python3 - "${release_workspace}/lifesnap-production-privacy.html" <<'PY'
+import sys
+from pathlib import Path
+
+privacy = Path(sys.argv[1]).read_text()
+required_markers = (
+    '<html lang="ja">',
+    '<title>よていスナップ プライバシーポリシー</title>',
+    'Last updated:',
+)
+if not all(marker in privacy for marker in required_markers):
+    raise SystemExit("Production privacy page identity is invalid")
+PY
   verify_negative_v2_response "missing-token" "APP_CHECK_REQUIRED"
   verify_negative_v2_response \
     "invalid-token" "APP_CHECK_INVALID" \
