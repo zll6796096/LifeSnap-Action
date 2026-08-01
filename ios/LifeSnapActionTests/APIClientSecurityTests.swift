@@ -226,6 +226,45 @@ final class APIClientSecurityTests: XCTestCase {
         XCTAssertEqual(tokens.callCount, 1)
     }
 
+    func testInvalidInstallationIDResponseUsesRestartGuidance() async {
+        let session = StubSession(responses: [
+            .error(400, "INSTALLATION_ID_INVALID", "private backend error"),
+        ])
+
+        await assertFailure(
+            of: makeClient(session: session),
+            equals: invalidInstallationIDMessage
+        )
+
+        XCTAssertEqual(session.requests.count, 1)
+    }
+
+    func testImageTooLargeResponseUsesSizeGuidance() async {
+        let session = StubSession(responses: [
+            .error(413, "IMAGE_TOO_LARGE", "private backend error"),
+        ])
+
+        await assertFailure(
+            of: makeClient(session: session),
+            equals: imageTooLargeMessage
+        )
+
+        XCTAssertEqual(session.requests.count, 1)
+    }
+
+    func testUnsupportedImageTypeResponseUsesFormatGuidance() async {
+        let session = StubSession(responses: [
+            .error(415, "UNSUPPORTED_IMAGE_TYPE", "private backend error"),
+        ])
+
+        await assertFailure(
+            of: makeClient(session: session),
+            equals: unsupportedImageTypeMessage
+        )
+
+        XCTAssertEqual(session.requests.count, 1)
+    }
+
     func testEveryServerSecurityCodeUsesExactStableJapaneseCopy() async {
         let fixtures: [(Int, String, String)] = [
             (401, "APP_CHECK_REQUIRED", invalidAppCheckMessage),
@@ -472,6 +511,12 @@ private let networkMessage =
     "通信に失敗しました。通信環境を確認して、もう一度お試しください。"
 private let invalidConfigurationMessage =
     "通信先の設定が無効です。アプリを再インストールしてください。"
+private let invalidInstallationIDMessage =
+    "安全確認に失敗しました。アプリを再起動してもう一度お試しください。"
+private let imageTooLargeMessage =
+    "画像のサイズが大きすぎます。10MB以下の画像を選んでください。"
+private let unsupportedImageTypeMessage =
+    "この画像形式は利用できません。JPEG、PNG、またはWebPの画像を選んでください。"
 
 private enum StubResponse {
     case successExtraction

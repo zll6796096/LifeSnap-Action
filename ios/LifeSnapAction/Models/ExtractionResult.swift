@@ -67,6 +67,7 @@ enum APIError: LocalizedError, Equatable {
     case badRequest
     case serviceUnavailable
     case serverError(statusCode: Int)
+    case installationIDInvalid
     case appCheckInvalid
     case appCheckReplayed
     case appIDForbidden
@@ -74,6 +75,8 @@ enum APIError: LocalizedError, Equatable {
     case installationDailyLimited
     case serviceDailyLimited
     case securityVerificationUnavailable
+    case imageTooLarge
+    case unsupportedImageType
     case networkUnavailable
 
     var errorDescription: String? {
@@ -88,6 +91,8 @@ enum APIError: LocalizedError, Equatable {
             return "サービスが一時的に利用できません。しばらくしてからもう一度お試しください。"
         case .serverError:
             return "サーバーで問題が発生しました。しばらくしてからもう一度お試しください。"
+        case .installationIDInvalid:
+            return "安全確認に失敗しました。アプリを再起動してもう一度お試しください。"
         case .appCheckInvalid:
             return "セキュリティ確認に失敗しました。もう一度お試しください。"
         case .appCheckReplayed:
@@ -102,6 +107,10 @@ enum APIError: LocalizedError, Equatable {
             return "本日のサービス利用上限に達しました。明日もう一度お試しください。"
         case .securityVerificationUnavailable:
             return "安全確認を利用できません。しばらくしてからもう一度お試しください。"
+        case .imageTooLarge:
+            return "画像のサイズが大きすぎます。10MB以下の画像を選んでください。"
+        case .unsupportedImageType:
+            return "この画像形式は利用できません。JPEG、PNG、またはWebPの画像を選んでください。"
         case .networkUnavailable:
             return "通信に失敗しました。通信環境を確認して、もう一度お試しください。"
         }

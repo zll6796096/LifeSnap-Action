@@ -253,6 +253,8 @@ final class APIClient {
         statusCode: Int
     ) -> APIError {
         switch code {
+        case "INSTALLATION_ID_INVALID":
+            return .installationIDInvalid
         case "APP_CHECK_REQUIRED", "APP_CHECK_INVALID":
             return .appCheckInvalid
         case "APP_CHECK_REPLAYED":
@@ -267,6 +269,10 @@ final class APIClient {
             return .serviceDailyLimited
         case "SECURITY_SERVICE_UNAVAILABLE":
             return .securityVerificationUnavailable
+        case "IMAGE_TOO_LARGE":
+            return .imageTooLarge
+        case "UNSUPPORTED_IMAGE_TYPE":
+            return .unsupportedImageType
         default:
             switch statusCode {
             case 400:

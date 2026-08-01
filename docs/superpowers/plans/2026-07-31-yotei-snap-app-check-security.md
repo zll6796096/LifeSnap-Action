@@ -4947,7 +4947,25 @@ Use the finishing-development-branch workflow. Push only the reviewed branch, cr
 
 Do not stage with `git add .`; list exact changed paths.
 
-- [ ] **Step 2: Trigger the candidate-only Cloud Build**
+- [ ] **Step 2: Re-run Gate B read-only against the merged source**
+
+After re-reading the reviewed merge from `origin/main`, perform a fresh
+read-only preflight before triggering any build:
+
+- Firebase project, iOS app, and App Attest configuration GET;
+- Firestore database and TTL describe;
+- project, Secret Manager, and runtime identity IAM policy inspection;
+- sanitized Firebase client API-key restriction inspection: identify the key
+  without printing its value, require iOS application restriction for exactly
+  `com.zll.lifesnapaction`, and record the configured API restrictions by API
+  name only.
+
+Bind the preflight record to the exact merged `origin/main` commit. If that
+commit omits any Gate A commit, or any Gate B result differs from the reviewed
+assumptions, stop before candidate creation. A passing preflight is not
+candidate, deployment, traffic, or production acceptance evidence.
+
+- [ ] **Step 3: Trigger the candidate-only Cloud Build**
 
 Submit the exact merged `origin/main` source through the existing regional trigger or an equivalent build whose `COMMIT_SHA` equals remote main. Record:
 
@@ -4962,13 +4980,10 @@ Submit the exact merged `origin/main` source through the existing regional trigg
 
 The build must leave production traffic unchanged.
 
-- [ ] **Step 3: Verify Gate B and Gate C read-only**
+- [ ] **Step 4: Verify Gate C read-only**
 
-Re-run:
+After the candidate-only build completes, verify:
 
-- Firebase project/app/App Attest GET;
-- Firestore database/TTL describe;
-- project/Secret IAM policy inspection;
 - Cloud Run candidate revision describe;
 - candidate `/health` and `/privacy`;
 - candidate v2 missing/invalid token rejection;
@@ -4976,7 +4991,7 @@ Re-run:
 
 Check Cloud Logging for the exact candidate window. Prove negative v2 attempts have `gemini_invoked=false`. Do not retrieve or print request bodies.
 
-- [ ] **Step 4: Build a real-device Release pointing to the candidate URL**
+- [ ] **Step 5: Build a real-device Release pointing to the candidate URL**
 
 Use an installed Apple Development or Distribution identity whose Team ID
 matches Firebase. Resolve exactly one available physical iPhone and reject
@@ -5044,7 +5059,7 @@ codesign -d --entitlements :- \
 
 Require the production App Attest entitlement and the expected application identifier.
 
-- [ ] **Step 5: Run the candidate real-device smoke**
+- [ ] **Step 6: Run the candidate real-device smoke**
 
 On a physical iOS 17+ device:
 
@@ -5066,7 +5081,7 @@ gemini_replay_request_count=0
 
 Do not record token, installation UUID/HMAC, image contents, or extracted JSON fields.
 
-- [ ] **Step 6: Promote the exact candidate**
+- [ ] **Step 7: Promote the exact candidate**
 
 Run the separate promotion script with the exact observed values and evidence file:
 
@@ -5084,7 +5099,7 @@ SERVICE_NAME=lifesnap-action \
 
 Expected: a resource-version-conditional promotion to one untagged 100% candidate target. If any ownership or digest check differs, no mutation occurs.
 
-- [ ] **Step 7: Run Gate E production smoke**
+- [ ] **Step 8: Run Gate E production smoke**
 
 Verify:
 
@@ -5101,7 +5116,7 @@ Verify:
 
 If the valid production v2 smoke fails, use the promotion script’s ownership-safe rollback before distributing Build 4. Do not weaken App Check or quota.
 
-- [ ] **Step 8: Commit sanitized evidence**
+- [ ] **Step 9: Commit sanitized evidence**
 
 ```bash
 git add \
