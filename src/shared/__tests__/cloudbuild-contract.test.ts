@@ -404,14 +404,21 @@ describe("Cloud Build release contract", () => {
     const plan = await readFile(securityPlanPath, "utf8");
 
     expect(plan).toContain("trigger_snapshot_path=");
+    expect((plan.match(/set -Eeuo pipefail/g) ?? []).length)
+      .toBeGreaterThanOrEqual(3);
     expect(plan).toContain("updateMask=disabled");
     expect(plan).toContain("'{disabled: true}'");
+    expect(plan).toContain("jq -e '((.disabled // false) | type) == \"boolean\"'");
+    expect(plan).toContain("jq -r '.disabled // false'");
+    expect(plan).toContain("del(.disabled)");
+    expect(plan).toContain("cmp --silent");
     expect(plan).toContain('--sha="${merged_sha}"');
     expect(plan).toContain("prior_trigger_disabled");
     expect(plan).toContain("PROMOTION_MODE=promote");
     expect(plan).toContain("PROMOTION_MODE=finalize");
     expect(plan).toContain("PROMOTION_MODE=rollback");
     expect(plan).toContain("PROMOTION_STATE_FILE");
+    expect(plan).toContain("same-UID");
   });
 
   it("promotes only the exact candidate named by sanitized device evidence", async () => {
@@ -459,7 +466,9 @@ describe("Cloud Build release contract", () => {
       "deploy_region",
       "expected_image_digest",
       "expected_source_commit",
+      "phase",
       "prepromotion_provenance",
+      "prepromotion_resource_version",
       "prepromotion_status_traffic",
       "prepromotion_traffic",
       "project_id",
@@ -470,7 +479,8 @@ describe("Cloud Build release contract", () => {
       "service_name",
     ].sort());
     expect(pending).toMatchObject({
-      schema_version: 1,
+      schema_version: 2,
+      phase: "pending_gate_e",
       project_id: "test-project",
       deploy_region: "asia-northeast1",
       service_name: "lifesnap-action",
@@ -481,9 +491,14 @@ describe("Cloud Build release contract", () => {
       runtime_service_account:
         "lifesnap-runtime@zhang23-23.iam.gserviceaccount.com",
       candidate_container_concurrency: 4,
+      prepromotion_resource_version: expect.stringMatching(/^rv-/),
+      promoted_resource_version: expect.stringMatching(/^rv-/),
     });
     expect(JSON.stringify(pending)).not.toMatch(
       /access[_-]?token|credential|installation|request[_-]?id|secret/i,
+    );
+    expect(await readFile(fixture.curlLog, "utf8")).toContain(
+      "promotion-wal-before-put phase=prepared",
     );
 
     const finalized = runPromotionScript(fixture, evidence, {
@@ -492,6 +507,107 @@ describe("Cloud Build release contract", () => {
 
     expect(finalized.status, finalized.stderr).toBe(0);
     expect(finalized.stdout).toContain("promotion_finalize=PASS");
+    await expect(lstat(fixture.promotionState)).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  });
+
+  it("rejects a promotion state parent that is not private and user-owned", async () => {
+    const fixture = await createReleaseFixture();
+    expect(runReleaseScript(fixture).status).toBe(0);
+    const evidence = await writeDeviceEvidence(fixture);
+    await chmod(fixture.stateDirectory, 0o755);
+    const callsBefore = await readFile(fixture.curlLog, "utf8");
+
+    const promotion = runPromotionScript(fixture, evidence);
+    const callsAfter = await readFile(fixture.curlLog, "utf8");
+
+    expect(promotion.status).not.toBe(0);
+    expect(promotion.stderr).toContain("0700");
+    expect(mutationCalls(callsAfter)).toEqual(mutationCalls(callsBefore));
+    await expect(lstat(fixture.promotionState)).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  });
+
+  it("recovers a prepared WAL after SIGKILL left the exact owned promotion current", async () => {
+    const fixture = await createReleaseFixture();
+    expect(runReleaseScript(fixture).status).toBe(0);
+    const evidence = await writeDeviceEvidence(fixture);
+    fixture.env.KILL_AFTER_PROMOTION_APPLY = "1";
+
+    const interrupted = runPromotionScript(fixture, evidence);
+    const prepared = JSON.parse(
+      await readFile(fixture.promotionState, "utf8"),
+    ) as Record<string, unknown>;
+    const promotedState = await readServiceState(fixture);
+
+    expect(interrupted.status).not.toBe(0);
+    expect(prepared).toMatchObject({
+      schema_version: 2,
+      phase: "prepared",
+      prepromotion_resource_version: expect.stringMatching(/^rv-/),
+      promoted_resource_version: null,
+    });
+    expect(promotedState.spec.traffic).toEqual([
+      { percent: 100, revisionName: fixture.candidateRevision },
+    ]);
+
+    const finalized = runPromotionScript(fixture, evidence, {
+      mode: "finalize",
+    });
+    expect(finalized.status).not.toBe(0);
+    expect(finalized.stderr).toContain("pending_gate_e");
+    expect((await lstat(fixture.promotionState)).isFile()).toBe(true);
+
+    fixture.env.KILL_AFTER_PROMOTION_APPLY = "0";
+    const recovered = runPromotionScript(fixture, evidence, {
+      mode: "rollback",
+    });
+
+    expect(recovered.status, recovered.stderr).toBe(0);
+    expect(recovered.stderr).toContain("promotion_rollback=PASS");
+    expect((await readServiceState(fixture)).spec.traffic).toEqual([
+      { percent: 100, revisionName: fixture.rollbackRevision },
+      {
+        latestRevision: true,
+        percent: 0,
+        tag: fixture.candidateTag,
+      },
+    ]);
+    await expect(lstat(fixture.promotionState)).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  });
+
+  it("consumes a prepared WAL without mutation when the promotion never applied", async () => {
+    const fixture = await createReleaseFixture();
+    expect(runReleaseScript(fixture).status).toBe(0);
+    const evidence = await writeDeviceEvidence(fixture);
+    fixture.env.KILL_BEFORE_PROMOTION_PUT = "1";
+    const interrupted = runPromotionScript(fixture, evidence);
+    const prepared = JSON.parse(
+      await readFile(fixture.promotionState, "utf8"),
+    ) as Record<string, unknown>;
+    const callsBeforeRecovery = await readFile(fixture.curlLog, "utf8");
+
+    expect(interrupted.status).not.toBe(0);
+    expect(prepared).toMatchObject({
+      phase: "prepared",
+      promoted_resource_version: null,
+    });
+    fixture.env.KILL_BEFORE_PROMOTION_PUT = "0";
+
+    const recovered = runPromotionScript(fixture, evidence, {
+      mode: "rollback",
+    });
+    const callsAfterRecovery = await readFile(fixture.curlLog, "utf8");
+
+    expect(recovered.status, recovered.stderr).toBe(0);
+    expect(recovered.stderr).toContain("already_prepromotion=true");
+    expect(mutationCalls(callsAfterRecovery)).toEqual(
+      mutationCalls(callsBeforeRecovery),
+    );
     await expect(lstat(fixture.promotionState)).rejects.toMatchObject({
       code: "ENOENT",
     });
@@ -611,7 +727,7 @@ describe("Cloud Build release contract", () => {
     const callsAfter = await readFile(fixture.curlLog, "utf8");
 
     expect(rolledBack.status).not.toBe(0);
-    expect(rolledBack.stderr).toContain("traffic no longer matches");
+    expect(rolledBack.stderr).toContain("foreign or ambiguous");
     expect(mutationCalls(callsAfter)).toEqual(mutationCalls(callsBefore));
     expect((await lstat(fixture.promotionState)).isFile()).toBe(true);
   });
@@ -636,12 +752,115 @@ describe("Cloud Build release contract", () => {
     );
     expect(rolledBack.stderr).not.toContain("promotion_rollback=PASS");
     expect((await lstat(fixture.promotionState)).isFile()).toBe(true);
+
+    const callsBeforeRetry = await readFile(fixture.curlLog, "utf8");
+    fixture.env.NEVER_ROLLBACK_RECONCILIATION = "0";
+    const retried = runPromotionScript(fixture, evidence, {
+      mode: "rollback",
+    });
+    const callsAfterRetry = await readFile(fixture.curlLog, "utf8");
+
+    expect(retried.status, retried.stderr).toBe(0);
+    expect(retried.stderr).toContain("already_prepromotion=true");
+    expect(mutationCalls(callsAfterRetry)).toEqual(
+      mutationCalls(callsBeforeRetry),
+    );
+    await expect(lstat(fixture.promotionState)).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  });
+
+  it("recovers a rollback whose PUT response was lost without a second mutation", async () => {
+    const fixture = await createReleaseFixture();
+    expect(runReleaseScript(fixture).status).toBe(0);
+    const evidence = await writeDeviceEvidence(fixture);
+    expect(runPromotionScript(fixture, evidence).status).toBe(0);
+    fixture.env.LOSE_ROLLBACK_PUT_RESPONSE = "1";
+
+    const lostResponse = runPromotionScript(fixture, evidence, {
+      mode: "rollback",
+    });
+    const callsBeforeRetry = await readFile(fixture.curlLog, "utf8");
+
+    expect(lostResponse.status).not.toBe(0);
+    expect((await lstat(fixture.promotionState)).isFile()).toBe(true);
+    fixture.env.LOSE_ROLLBACK_PUT_RESPONSE = "0";
+    const recovered = runPromotionScript(fixture, evidence, {
+      mode: "rollback",
+    });
+    const callsAfterRetry = await readFile(fixture.curlLog, "utf8");
+
+    expect(recovered.status, recovered.stderr).toBe(0);
+    expect(recovered.stderr).toContain("already_prepromotion=true");
+    expect(mutationCalls(callsAfterRetry)).toEqual(
+      mutationCalls(callsBeforeRetry),
+    );
+    await expect(lstat(fixture.promotionState)).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  });
+
+  it("recovers after SIGTERM immediately followed an applied rollback PUT", async () => {
+    const fixture = await createReleaseFixture();
+    expect(runReleaseScript(fixture).status).toBe(0);
+    const evidence = await writeDeviceEvidence(fixture);
+    expect(runPromotionScript(fixture, evidence).status).toBe(0);
+    fixture.env.TERM_AFTER_ROLLBACK_PUT = "1";
+
+    const interrupted = runPromotionScript(fixture, evidence, {
+      mode: "rollback",
+    });
+    const callsBeforeRetry = await readFile(fixture.curlLog, "utf8");
+
+    expect(interrupted.status).not.toBe(0);
+    expect((await lstat(fixture.promotionState)).isFile()).toBe(true);
+    fixture.env.TERM_AFTER_ROLLBACK_PUT = "0";
+    const recovered = runPromotionScript(fixture, evidence, {
+      mode: "rollback",
+    });
+    const callsAfterRetry = await readFile(fixture.curlLog, "utf8");
+
+    expect(recovered.status, recovered.stderr).toBe(0);
+    expect(recovered.stderr).toContain("already_prepromotion=true");
+    expect(mutationCalls(callsAfterRetry)).toEqual(
+      mutationCalls(callsBeforeRetry),
+    );
+    await expect(lstat(fixture.promotionState)).rejects.toMatchObject({
+      code: "ENOENT",
+    });
   });
 
   it("recovers owned traffic after SIGTERM before pending state persistence", async () => {
     const fixture = await createReleaseFixture({ termAfterPromotion: true });
     expect(runReleaseScript(fixture).status).toBe(0);
     const evidence = await writeDeviceEvidence(fixture);
+
+    const promotion = runPromotionScript(fixture, evidence);
+    const state = await readServiceState(fixture);
+
+    expect(promotion.status).not.toBe(0);
+    expect(promotion.stderr).toContain(
+      `promotion_rollback=PASS revision=${fixture.rollbackRevision}`,
+    );
+    expect(state.metadata.labels).toEqual(fixture.initialLabels);
+    expect(state.spec.traffic).toEqual([
+      { percent: 100, revisionName: fixture.rollbackRevision },
+      {
+        latestRevision: true,
+        percent: 0,
+        tag: fixture.candidateTag,
+      },
+    ]);
+    await expect(lstat(fixture.promotionState)).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  });
+
+  it("recovers owned traffic when the promotion PUT response is lost", async () => {
+    const fixture = await createReleaseFixture();
+    expect(runReleaseScript(fixture).status).toBe(0);
+    const evidence = await writeDeviceEvidence(fixture);
+    fixture.env.LOSE_PROMOTION_PUT_RESPONSE = "1";
 
     const promotion = runPromotionScript(fixture, evidence);
     const state = await readServiceState(fixture);
@@ -1058,6 +1277,7 @@ type ReleaseFixture = {
   initialLabels: Record<string, string>;
   rollbackRevision: string;
   serviceState: string;
+  stateDirectory: string;
   promotionState: string;
   workspace: string;
 };
@@ -1088,7 +1308,8 @@ async function createReleaseFixture(
   const rollbackRevision = "lifesnap-action-00098-safe";
   const candidateTag = "candidate-aaaaaaa-build123";
   const serviceState = join(root, "service-state.json");
-  const promotionState = join(root, "pending-promotion.json");
+  const stateDirectory = join(root, "promotion-state");
+  const promotionState = join(stateDirectory, "pending-promotion.json");
   const candidateSnapshot = join(root, "candidate-snapshot.json");
   const curlLog = join(root, "curl.log");
   const staleInjectionFlag = join(root, "stale-injected");
@@ -1170,6 +1391,7 @@ async function createReleaseFixture(
   await Promise.all([
     mkdir(workspace, { recursive: true }),
     mkdir(binDirectory, { recursive: true }),
+    mkdir(stateDirectory, { mode: 0o700 }),
   ]);
   await Promise.all([
     writeFile(
@@ -1217,6 +1439,9 @@ if (text === "auth print-access-token") {
   process.stdout.write(JSON.stringify(readState()) + "\\n");
 } else if (text.includes("run revisions describe ")) {
   const state = readState();
+  const candidate = JSON.parse(
+    fs.readFileSync(process.env.CANDIDATE_SNAPSHOT, "utf8"),
+  );
   fs.appendFileSync(
     process.env.CURL_LOG,
     "revision-describe source=" +
@@ -1230,21 +1455,21 @@ if (text === "auth print-access-token") {
   process.stdout.write(JSON.stringify({
     metadata: {
       name: process.env.CANDIDATE_REVISION,
-      labels: state.spec.template.metadata.labels,
+      labels: candidate.revisionLabels,
     },
     spec: {
       containers: [{
-        env: state.spec.template.spec.containers[0].env,
+        env: candidate.environment,
       }],
       containerConcurrency: Number(
         process.env.CANDIDATE_CONCURRENCY_OVERRIDE ||
-          state.spec.template.spec.containerConcurrency
+          candidate.containerConcurrency
       ),
-      serviceAccountName: state.spec.template.spec.serviceAccountName,
+      serviceAccountName: candidate.serviceAccountName,
     },
     status: {
       conditions: [{ status: "True", type: "Ready" }],
-      imageDigest: state.spec.template.spec.containers[0].image,
+      imageDigest: candidate.image,
     },
   }) + "\\n");
 } else {
@@ -1396,6 +1621,17 @@ if (url === serviceUrl && method === "GET") {
     respond('{"error":{"code":409,"status":"ABORTED"}}\\n');
     process.exit(22);
   }
+  if (isPromotion) {
+    const wal = fs.existsSync(process.env.PROMOTION_STATE_FILE)
+      ? JSON.parse(fs.readFileSync(process.env.PROMOTION_STATE_FILE, "utf8"))
+      : null;
+    log("promotion-wal-before-put phase=" + (wal?.phase || "missing"));
+    if (process.env.KILL_BEFORE_PROMOTION_PUT === "1") {
+      log("signal=KILL before-promotion-apply");
+      process.kill(process.ppid, "SIGKILL");
+      process.exit(0);
+    }
+  }
   if (isCandidateCreation) {
     fs.writeFileSync(
       process.env.CANDIDATE_SNAPSHOT,
@@ -1482,6 +1718,24 @@ if (url === serviceUrl && method === "GET") {
     state.status.latestReadyRevisionName = production.revisionName;
   }
   writeState(state);
+  if (isPromotion && process.env.KILL_AFTER_PROMOTION_APPLY === "1") {
+    log("signal=KILL after-promotion-apply");
+    process.kill(process.ppid, "SIGKILL");
+    process.exit(0);
+  }
+  if (isPromotion && process.env.LOSE_PROMOTION_PUT_RESPONSE === "1") {
+    log("promotion-response=lost-after-apply");
+    process.exit(22);
+  }
+  if (isRollback && process.env.LOSE_ROLLBACK_PUT_RESPONSE === "1") {
+    log("rollback-response=lost-after-apply");
+    process.exit(22);
+  }
+  if (isRollback && process.env.TERM_AFTER_ROLLBACK_PUT === "1") {
+    log("signal=TERM after-rollback-apply");
+    process.kill(process.ppid, "SIGTERM");
+    process.exit(0);
+  }
   log(
     "PUT source=" + source + " resourceVersion=" +
     payload.metadata.resourceVersion +
@@ -1657,6 +1911,7 @@ if (url === serviceUrl && method === "GET") {
     initialLabels,
     rollbackRevision,
     serviceState,
+    stateDirectory,
     promotionState,
     workspace,
   };

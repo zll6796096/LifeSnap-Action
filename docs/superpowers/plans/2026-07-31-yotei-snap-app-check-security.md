@@ -4950,6 +4950,7 @@ REST representation to a private local file, record its prior boolean
 the read-back. Do not print the access token or the snapshot contents.
 
 ```bash
+set -Eeuo pipefail
 umask 077
 project_id=zhang23-23
 trigger_region=asia-northeast1
@@ -4958,17 +4959,25 @@ trigger_api="https://cloudbuild.googleapis.com/v1/projects/${project_id}/locatio
 trigger_snapshot_path="$(mktemp "${TMPDIR:-/tmp}/lifesnap-main-trigger.XXXXXXXX.json")"
 trigger_patch_path="$(mktemp "${TMPDIR:-/tmp}/lifesnap-main-trigger-patch.XXXXXXXX.json")"
 trigger_readback_path="$(mktemp "${TMPDIR:-/tmp}/lifesnap-main-trigger-readback.XXXXXXXX.json")"
-chmod 600 "${trigger_snapshot_path}" "${trigger_patch_path}" "${trigger_readback_path}"
+trigger_fresh_path="$(mktemp "${TMPDIR:-/tmp}/lifesnap-main-trigger-fresh.XXXXXXXX.json")"
+trigger_snapshot_compare_path="$(mktemp "${TMPDIR:-/tmp}/lifesnap-main-trigger-snapshot-compare.XXXXXXXX.json")"
+trigger_fresh_compare_path="$(mktemp "${TMPDIR:-/tmp}/lifesnap-main-trigger-fresh-compare.XXXXXXXX.json")"
+chmod 600 \
+  "${trigger_snapshot_path}" \
+  "${trigger_patch_path}" \
+  "${trigger_readback_path}" \
+  "${trigger_fresh_path}" \
+  "${trigger_snapshot_compare_path}" \
+  "${trigger_fresh_compare_path}"
 access_token="$(gcloud auth print-access-token)"
 
 curl --fail --silent --show-error \
   --header "Authorization: Bearer ${access_token}" \
   --output "${trigger_snapshot_path}" \
   "${trigger_api}"
-prior_trigger_disabled="$(
-  jq -er 'if has("disabled") then .disabled else false end | select(type == "boolean")' \
-    "${trigger_snapshot_path}"
-)"
+jq -e '((.disabled // false) | type) == "boolean"' \
+  "${trigger_snapshot_path}" >/dev/null
+prior_trigger_disabled="$(jq -r '.disabled // false' "${trigger_snapshot_path}")"
 jq -n '{disabled: true}' > "${trigger_patch_path}"
 curl --fail --silent --show-error \
   --request PATCH \
@@ -4980,8 +4989,16 @@ curl --fail --silent --show-error \
 jq -e '.disabled == true' "${trigger_readback_path}" >/dev/null
 curl --fail --silent --show-error \
   --header "Authorization: Bearer ${access_token}" \
-  "${trigger_api}" |
-  jq -e '.disabled == true' >/dev/null
+  --output "${trigger_fresh_path}" \
+  "${trigger_api}"
+jq -e '.disabled == true' "${trigger_fresh_path}" >/dev/null
+jq -S 'del(.disabled)' \
+  "${trigger_snapshot_path}" > "${trigger_snapshot_compare_path}"
+jq -S 'del(.disabled)' \
+  "${trigger_fresh_path}" > "${trigger_fresh_compare_path}"
+cmp --silent \
+  "${trigger_snapshot_compare_path}" \
+  "${trigger_fresh_compare_path}"
 unset access_token
 ```
 
@@ -5014,14 +5031,21 @@ assumptions, stop before candidate creation. A passing preflight is not
 candidate, deployment, traffic, or production acceptance evidence.
 
 ```bash
+set -Eeuo pipefail
 git fetch origin main
 merged_sha="$(git rev-parse origin/main)"
 test -n "${merged_sha}"
 access_token="$(gcloud auth print-access-token)"
 curl --fail --silent --show-error \
   --header "Authorization: Bearer ${access_token}" \
-  "${trigger_api}" |
-  jq -e '.disabled == true' >/dev/null
+  --output "${trigger_fresh_path}" \
+  "${trigger_api}"
+jq -e '.disabled == true' "${trigger_fresh_path}" >/dev/null
+jq -S 'del(.disabled)' \
+  "${trigger_fresh_path}" > "${trigger_fresh_compare_path}"
+cmp --silent \
+  "${trigger_snapshot_compare_path}" \
+  "${trigger_fresh_compare_path}"
 unset access_token
 ```
 
@@ -5034,6 +5058,7 @@ Manually run the disabled regional trigger against the exact merged SHA. Do not
 re-enable its automatic `main` event to create the candidate:
 
 ```bash
+set -Eeuo pipefail
 gcloud builds triggers run "${trigger_id}" \
   --project="${project_id}" \
   --region="${trigger_region}" \
@@ -5177,12 +5202,25 @@ SERVICE_NAME=lifesnap-action \
 ```
 
 Expected: a resource-version-conditional promotion to one untagged 100%
-candidate target followed by `promotion_result=PENDING_GATE_E`. The script
-persists a sanitized `0600` pending-state file only after its built-in
-production smokes pass. Preserve that file without editing it until Gate E is
-finalized or rolled back. If any pre-persistence ownership, digest, or smoke
-check fails, the in-process conditional rollback remains responsible for
-restoring the previous traffic.
+candidate target followed by `promotion_result=PENDING_GATE_E`. Before the
+conditional PUT, the script durably persists a sanitized `0600`, schema-v2
+write-ahead state with `phase=prepared`, the pre-promotion resource version,
+traffic, provenance, and every candidate/ownership binding. Only after the
+mutation and built-in production smokes pass does it atomically advance the
+same state to `phase=pending_gate_e` with the promoted resource version.
+
+The state directory must be a canonical user-owned `0700` directory; the
+script enforces that boundary. The private directory prevents other UIDs from
+changing the pathname, but POSIX does not provide an atomic
+verify-inode-and-unlink operation against a malicious same-UID process. The
+script therefore verifies the file descriptor, inode, digest, mode, link
+count, and parent immediately before directory-relative unlink and fsyncs the
+parent, without overstating protection from a hostile same-UID process.
+Preserve the state without editing it until Gate E is finalized or rolled
+back. If the process stops around the PUT, run `PROMOTION_MODE=rollback`; it
+will consume an exact already-restored/pre-promotion state, conditionally
+restore an exact owned promoted state, or preserve a foreign/ambiguous state
+without mutation.
 
 - [ ] **Step 8: Run Gate E production smoke**
 
@@ -5251,7 +5289,11 @@ matches the saved value, then remove the private trigger files. If PATCH or
 verification fails, keep the snapshot and report the trigger as not restored.
 
 ```bash
+set -Eeuo pipefail
 access_token="$(gcloud auth print-access-token)"
+jq -e '((.disabled // false) | type) == "boolean"' \
+  "${trigger_snapshot_path}" >/dev/null
+prior_trigger_disabled="$(jq -r '.disabled // false' "${trigger_snapshot_path}")"
 jq -n \
   --argjson disabled "${prior_trigger_disabled}" \
   '{disabled: $disabled}' > "${trigger_patch_path}"
@@ -5264,19 +5306,31 @@ curl --fail --silent --show-error \
   "${trigger_api}?updateMask=disabled"
 jq -e \
   --argjson disabled "${prior_trigger_disabled}" \
-  '(.disabled // false) == $disabled' \
+  '((.disabled // false) | type) == "boolean" and (.disabled // false) == $disabled' \
   "${trigger_readback_path}" >/dev/null
 curl --fail --silent --show-error \
   --header "Authorization: Bearer ${access_token}" \
-  "${trigger_api}" |
-  jq -e \
-    --argjson disabled "${prior_trigger_disabled}" \
-    '(.disabled // false) == $disabled' >/dev/null
+  --output "${trigger_fresh_path}" \
+  "${trigger_api}"
+jq -e \
+  --argjson disabled "${prior_trigger_disabled}" \
+  '((.disabled // false) | type) == "boolean" and (.disabled // false) == $disabled' \
+  "${trigger_fresh_path}" >/dev/null
+jq -S '.disabled = (.disabled // false)' \
+  "${trigger_snapshot_path}" > "${trigger_snapshot_compare_path}"
+jq -S '.disabled = (.disabled // false)' \
+  "${trigger_fresh_path}" > "${trigger_fresh_compare_path}"
+cmp --silent \
+  "${trigger_snapshot_compare_path}" \
+  "${trigger_fresh_compare_path}"
 unset access_token
 rm -f -- \
   "${trigger_snapshot_path}" \
   "${trigger_patch_path}" \
-  "${trigger_readback_path}"
+  "${trigger_readback_path}" \
+  "${trigger_fresh_path}" \
+  "${trigger_snapshot_compare_path}" \
+  "${trigger_fresh_compare_path}"
 ```
 
 ### Task 15: Establish the legacy retirement observation gate

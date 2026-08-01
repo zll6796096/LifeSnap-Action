@@ -636,6 +636,56 @@ describe("protected extraction routes", () => {
     },
   );
 
+  it.each([
+    ["malformed", "legacy", "/api/extract", undefined, undefined, "Bad Header"],
+    ["malformed", "v2", "/api/v2/extract", "valid", VALID_INSTALLATION_ID, "Bad Header"],
+    [
+      "oversized",
+      "legacy",
+      "/api/extract",
+      undefined,
+      undefined,
+      `X-Oversized: ${"a".repeat(17 * 1024)}`,
+    ],
+    [
+      "oversized",
+      "v2",
+      "/api/v2/extract",
+      "valid",
+      VALID_INSTALLATION_ID,
+      `X-Oversized: ${"a".repeat(17 * 1024)}`,
+    ],
+  ] as const)(
+    "maps a %s part header on %s to a stable parser error",
+    async (_kind, _route, path, token, installationId, partHeader) => {
+      const harness = securityHarness();
+      const boundary = "lifesnap-part-header-boundary";
+
+      const response = await requestOnce(harness.app, path, {
+        token,
+        installationId,
+        contentType: `multipart/form-data; boundary=${boundary}`,
+        body: [
+          `--${boundary}`,
+          partHeader,
+          "",
+          "bounded-client-input",
+          `--${boundary}--`,
+          "",
+        ].join("\r\n"),
+      });
+
+      await expectStablePublicError(
+        response,
+        400,
+        "MULTIPART_REQUEST_INVALID",
+      );
+      expect(response.headers.get("cache-control")).toBe("no-store");
+      expect(harness.quota.consume).not.toHaveBeenCalled();
+      expect(harness.extraction.extract).not.toHaveBeenCalled();
+    },
+  );
+
   it("caps legacy requests before Gemini", async () => {
     const harness = securityHarness({
       quotaDecision: {

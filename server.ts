@@ -288,6 +288,7 @@ function extractionRequestContext(
 }
 
 const UNCODED_MULTIPART_PARSER_MESSAGES = new Set([
+  "Malformed part header",
   "Multipart: Boundary not found",
   "Unexpected end of form",
 ]);

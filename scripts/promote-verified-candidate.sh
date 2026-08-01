@@ -63,7 +63,9 @@ production_url=""
 rollback_revision=""
 promotion_owner=""
 promoted_resource_version=""
-promotion_mutation_started=0
+prepromotion_resource_version=""
+write_ahead_phase=""
+promotion_write_ahead_started=0
 pending_state_identity=""
 scratch_validated=0
 scratch_identity=""
@@ -168,23 +170,26 @@ parent = target.parent
 resolved_parent = parent.resolve(strict=True)
 if parent != resolved_parent or not resolved_parent.is_dir():
     raise SystemExit("Promotion state parent must be a real directory")
+parent_details = os.lstat(resolved_parent)
+if (
+    not stat.S_ISDIR(parent_details.st_mode)
+    or stat.S_IMODE(parent_details.st_mode) != 0o700
+    or parent_details.st_uid != os.getuid()
+):
+    raise SystemExit("Promotion state parent must be user-owned mode 0700")
 try:
     os.lstat(target)
 except FileNotFoundError:
     pass
 else:
     raise SystemExit("Promotion state already exists")
-parent_details = os.stat(resolved_parent)
-if not stat.S_ISDIR(parent_details.st_mode):
-    raise SystemExit("Promotion state parent is invalid")
 PY
 }
 
-persist_pending_state() {
+persist_prepared_state() {
   python3 - \
     "${PROMOTION_STATE_FILE}" \
     "${prepromotion_service_json}" \
-    "${promotion_verified_json}" \
     "${PROJECT_ID}" \
     "${DEPLOY_REGION}" \
     "${SERVICE_NAME}" \
@@ -205,7 +210,6 @@ from pathlib import Path
 (
     state_argument,
     initial_argument,
-    promoted_argument,
     project_id,
     deploy_region,
     service_name,
@@ -221,6 +225,13 @@ state_path = Path(state_argument)
 parent = state_path.parent
 if not state_path.is_absolute() or parent != parent.resolve(strict=True):
     raise SystemExit("Promotion state path is not canonical")
+parent_details = os.lstat(parent)
+if (
+    not stat.S_ISDIR(parent_details.st_mode)
+    or stat.S_IMODE(parent_details.st_mode) != 0o700
+    or parent_details.st_uid != os.getuid()
+):
+    raise SystemExit("Promotion state parent must be user-owned mode 0700")
 try:
     os.lstat(state_path)
 except FileNotFoundError:
@@ -229,10 +240,9 @@ else:
     raise SystemExit("Promotion state already exists")
 
 initial = json.loads(Path(initial_argument).read_text())
-promoted = json.loads(Path(promoted_argument).read_text())
-resource_version = promoted.get("metadata", {}).get("resourceVersion")
-if not isinstance(resource_version, str) or not resource_version:
-    raise SystemExit("Promoted resourceVersion is missing")
+prepromotion_resource_version = initial.get("metadata", {}).get("resourceVersion")
+if not isinstance(prepromotion_resource_version, str) or not prepromotion_resource_version:
+    raise SystemExit("Pre-promotion resourceVersion is missing")
 
 def normalized_traffic(document):
     return [
@@ -262,7 +272,8 @@ provenance = {
     for key in provenance_keys
 }
 state = {
-    "schema_version": 1,
+    "schema_version": 2,
+    "phase": "prepared",
     "project_id": project_id,
     "deploy_region": deploy_region,
     "service_name": service_name,
@@ -273,7 +284,8 @@ state = {
     "runtime_service_account": runtime_service_account,
     "candidate_container_concurrency": int(candidate_container_concurrency),
     "promotion_owner": promotion_owner,
-    "promoted_resource_version": resource_version,
+    "prepromotion_resource_version": prepromotion_resource_version,
+    "promoted_resource_version": None,
     "prepromotion_traffic": normalized_traffic(
         initial.get("spec", {}).get("traffic", [])
     ),
@@ -338,6 +350,113 @@ except BaseException:
             )
             if state_identity == linked_identity and stat.S_ISREG(state_details.st_mode):
                 os.unlink(state_path)
+                directory_fd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY)
+                try:
+                    os.fsync(directory_fd)
+                finally:
+                    os.close(directory_fd)
+        except FileNotFoundError:
+            pass
+    raise
+PY
+}
+
+advance_state_to_pending_gate_e() {
+  python3 - \
+    "${PROMOTION_STATE_FILE}" \
+    "${pending_state_identity}" \
+    "${promotion_verified_json}" <<'PY'
+import hashlib
+import json
+import os
+import stat
+import sys
+import tempfile
+from pathlib import Path
+
+state_argument, expected_identity, promoted_argument = sys.argv[1:]
+state_path = Path(state_argument)
+parent = state_path.parent
+parent_details = os.lstat(parent)
+if (
+    parent != parent.resolve(strict=True)
+    or not stat.S_ISDIR(parent_details.st_mode)
+    or stat.S_IMODE(parent_details.st_mode) != 0o700
+    or parent_details.st_uid != os.getuid()
+):
+    raise SystemExit("Promotion state parent must be user-owned mode 0700")
+flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+fd = os.open(state_path, flags)
+try:
+    details = os.fstat(fd)
+    raw = b""
+    while True:
+        chunk = os.read(fd, 65536)
+        if not chunk:
+            break
+        raw += chunk
+        if len(raw) > 65536:
+            raise SystemExit("Promotion state is too large")
+finally:
+    os.close(fd)
+identity = f"{details.st_dev}:{details.st_ino}:{details.st_uid}:{hashlib.sha256(raw).hexdigest()}"
+if (
+    identity != expected_identity
+    or not stat.S_ISREG(details.st_mode)
+    or stat.S_IMODE(details.st_mode) != 0o600
+    or details.st_uid != os.getuid()
+    or details.st_nlink != 1
+):
+    raise SystemExit("Promotion state identity changed before phase transition")
+
+state = json.loads(raw.decode("utf-8"))
+if state.get("schema_version") != 2 or state.get("phase") != "prepared":
+    raise SystemExit("Promotion state is not in prepared phase")
+if state.get("promoted_resource_version") is not None:
+    raise SystemExit("Prepared promotion state already has a promoted resourceVersion")
+promoted = json.loads(Path(promoted_argument).read_text())
+promoted_resource_version = promoted.get("metadata", {}).get("resourceVersion")
+if not isinstance(promoted_resource_version, str) or not promoted_resource_version:
+    raise SystemExit("Promoted resourceVersion is missing")
+state["phase"] = "pending_gate_e"
+state["promoted_resource_version"] = promoted_resource_version
+encoded = (json.dumps(state, sort_keys=True, separators=(",", ":")) + "\n").encode()
+
+temporary_fd = -1
+temporary_path = None
+try:
+    temporary_fd, temporary_name = tempfile.mkstemp(
+        prefix=".lifesnap-promotion-state-transition.",
+        dir=parent,
+    )
+    temporary_path = Path(temporary_name)
+    os.fchmod(temporary_fd, 0o600)
+    with os.fdopen(temporary_fd, "wb", closefd=True) as handle:
+        temporary_fd = -1
+        handle.write(encoded)
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(temporary_path, state_path)
+    temporary_path = None
+    directory_fd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+    transitioned = os.lstat(state_path)
+    if (
+        not stat.S_ISREG(transitioned.st_mode)
+        or stat.S_IMODE(transitioned.st_mode) != 0o600
+        or transitioned.st_uid != os.getuid()
+        or transitioned.st_nlink != 1
+    ):
+        raise SystemExit("Transitioned promotion state is not private")
+except BaseException:
+    if temporary_fd >= 0:
+        os.close(temporary_fd)
+    if temporary_path is not None:
+        try:
+            os.unlink(temporary_path)
         except FileNotFoundError:
             pass
     raise
@@ -365,6 +484,16 @@ state_argument, copy_argument, project_id, deploy_region, service_name = sys.arg
 state_path = Path(state_argument)
 if not state_path.is_absolute():
     raise SystemExit("Promotion state path must be absolute")
+parent = state_path.parent
+if parent != parent.resolve(strict=True):
+    raise SystemExit("Promotion state parent must be canonical")
+parent_details = os.lstat(parent)
+if (
+    not stat.S_ISDIR(parent_details.st_mode)
+    or stat.S_IMODE(parent_details.st_mode) != 0o700
+    or parent_details.st_uid != os.getuid()
+):
+    raise SystemExit("Promotion state parent must be user-owned mode 0700")
 flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
 fd = os.open(state_path, flags)
 try:
@@ -391,6 +520,7 @@ finally:
 state = json.loads(raw.decode("utf-8"))
 expected_keys = {
     "schema_version",
+    "phase",
     "project_id",
     "deploy_region",
     "service_name",
@@ -401,6 +531,7 @@ expected_keys = {
     "runtime_service_account",
     "candidate_container_concurrency",
     "promotion_owner",
+    "prepromotion_resource_version",
     "promoted_resource_version",
     "prepromotion_traffic",
     "prepromotion_status_traffic",
@@ -408,8 +539,11 @@ expected_keys = {
 }
 if not isinstance(state, dict) or set(state) != expected_keys:
     raise SystemExit("Promotion state schema is invalid")
-if state.get("schema_version") != 1:
+if state.get("schema_version") != 2:
     raise SystemExit("Promotion state version is unsupported")
+phase = state.get("phase")
+if phase not in {"prepared", "pending_gate_e"}:
+    raise SystemExit("Promotion state phase is invalid")
 if (
     state.get("project_id") != project_id
     or state.get("deploy_region") != deploy_region
@@ -424,12 +558,21 @@ patterns = {
     "expected_source_commit": r"[0-9a-f]{40}",
     "runtime_service_account": r"[a-z0-9._%+-]+@[a-z0-9.-]+",
     "promotion_owner": r"[0-9a-f]{63}",
-    "promoted_resource_version": r"[A-Za-z0-9._:+/-]{1,256}",
+    "prepromotion_resource_version": r"[A-Za-z0-9._:+/-]{1,256}",
 }
 for key, pattern in patterns.items():
     value = state.get(key)
     if not isinstance(value, str) or re.fullmatch(pattern, value) is None:
         raise SystemExit(f"Promotion state {key} is invalid")
+promoted_resource_version = state.get("promoted_resource_version")
+if phase == "prepared":
+    if promoted_resource_version is not None:
+        raise SystemExit("Prepared promotion state resourceVersion is invalid")
+elif (
+    not isinstance(promoted_resource_version, str)
+    or re.fullmatch(r"[A-Za-z0-9._:+/-]{1,256}", promoted_resource_version) is None
+):
+    raise SystemExit("Pending promotion resourceVersion is invalid")
 if state.get("candidate_container_concurrency") != 4:
     raise SystemExit("Promotion state concurrency is invalid")
 
@@ -494,6 +637,7 @@ copy_path = Path(copy_argument)
 copy_path.write_text(json.dumps(state, sort_keys=True) + "\n")
 os.chmod(copy_path, 0o600)
 print("\t".join([
+    state["phase"],
     state["candidate_revision"],
     state["candidate_tag"],
     state["expected_image_digest"],
@@ -501,13 +645,15 @@ print("\t".join([
     state["runtime_service_account"],
     str(state["candidate_container_concurrency"]),
     state["promotion_owner"],
-    state["promoted_resource_version"],
+    state["prepromotion_resource_version"],
+    state["promoted_resource_version"] or "-",
     production[0]["revisionName"],
     f"{details.st_dev}:{details.st_ino}:{details.st_uid}:{hashlib.sha256(raw).hexdigest()}",
 ]))
 PY
   )"
   IFS=$'\t' read -r \
+    write_ahead_phase \
     CANDIDATE_REVISION \
     CANDIDATE_TAG \
     EXPECTED_IMAGE_DIGEST \
@@ -515,44 +661,69 @@ PY
     RUNTIME_SERVICE_ACCOUNT \
     CANDIDATE_CONTAINER_CONCURRENCY \
     promotion_owner \
+    prepromotion_resource_version \
     promoted_resource_version \
     rollback_revision \
     pending_state_identity <<< "${loaded}"
+  if [[ "${promoted_resource_version}" == "-" ]]; then
+    promoted_resource_version=""
+  fi
   validate_release_identity
 }
 
 delete_pending_state() {
   python3 - "${PROMOTION_STATE_FILE}" "${pending_state_identity}" <<'PY'
-import os
 import hashlib
+import os
 import stat
 import sys
+from pathlib import Path
 
 path, expected_identity = sys.argv[1:]
+state_path = Path(path)
+parent = state_path.parent
+if not state_path.is_absolute() or parent != parent.resolve(strict=True):
+    raise SystemExit("Promotion state parent is no longer canonical")
+parent_fd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY)
 flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
-fd = os.open(path, flags)
 try:
-    details = os.fstat(fd)
-    raw = b""
-    while True:
-        chunk = os.read(fd, 65536)
-        if not chunk:
-            break
-        raw += chunk
-        if len(raw) > 65536:
-            raise SystemExit("Promotion state changed before deletion")
+    parent_details = os.fstat(parent_fd)
+    if (
+        not stat.S_ISDIR(parent_details.st_mode)
+        or stat.S_IMODE(parent_details.st_mode) != 0o700
+        or parent_details.st_uid != os.getuid()
+    ):
+        raise SystemExit("Promotion state parent is no longer private")
+    fd = os.open(state_path.name, flags, dir_fd=parent_fd)
+    try:
+        details = os.fstat(fd)
+        raw = b""
+        while True:
+            chunk = os.read(fd, 65536)
+            if not chunk:
+                break
+            raw += chunk
+            if len(raw) > 65536:
+                raise SystemExit("Promotion state changed before deletion")
+    finally:
+        os.close(fd)
+    identity = f"{details.st_dev}:{details.st_ino}:{details.st_uid}:{hashlib.sha256(raw).hexdigest()}"
+    current = os.stat(state_path.name, dir_fd=parent_fd, follow_symlinks=False)
+    current_identity = f"{current.st_dev}:{current.st_ino}:{current.st_uid}"
+    expected_file_identity = ":".join(expected_identity.split(":")[:3])
+    if (
+        identity != expected_identity
+        or current_identity != expected_file_identity
+        or not stat.S_ISREG(details.st_mode)
+        or stat.S_IMODE(details.st_mode) != 0o600
+        or details.st_uid != os.getuid()
+        or details.st_nlink != 1
+    ):
+        raise SystemExit("Promotion state identity changed")
+    os.unlink(state_path.name, dir_fd=parent_fd)
+    os.fsync(parent_fd)
 finally:
-    os.close(fd)
-identity = f"{details.st_dev}:{details.st_ino}:{details.st_uid}:{hashlib.sha256(raw).hexdigest()}"
-if (
-    identity != expected_identity
-    or not stat.S_ISREG(details.st_mode)
-    or stat.S_IMODE(details.st_mode) != 0o600
-    or details.st_uid != os.getuid()
-    or details.st_nlink != 1
-):
-    raise SystemExit("Promotion state identity changed")
-os.unlink(path)
+    os.close(parent_fd)
 PY
 }
 
@@ -878,7 +1049,10 @@ state = json.loads(Path(state_path).read_text())
 service = json.loads(Path(service_path).read_text())
 revision = json.loads(Path(revision_path).read_text())
 metadata = service.get("metadata", {})
-if metadata.get("resourceVersion") != state["promoted_resource_version"]:
+if (
+    state["phase"] == "pending_gate_e"
+    and metadata.get("resourceVersion") != state["promoted_resource_version"]
+):
     raise SystemExit("Pending promotion resourceVersion no longer matches")
 labels = metadata.get("labels", {})
 if (
@@ -934,6 +1108,60 @@ if not any(
 PY
 }
 
+classify_write_ahead_recovery() {
+  local service_json="$1"
+  python3 - \
+    "${service_json}" \
+    "${pending_state_copy_json}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+service_path, state_path = sys.argv[1:]
+service = json.loads(Path(service_path).read_text())
+state = json.loads(Path(state_path).read_text())
+metadata = service.get("metadata", {})
+labels = metadata.get("labels", {})
+traffic = service.get("spec", {}).get("traffic", [])
+
+prepromotion_provenance_matches = True
+for key, value in state["prepromotion_provenance"].items():
+    if value is None:
+        prepromotion_provenance_matches = (
+            prepromotion_provenance_matches and key not in labels
+        )
+    else:
+        prepromotion_provenance_matches = (
+            prepromotion_provenance_matches and labels.get(key) == value
+        )
+if (
+    traffic == state["prepromotion_traffic"]
+    and prepromotion_provenance_matches
+):
+    print("prepromotion")
+    raise SystemExit(0)
+
+expected_promoted_traffic = [
+    {"revisionName": state["candidate_revision"], "percent": 100}
+]
+owned_promoted = (
+    traffic == expected_promoted_traffic
+    and labels.get("source-commit") == state["expected_source_commit"]
+    and labels.get("promotion-owner") == state["promotion_owner"]
+)
+if owned_promoted:
+    if (
+        state["phase"] == "pending_gate_e"
+        and metadata.get("resourceVersion") != state["promoted_resource_version"]
+    ):
+        raise SystemExit("Pending promotion resourceVersion no longer matches")
+    print("promoted")
+    raise SystemExit(0)
+
+raise SystemExit("Promotion recovery state is foreign or ambiguous")
+PY
+}
+
 prepare_pending_rollback_payload() {
   local current_json="$1"
   python3 - \
@@ -954,7 +1182,10 @@ expected_traffic = [
     {"revisionName": state["candidate_revision"], "percent": 100}
 ]
 if (
-    metadata.get("resourceVersion") != state["promoted_resource_version"]
+    (
+        state["phase"] == "pending_gate_e"
+        and metadata.get("resourceVersion") != state["promoted_resource_version"]
+    )
     or labels.get("source-commit") != state["expected_source_commit"]
     or labels.get("promotion-owner") != state["promotion_owner"]
     or current.get("spec", {}).get("traffic", []) != expected_traffic
@@ -985,24 +1216,27 @@ Path(payload_path).write_text(json.dumps(payload) + "\n")
 PY
 }
 
-assert_pending_rollback_reconciled() {
+assert_prepromotion_reconciled() {
   local service_json="$1"
   python3 - \
     "${service_json}" \
-    "${pending_state_copy_json}" \
-    "${rollback_payload_json}" <<'PY'
+    "${pending_state_copy_json}" <<'PY'
 import json
 import sys
 from pathlib import Path
 
-service_path, state_path, payload_path = sys.argv[1:]
+service_path, state_path = sys.argv[1:]
 service = json.loads(Path(service_path).read_text())
 state = json.loads(Path(state_path).read_text())
-payload = json.loads(Path(payload_path).read_text())
-if service.get("metadata", {}).get("labels", {}) != payload["metadata"]["labels"]:
-    raise SystemExit("Pending rollback labels have not reconciled")
 if service.get("spec", {}).get("traffic", []) != state["prepromotion_traffic"]:
     raise SystemExit("Pending rollback spec traffic has not reconciled")
+labels = service.get("metadata", {}).get("labels", {})
+for key, value in state["prepromotion_provenance"].items():
+    if value is None:
+        if key in labels:
+            raise SystemExit("Pending rollback provenance has not reconciled")
+    elif labels.get(key) != value:
+        raise SystemExit("Pending rollback provenance has not reconciled")
 
 def normalized_traffic(items):
     return [
@@ -1042,7 +1276,7 @@ wait_for_pending_rollback_reconciliation() {
   fi
   for ((attempt = 1; attempt <= max_attempts; attempt += 1)); do
     if api_get_service "${rollback_verified_json}" &&
-      assert_pending_rollback_reconciled "${rollback_verified_json}" 2>/dev/null; then
+      assert_prepromotion_reconciled "${rollback_verified_json}" 2>/dev/null; then
       return 0
     fi
     sleep "${poll_interval}"
@@ -1061,6 +1295,10 @@ describe_pending_candidate() {
 
 finalize_pending_promotion() {
   load_pending_state
+  if [[ "${write_ahead_phase}" != "pending_gate_e" ]]; then
+    printf 'promotion_finalize=REFUSED phase_must_be_pending_gate_e\n' >&2
+    return 1
+  fi
   access_token="$(gcloud auth print-access-token)"
   api_get_service "${promotion_verified_json}"
   describe_pending_candidate
@@ -1074,21 +1312,47 @@ finalize_pending_promotion() {
   trap 'exit 143' TERM
 }
 
-rollback_pending_promotion() {
+recover_write_ahead_state() {
   local current_json="${release_workspace}/pending-rollback-current.json"
-  load_pending_state
-  access_token="$(gcloud auth print-access-token)"
-  api_get_service "${current_json}"
-  describe_pending_candidate
-  assert_pending_promotion_owned "${current_json}" "${candidate_revision_json}"
-  prepare_pending_rollback_payload "${current_json}"
-  conditional_replace "${rollback_payload_json}" "${rollback_response_json}"
-  wait_for_pending_rollback_reconciliation
+  local recovery_classification=""
+  load_pending_state || return $?
+  if [[ -z "${access_token}" ]]; then
+    access_token="$(gcloud auth print-access-token)" || return $?
+  fi
+  api_get_service "${current_json}" || return $?
+  recovery_classification="$(classify_write_ahead_recovery "${current_json}")" || return $?
+  case "${recovery_classification}" in
+    prepromotion)
+      wait_for_pending_rollback_reconciliation || return $?
+      ;;
+    promoted)
+      describe_pending_candidate || return $?
+      assert_pending_promotion_owned \
+        "${current_json}" "${candidate_revision_json}" || return $?
+      prepare_pending_rollback_payload "${current_json}" || return $?
+      conditional_replace \
+        "${rollback_payload_json}" "${rollback_response_json}" || return $?
+      wait_for_pending_rollback_reconciliation || return $?
+      ;;
+    *)
+      printf 'promotion_recovery=REFUSED foreign_or_ambiguous\n' >&2
+      return 1
+      ;;
+  esac
   trap '' INT TERM
-  delete_pending_state
-  printf 'promotion_rollback=PASS revision=%s\n' "${rollback_revision}" >&2
+  delete_pending_state || return $?
+  if [[ "${recovery_classification}" == "prepromotion" ]]; then
+    printf 'promotion_rollback=PASS revision=%s already_prepromotion=true\n' \
+      "${rollback_revision}" >&2
+  else
+    printf 'promotion_rollback=PASS revision=%s\n' "${rollback_revision}" >&2
+  fi
   trap 'exit 130' INT
   trap 'exit 143' TERM
+}
+
+rollback_pending_promotion() {
+  recover_write_ahead_state
 }
 
 verify_negative_v2_response() {
@@ -1149,168 +1413,17 @@ if json.loads(Path(sys.argv[1]).read_text()).get("status") != "ok":
 PY
 }
 
-prepare_rollback_payload() {
-  local current_json="$1"
-  python3 - \
-    "${current_json}" \
-    "${prepromotion_service_json}" \
-    "${rollback_payload_json}" \
-    "${CANDIDATE_REVISION}" \
-    "${EXPECTED_SOURCE_COMMIT}" \
-    "${promotion_owner}" <<'PY'
-import copy
-import json
-import sys
-from pathlib import Path
-
-current_path, initial_path, payload_path, candidate_revision, source_commit, owner = sys.argv[1:]
-current = json.loads(Path(current_path).read_text())
-initial = json.loads(Path(initial_path).read_text())
-labels = current.get("metadata", {}).get("labels", {})
-traffic = current.get("spec", {}).get("traffic", [])
-owned = (
-    labels.get("source-commit") == source_commit
-    and labels.get("promotion-owner") == owner
-    and traffic == [{"revisionName": candidate_revision, "percent": 100}]
-)
-if not owned:
-    raise SystemExit(20)
-metadata = current["metadata"]
-restored_labels = dict(labels)
-promotion_mutated_label_keys = (
-    "commit-sha",
-    "gcb-build-id",
-    "gcb-trigger-id",
-    "gcb-trigger-region",
-    "release-build",
-    "source-commit",
-    "managed-by",
-    "product",
-    "environment",
-    "promotion-owner",
-)
-initial_labels = initial.get("metadata", {}).get("labels", {})
-for key in promotion_mutated_label_keys:
-    if key in initial_labels:
-        restored_labels[key] = initial_labels[key]
-    else:
-        restored_labels.pop(key, None)
-restored_spec = copy.deepcopy(current["spec"])
-restored_spec["traffic"] = copy.deepcopy(initial["spec"]["traffic"])
-payload = {
-    "apiVersion": current["apiVersion"],
-    "kind": current["kind"],
-    "metadata": {
-        "name": metadata["name"],
-        "namespace": metadata["namespace"],
-        "labels": restored_labels,
-        "annotations": metadata.get("annotations", {}),
-        "resourceVersion": metadata["resourceVersion"],
-    },
-    "spec": restored_spec,
-}
-Path(payload_path).write_text(json.dumps(payload) + "\n")
-PY
-}
-
-assert_rollback_reconciled() {
-  local service_json="$1"
-  python3 - \
-    "${service_json}" \
-    "${prepromotion_service_json}" \
-    "${rollback_payload_json}" <<'PY'
-import json
-import sys
-from pathlib import Path
-
-service_path, initial_path, payload_path = sys.argv[1:]
-service = json.loads(Path(service_path).read_text())
-initial = json.loads(Path(initial_path).read_text())
-payload = json.loads(Path(payload_path).read_text())
-
-if service.get("metadata", {}).get("labels", {}) != payload["metadata"]["labels"]:
-    raise SystemExit("Rollback labels have not reconciled")
-if service.get("spec", {}).get("traffic", []) != payload["spec"]["traffic"]:
-    raise SystemExit("Rollback spec traffic has not reconciled")
-
-def status_traffic(document):
-    return [
-        {
-            key: item[key]
-            for key in ("revisionName", "percent", "tag")
-            if key in item
-        }
-        for item in document.get("status", {}).get("traffic", [])
-    ]
-
-if status_traffic(service) != status_traffic(initial):
-    raise SystemExit("Rollback status traffic has not reconciled")
-conditions = service.get("status", {}).get("conditions", [])
-if not any(
-    item.get("type") == "Ready" and item.get("status") == "True"
-    for item in conditions
-):
-    raise SystemExit("Rolled back service is not ready")
-generation = service.get("metadata", {}).get("generation")
-observed_generation = service.get("status", {}).get("observedGeneration")
-if not isinstance(generation, int) or not isinstance(observed_generation, int):
-    raise SystemExit("Rollback generation observation is missing")
-if observed_generation < generation:
-    raise SystemExit("Rollback generation has not been observed")
-PY
-}
-
-wait_for_rollback_reconciliation() {
-  local attempt
-  local max_attempts="${ROLLBACK_MAX_ATTEMPTS:-90}"
-  local poll_interval="${ROLLBACK_POLL_INTERVAL_SECONDS:-2}"
-  if [[ ! "${max_attempts}" =~ ^[1-9][0-9]*$ ]] ||
-    [[ ! "${poll_interval}" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
-    printf 'promotion_rollback_reconciliation=INVALID_POLL_CONFIG\n' >&2
-    return 1
-  fi
-  for ((attempt = 1; attempt <= max_attempts; attempt += 1)); do
-    if api_get_service "${rollback_verified_json}" &&
-      assert_rollback_reconciled "${rollback_verified_json}" 2>/dev/null; then
-      return 0
-    fi
-    sleep "${poll_interval}"
-  done
-  printf 'promotion_rollback_reconciliation=TIMEOUT attempts=%s\n' \
-    "${max_attempts}" >&2
-  return 1
-}
-
-rollback_if_owned() {
-  local current_json="${release_workspace}/lifesnap-promotion-rollback-current.json"
-  local result=0
-  set +e
-  api_get_service "${current_json}" || result=$?
-  if [[ "${result}" -eq 0 ]]; then
-    prepare_rollback_payload "${current_json}" || result=$?
-  fi
-  if [[ "${result}" -eq 20 ]]; then
-    printf 'promotion_rollback=SKIPPED newer_owner\n' >&2
-    return 0
-  fi
-  if [[ "${result}" -ne 0 ]]; then
-    printf 'promotion_rollback=FAILED validation\n' >&2
-    return "${result}"
-  fi
-  conditional_replace "${rollback_payload_json}" "${rollback_response_json}" || return $?
-  wait_for_rollback_reconciliation || return $?
-  printf 'promotion_rollback=PASS revision=%s\n' "${rollback_revision}" >&2
-}
-
 on_exit() {
   local exit_code="$1"
-  local rollback_result=0
+  local recovery_result=0
   local cleanup_result=0
   trap - ERR INT TERM EXIT
-  if [[ "${exit_code}" -ne 0 && "${promotion_mutation_started}" -eq 1 ]]; then
-    rollback_if_owned || rollback_result=$?
-    if [[ "${rollback_result}" -ne 0 ]]; then
-      printf 'promotion_rollback=FAILED code=%s\n' "${rollback_result}" >&2
+  if [[ "${exit_code}" -ne 0 && "${promotion_write_ahead_started}" -eq 1 ]] &&
+    [[ -e "${PROMOTION_STATE_FILE}" || -L "${PROMOTION_STATE_FILE}" ]]; then
+    recover_write_ahead_state || recovery_result=$?
+    if [[ "${recovery_result}" -ne 0 ]]; then
+      printf 'promotion_rollback=FAILED code=%s\n' "${recovery_result}" >&2
+      printf 'promotion_recovery=FAILED code=%s\n' "${recovery_result}" >&2
     fi
   fi
   cleanup_private_workspace || cleanup_result=$?
@@ -1336,15 +1449,18 @@ case "${PROMOTION_MODE}" in
     access_token="$(gcloud auth print-access-token)"
     capture_and_validate_candidate
     prepare_promotion_payload
-    promotion_mutation_started=1
+    promotion_write_ahead_started=1
+    persist_prepared_state
+    load_pending_state
     conditional_replace "${promotion_payload_json}" "${promotion_response_json}"
     wait_for_promotion
     verify_production_endpoints
     api_get_service "${promotion_verified_json}"
     assert_promoted "${promotion_verified_json}"
     trap '' INT TERM
-    persist_pending_state
-    promotion_mutation_started=0
+    advance_state_to_pending_gate_e
+    load_pending_state
+    promotion_write_ahead_started=0
     printf 'promotion_result=PENDING_GATE_E revision=%s\n' "${CANDIDATE_REVISION}"
     printf 'promotion_rollback_revision=%s\n' "${rollback_revision}"
     trap 'exit 130' INT
