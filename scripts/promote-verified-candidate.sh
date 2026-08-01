@@ -73,6 +73,8 @@ promotion_write_ahead_started=0
 pending_state_identity=""
 scratch_validated=0
 scratch_identity=""
+promotion_lock_holder_pid=""
+promotion_lock_acquired=0
 
 validate_release_identity() {
   if [[ ! "${CANDIDATE_REVISION}" =~ ^[a-z][a-z0-9-]{0,62}$ ]]; then
@@ -146,6 +148,89 @@ if not os.access(resolved, os.W_OK | os.X_OK):
     fail("parent_not_accessible")
 print(resolved)
 PY
+}
+
+acquire_promotion_lock() {
+  local lock_path="${PROMOTION_STATE_FILE}.lock"
+  local lock_status="${release_workspace}/promotion-lock-status"
+  python3 -c '
+import fcntl
+import os
+import stat
+import sys
+import time
+
+lock_path, status_path, parent_pid = sys.argv[1], sys.argv[2], int(sys.argv[3])
+parent = os.path.dirname(lock_path)
+if os.path.realpath(parent) != parent:
+    raise SystemExit("Promotion lock parent must be canonical")
+parent_details = os.lstat(parent)
+if (
+    not stat.S_ISDIR(parent_details.st_mode)
+    or parent_details.st_uid != os.getuid()
+    or stat.S_IMODE(parent_details.st_mode) != 0o700
+):
+    raise SystemExit("Promotion lock parent must be user-owned mode 0700")
+flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
+descriptor = os.open(lock_path, flags, 0o600)
+try:
+    details = os.fstat(descriptor)
+    if (
+        not stat.S_ISREG(details.st_mode)
+        or details.st_uid != os.getuid()
+        or stat.S_IMODE(details.st_mode) != 0o600
+        or details.st_nlink != 1
+    ):
+        raise SystemExit("Promotion lock file must be user-owned mode 0600 with one link")
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        with open(status_path, "w") as status:
+            status.write("BUSY\n")
+        raise SystemExit(0)
+    with open(status_path, "w") as status:
+        status.write("LOCKED\n")
+    while os.getppid() == parent_pid:
+        time.sleep(0.02)
+finally:
+    os.close(descriptor)
+' "${lock_path}" "${lock_status}" "$$" &
+  promotion_lock_holder_pid="$!"
+
+  local lock_result=""
+  local attempt=0
+  while [[ "${attempt}" -lt 200 ]]; do
+    if [[ -s "${lock_status}" ]]; then
+      IFS= read -r lock_result < "${lock_status}"
+      break
+    fi
+    if ! kill -0 "${promotion_lock_holder_pid}" 2>/dev/null; then
+      break
+    fi
+    sleep 0.01
+    attempt=$((attempt + 1))
+  done
+  if [[ "${lock_result}" != "LOCKED" ]]; then
+    wait "${promotion_lock_holder_pid}" 2>/dev/null || true
+    promotion_lock_holder_pid=""
+    if [[ "${lock_result}" == "BUSY" ]]; then
+      printf 'promotion_lock=BUSY\n' >&2
+    else
+      printf 'promotion_lock=FAILED\n' >&2
+    fi
+    return 1
+  fi
+  promotion_lock_acquired=1
+}
+
+release_promotion_lock() {
+  if [[ "${promotion_lock_acquired}" -eq 1 ]] &&
+    [[ -n "${promotion_lock_holder_pid}" ]]; then
+    kill -TERM "${promotion_lock_holder_pid}" 2>/dev/null || true
+    wait "${promotion_lock_holder_pid}" 2>/dev/null || true
+  fi
+  promotion_lock_acquired=0
+  promotion_lock_holder_pid=""
 }
 
 create_private_workspace() {
@@ -1548,6 +1633,7 @@ on_exit() {
     printf 'promotion_workspace_cleanup=FAILED code=%s\n' \
       "${cleanup_result}" >&2
   fi
+  release_promotion_lock
   if [[ "${exit_code}" -eq 0 && "${cleanup_result}" -ne 0 ]]; then
     exit_code="${cleanup_result}"
   fi
@@ -1558,6 +1644,7 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 trap 'on_exit $?' EXIT
 create_private_workspace
+acquire_promotion_lock
 case "${PROMOTION_MODE}" in
   promote)
     validate_release_identity

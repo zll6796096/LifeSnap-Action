@@ -1,11 +1,13 @@
 import { spawnSync } from "node:child_process";
 import {
   chmod,
+  copyFile,
   link,
   lstat,
   mkdir,
   mkdtemp,
   readFile,
+  realpath,
   rename,
   rm,
   symlink,
@@ -19,6 +21,8 @@ import { afterEach, describe, expect, it } from "vitest";
 const repoRoot = fileURLToPath(new URL("../../../", import.meta.url));
 const helperPath = join(repoRoot, "scripts/manage-lifesnap-trigger.sh");
 const temporaryDirectories: string[] = [];
+const triggerId = "33acc4f7-4ae1-478f-8ccf-78e9596e121b";
+const triggerRegion = "global";
 
 type TriggerFixture = Awaited<ReturnType<typeof createTriggerFixture>>;
 
@@ -44,6 +48,7 @@ describe("Cloud Build trigger lifecycle helper", () => {
     const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as {
       prior_disabled: boolean;
       project_id: string;
+      run_state: null | Record<string, unknown>;
       schema_version: number;
       trigger_id: string;
       trigger_region: string;
@@ -57,9 +62,10 @@ describe("Cloud Build trigger lifecycle helper", () => {
     expect(manifest).toEqual({
       prior_disabled: false,
       project_id: "test-project",
-      schema_version: 1,
-      trigger_id: "main-trigger",
-      trigger_region: "asia-northeast1",
+      run_state: null,
+      schema_version: 2,
+      trigger_id: triggerId,
+      trigger_region: triggerRegion,
       trigger_snapshot: original,
     });
     expect(await readFile(manifestPath, "utf8")).not.toContain(
@@ -72,16 +78,25 @@ describe("Cloud Build trigger lifecycle helper", () => {
     expect(verified.stdout).toContain("trigger_lifecycle=DISABLED");
     expect(manifestPathFrom(verified.stdout)).toBe(manifestPath);
 
-    const mergedSha = "b".repeat(40);
+    const mergedSha = fixture.mergedSha;
     const run = runHelper(fixture, "run-exact", { MERGED_SHA: mergedSha });
     expect(run.status, run.stderr).toBe(0);
     const runLog = await readFile(fixture.runLog, "utf8");
     expect(run.stdout, `stderr=${run.stderr} runLog=${runLog}`).toContain(
-      `trigger_lifecycle=RUN build_id=build-123 commit=${mergedSha}`,
+      `trigger_lifecycle=RUN operation_name=operations/build/test-project/operation-123 build_id=build-123 commit=${mergedSha}`,
     );
     expect(runLog.trim().split("\n")).toEqual([
-      `RUN trigger=main-trigger sha=${mergedSha}`,
+      `RUN trigger=${triggerId} sha=${mergedSha}`,
     ]);
+    const acceptedManifest = JSON.parse(
+      await readFile(manifestPath, "utf8"),
+    ) as { run_state: Record<string, unknown> };
+    expect(acceptedManifest.run_state).toEqual({
+      build_id: "build-123",
+      operation_name: "operations/build/test-project/operation-123",
+      sha: mergedSha,
+      status: "accepted",
+    });
     expect((await readTrigger(fixture)).disabled).toBe(true);
 
     const restored = runHelper(fixture, "restore");
@@ -188,7 +203,9 @@ describe("Cloud Build trigger lifecycle helper", () => {
       const verified = runHelper(
         fixture,
         "verify-disabled",
-        form === "mismatch" ? { TRIGGER_ID: "other-trigger" } : {},
+        form === "mismatch"
+          ? { TRIGGER_ID: "other-trigger-00000000-0000-0000-000000000000" }
+          : {},
       );
       expect(verified.status, form).not.toBe(0);
       expect((await lstat(manifestPath)).nlink).toBeGreaterThanOrEqual(1);
@@ -207,24 +224,148 @@ describe("Cloud Build trigger lifecycle helper", () => {
     expect(prepared.stderr).toMatch(/drift|match/i);
     expect((await lstat(manifestPath)).isFile()).toBe(true);
   });
+
+  it("rejects an arbitrary 40-hex SHA that is not the reviewed origin/main", async () => {
+    const fixture = await createTriggerFixture();
+    expect(runHelper(fixture, "prepare-disable").status).toBe(0);
+    const arbitrarySha = fixture.mergedSha === "d".repeat(40)
+      ? "e".repeat(40)
+      : "d".repeat(40);
+
+    const result = runHelper(fixture, "run-exact", {
+      MERGED_SHA: arbitrarySha,
+    });
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("origin/main");
+    expect(await readFile(fixture.runLog, "utf8")).toBe("");
+  });
+
+  it("returns the durable accepted run without invoking the same SHA twice", async () => {
+    const fixture = await createTriggerFixture();
+    expect(runHelper(fixture, "prepare-disable").status).toBe(0);
+
+    const first = runHelper(fixture, "run-exact", {
+      MERGED_SHA: fixture.mergedSha,
+    });
+    const second = runHelper(fixture, "run-exact", {
+      MERGED_SHA: fixture.mergedSha,
+    });
+
+    expect(first.status, first.stderr).toBe(0);
+    expect(second.status, second.stderr).toBe(0);
+    expect(second.stdout).toContain("existing_run=true");
+    expect((await readFile(fixture.runLog, "utf8")).trim().split("\n")).toEqual([
+      `RUN trigger=${triggerId} sha=${fixture.mergedSha}`,
+    ]);
+  });
+
+  it("recovers one uniquely observable build after the trigger response is lost", async () => {
+    const fixture = await createTriggerFixture();
+    const prepared = runHelper(fixture, "prepare-disable");
+    expect(prepared.status, prepared.stderr).toBe(0);
+    const manifestPath = manifestPathFrom(prepared.stdout);
+
+    const lost = runHelper(fixture, "run-exact", {
+      LOSE_RUN_RESPONSE: "1",
+      MERGED_SHA: fixture.mergedSha,
+    });
+    expect(lost.status).not.toBe(0);
+    expect((await lstat(manifestPath)).isFile()).toBe(true);
+
+    const recovered = runHelper(fixture, "run-exact", {
+      MERGED_SHA: fixture.mergedSha,
+    });
+    expect(recovered.status, recovered.stderr).toBe(0);
+    expect(recovered.stdout).toContain("recovered_run=true");
+    expect(recovered.stdout).toContain("build_id=build-123");
+    expect((await readFile(fixture.runLog, "utf8")).trim().split("\n")).toEqual([
+      `RUN trigger=${triggerId} sha=${fixture.mergedSha}`,
+    ]);
+  });
+
+  it("never duplicates an unresolved run intent when recovery sees zero or ambiguous builds", async () => {
+    for (const recovery of ["none", "ambiguous"] as const) {
+      const fixture = await createTriggerFixture();
+      expect(runHelper(fixture, "prepare-disable").status).toBe(0);
+      const failed = runHelper(fixture, "run-exact", {
+        DROP_RUN_BEFORE_ACCEPT: recovery === "none" ? "1" : "0",
+        MAKE_ACCEPT_AMBIGUOUS: recovery === "ambiguous" ? "1" : "0",
+        LOSE_RUN_RESPONSE: "1",
+        MERGED_SHA: fixture.mergedSha,
+      });
+      expect(failed.status).not.toBe(0);
+
+      const retry = runHelper(fixture, "run-exact", {
+        MERGED_SHA: fixture.mergedSha,
+      });
+
+      expect(retry.status, recovery).not.toBe(0);
+      expect(retry.stderr).toMatch(/none|ambiguous|unique/i);
+      expect((await readFile(fixture.runLog, "utf8")).trim().split("\n")).toEqual([
+        `RUN trigger=${triggerId} sha=${fixture.mergedSha}`,
+      ]);
+      const manifest = JSON.parse(
+        await readFile(manifestPathFrom(failed.stdout), "utf8"),
+      ) as { run_state: { status: string } };
+      expect(manifest.run_state.status).toBe("intent");
+    }
+  }, 15_000);
+
+  it("derives its default persistent state directory from the private Git directory", async () => {
+    const fixture = await createTriggerFixture();
+    const copiedRepository = join(fixture.root, "copied-repository");
+    const copiedScripts = join(copiedRepository, "scripts");
+    await mkdir(copiedScripts, { recursive: true });
+    const copiedHelper = join(copiedScripts, "manage-lifesnap-trigger.sh");
+    await copyFile(helperPath, copiedHelper);
+    await chmod(copiedHelper, 0o755);
+    expect(spawnSync("git", ["init", "--quiet", copiedRepository]).status).toBe(0);
+    const env: NodeJS.ProcessEnv = { ...fixture.env };
+    delete env.TRIGGER_MANIFEST_FILE;
+
+    const prepared = spawnSync(copiedHelper, ["prepare-disable"], {
+      cwd: copiedRepository,
+      encoding: "utf8",
+      env,
+    });
+    const manifestPath = manifestPathFrom(prepared.stdout);
+
+    expect(prepared.status, prepared.stderr).toBe(0);
+    expect(manifestPath).toBe(
+      join(copiedRepository, ".git/lifesnap-trigger-state/manifest.json"),
+    );
+    expect((await lstat(dirname(manifestPath))).mode & 0o777).toBe(0o700);
+    expect(manifestPath).not.toContain(fixture.root + "/lifesnap-trigger-state-");
+  });
 });
 
 async function createTriggerFixture(options: { disabled?: boolean } = {}) {
-  const root = await mkdtemp(join(tmpdir(), "lifesnap-trigger-contract-"));
+  const root = await realpath(
+    await mkdtemp(join(tmpdir(), "lifesnap-trigger-contract-")),
+  );
   temporaryDirectories.push(root);
   const binDirectory = join(root, "bin");
   await mkdir(binDirectory, { mode: 0o700 });
   const triggerState = join(root, "trigger.json");
   const patchLog = join(root, "patch.log");
   const runLog = join(root, "run.log");
+  const buildsState = join(root, "builds.json");
+  const stateDirectory = join(root, "trigger-state");
+  const manifestFile = join(stateDirectory, "manifest.json");
+  const mergedSha = spawnSync("git", ["rev-parse", "origin/main"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+  }).stdout.trim();
+  await mkdir(stateDirectory, { mode: 0o700 });
   const trigger: Record<string, unknown> = {
     createTime: "2026-07-31T00:00:00Z",
     description: "main release trigger",
     filename: "cloudbuild.yaml",
-    id: "main-trigger",
+    id: triggerId,
     name: "lifesnap-main",
     resourceName:
-      "projects/test-project/locations/asia-northeast1/triggers/main-trigger",
+      `projects/test-project/locations/${triggerRegion}/triggers/${triggerId}`,
     repositoryEventConfig: {
       push: { branch: "^main$" },
       repository: "projects/test-project/locations/asia-northeast1/connections/github/repositories/lifesnap",
@@ -238,6 +379,7 @@ async function createTriggerFixture(options: { disabled?: boolean } = {}) {
   await writeFile(triggerState, `${JSON.stringify(trigger)}\n`);
   await writeFile(patchLog, "");
   await writeFile(runLog, "");
+  await writeFile(buildsState, "[]\n");
 
   const curlPath = join(binDirectory, "curl");
   await writeFile(
@@ -269,9 +411,44 @@ const withoutDisabled = (value) => {
   delete copy.disabled;
   return copy;
 };
-if (!url.includes("/v1/projects/test-project/locations/asia-northeast1/triggers/main-trigger")) {
+if (!url.includes("/v1/projects/test-project/locations/global/triggers/${triggerId}")) {
   process.stderr.write("unexpected trigger URL\\n");
   process.exit(22);
+}
+if (method === "POST" && url.endsWith(":run")) {
+  const payload = JSON.parse(fs.readFileSync(dataFile, "utf8"));
+  const sha = payload.source?.commitSha || "";
+  if (payload.projectId !== "test-project" || payload.triggerId !== "${triggerId}") {
+    process.stderr.write("invalid trigger run identity\\n");
+    process.exit(22);
+  }
+  fs.appendFileSync(process.env.RUN_LOG, "RUN trigger=${triggerId} sha=" + sha + "\\n");
+  const build = {
+    buildTriggerId: "${triggerId}",
+    id: "build-123",
+    name: "projects/test-project/locations/global/builds/build-123",
+    projectId: "test-project",
+    status: "QUEUED",
+    substitutions: { COMMIT_SHA: sha },
+  };
+  if (process.env.DROP_RUN_BEFORE_ACCEPT !== "1") {
+    const builds = process.env.MAKE_ACCEPT_AMBIGUOUS === "1"
+      ? [build, { ...build, id: "build-456", name: "projects/test-project/locations/global/builds/build-456" }]
+      : [build];
+    fs.writeFileSync(process.env.BUILDS_STATE, JSON.stringify(builds) + "\\n");
+  }
+  if (process.env.LOSE_RUN_RESPONSE === "1") {
+    process.stderr.write("injected lost trigger response\\n");
+    process.exit(22);
+  }
+  respond({
+    name: "operations/build/test-project/operation-123",
+    metadata: {
+      "@type": "type.googleapis.com/google.devtools.cloudbuild.v1.BuildOperationMetadata",
+      build,
+    },
+  });
+  process.exit(0);
 }
 if (method === "GET") {
   respond(readState());
@@ -315,12 +492,8 @@ if (args[0] === "auth" && args[1] === "print-access-token") {
   process.stdout.write("fixture-access-token\\n");
   process.exit(0);
 }
-if (args[0] === "builds" && args[1] === "triggers" && args[2] === "run") {
-  const trigger = args[3];
-  const shaArgument = args.find((value) => value.startsWith("--sha="));
-  const sha = shaArgument ? shaArgument.slice(6) : "";
-  fs.appendFileSync(process.env.RUN_LOG, "RUN trigger=" + trigger + " sha=" + sha + "\\n");
-  process.stdout.write(JSON.stringify({ id: "build-123", substitutions: { COMMIT_SHA: sha } }) + "\\n");
+if (args[0] === "builds" && args[1] === "list") {
+  process.stdout.write(fs.readFileSync(process.env.BUILDS_STATE, "utf8"));
   process.exit(0);
 }
 process.stderr.write("unexpected gcloud invocation\\n");
@@ -332,17 +505,21 @@ process.exit(1);
   return {
     env: {
       ...process.env,
+      BUILDS_STATE: buildsState,
       OMIT_FALSE_DISABLED: "1",
       PATCH_LOG: patchLog,
       PATH: `${binDirectory}:${process.env.PATH}`,
       PROJECT_ID: "test-project",
       RUN_LOG: runLog,
       TMPDIR: root,
-      TRIGGER_ID: "main-trigger",
-      TRIGGER_REGION: "asia-northeast1",
+      TRIGGER_ID: triggerId,
+      TRIGGER_MANIFEST_FILE: manifestFile,
+      TRIGGER_REGION: triggerRegion,
       TRIGGER_STATE: triggerState,
     },
     patchLog,
+    manifestFile,
+    mergedSha,
     root,
     runLog,
     triggerState,

@@ -4944,19 +4944,20 @@ Expected: clean worktree and only approved security/rebrand scope.
 - [ ] **Step 1: Snapshot and disable the automatic main trigger before publishing**
 
 Identify the one global automatic trigger for this repository's `main` branch by
-its exact regional trigger UUID. Use the lifecycle helper before the first
+its exact trigger UUID. Use the lifecycle helper before the first
 merge. It atomically saves the complete trigger REST representation before any
 PATCH, records the prior boolean `disabled` state, sends a full-trigger PATCH
 with `updateMask=disabled`, and checks a fresh GET differs only in that field.
-The helper derives the same private manifest path from the canonical current
-Git worktree on every invocation, so every command below is safe to run in a
-new shell. Its state directory is user-owned mode `0700`; the manifest is mode
-`0600`, rejects symlinks and hard links, and never stores the access token.
+The helper derives the same persistent manifest path under the canonical
+current Git worktree's Git directory on every invocation, independently of
+`TMPDIR`, so every command below is safe to run in a new shell. Its state
+directory is user-owned mode `0700`; the manifest is mode `0600`, rejects
+symlinks and hard links, and never stores the access token.
 
 ```bash
 PROJECT_ID=zhang23-23 \
-TRIGGER_REGION=asia-northeast1 \
-TRIGGER_ID="<exact reviewed main-trigger UUID>" \
+TRIGGER_REGION=global \
+TRIGGER_ID=33acc4f7-4ae1-478f-8ccf-78e9596e121b \
   ./scripts/manage-lifesnap-trigger.sh prepare-disable
 ```
 
@@ -4995,8 +4996,8 @@ git fetch origin main
 git rev-parse origin/main
 
 PROJECT_ID=zhang23-23 \
-TRIGGER_REGION=asia-northeast1 \
-TRIGGER_ID="<exact reviewed main-trigger UUID>" \
+TRIGGER_REGION=global \
+TRIGGER_ID=33acc4f7-4ae1-478f-8ccf-78e9596e121b \
   ./scripts/manage-lifesnap-trigger.sh verify-disabled
 ```
 
@@ -5006,20 +5007,28 @@ disabled throughout Gate B and the candidate/manual release sequence.
 
 - [ ] **Step 3: Trigger the candidate-only Cloud Build**
 
-Manually run the disabled regional trigger against the exact merged SHA. Do not
+Manually run the disabled global trigger against the exact merged SHA. Do not
 re-enable its automatic `main` event to create the candidate:
 
 ```bash
 PROJECT_ID=zhang23-23 \
-TRIGGER_REGION=asia-northeast1 \
-TRIGGER_ID="<exact reviewed main-trigger UUID>" \
-MERGED_SHA="<exact reviewed 40-hex origin/main SHA>" \
+TRIGGER_REGION=global \
+TRIGGER_ID=33acc4f7-4ae1-478f-8ccf-78e9596e121b \
+MERGED_SHA="$(git rev-parse origin/main)" \
   ./scripts/manage-lifesnap-trigger.sh run-exact
 ```
 
-The helper re-verifies the durable manifest and fresh disabled trigger before
-one invocation, requires the resulting build's `COMMIT_SHA` to equal
-`MERGED_SHA`, and prints the build ID plus commit. Record:
+The helper independently resolves `origin/main` and requires it to equal
+`MERGED_SHA`. It re-verifies the durable manifest and fresh disabled trigger,
+then atomically records an exact-SHA run intent before the one allowed API
+request. A repeated invocation for an accepted SHA returns the recorded
+operation/build without another request. If the response was lost, it recovers
+only from one uniquely matching build for this exact trigger and commit; zero
+or multiple matches fail closed with the intent preserved. The manifest stays
+durable through candidate validation and is removed only after exact trigger
+restoration. The helper validates the trigger-run Operation and nested Build,
+requires the Build `COMMIT_SHA` to equal `MERGED_SHA`, and prints the operation
+name, build ID, and commit. Record:
 
 - build ID;
 - source commit;
@@ -5258,8 +5267,8 @@ keeps the manifest and the trigger must be reported as not restored.
 
 ```bash
 PROJECT_ID=zhang23-23 \
-TRIGGER_REGION=asia-northeast1 \
-TRIGGER_ID="<exact reviewed main-trigger UUID>" \
+TRIGGER_REGION=global \
+TRIGGER_ID=33acc4f7-4ae1-478f-8ccf-78e9596e121b \
   ./scripts/manage-lifesnap-trigger.sh restore
 ```
 

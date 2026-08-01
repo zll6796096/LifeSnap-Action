@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import {
   chmod,
   link,
@@ -464,6 +464,12 @@ describe("Cloud Build release contract", () => {
       "./scripts/manage-lifesnap-trigger.sh run-exact",
     );
     expect(triggerPlan).toContain("./scripts/manage-lifesnap-trigger.sh restore");
+    expect((triggerPlan.match(/TRIGGER_REGION=global/g) ?? []).length).toBe(4);
+    expect(triggerPlan).not.toContain("TRIGGER_REGION=asia-northeast1");
+    expect((triggerPlan.match(/33acc4f7-4ae1-478f-8ccf-78e9596e121b/g) ?? []).length)
+      .toBe(4);
+    expect(triggerPlan).toContain('MERGED_SHA="$(git rev-parse origin/main)"');
+    expect(triggerPlan).not.toContain("<exact reviewed 40-hex origin/main SHA>");
     expect(triggerPlan).not.toContain("trigger_snapshot_path=");
     expect(triggerPlan).not.toContain("prior_trigger_disabled=");
     expect(triggerPlan).not.toContain("merged_sha=");
@@ -473,6 +479,9 @@ describe("Cloud Build release contract", () => {
     expect(helper).toContain('getattr(os, "O_NOFOLLOW", 0)');
     expect(helper).toContain("details.st_nlink != 1");
     expect(helper).toContain("os.fsync");
+    expect(helper).toContain("origin/main^{commit}");
+    expect(helper).toContain('metadata.get("build")');
+    expect(helper).toContain('"run_state": None');
     expect(plan).toContain("PROMOTION_MODE=promote");
     expect(plan).toContain("PROMOTION_MODE=finalize");
     expect(plan).toContain("PROMOTION_MODE=rollback");
@@ -872,6 +881,61 @@ describe("Cloud Build release contract", () => {
     expect(state.metadata.resourceVersion).toBe("rv-99");
     expect((await lstat(fixture.promotionState)).isFile()).toBe(true);
   });
+
+  it("serializes concurrent finalize and rollback for the same promotion state", async () => {
+    const fixture = await createReleaseFixture();
+    expect(runReleaseScript(fixture).status).toBe(0);
+    const evidence = await writeDeviceEvidence(fixture);
+    expect(runPromotionScript(fixture, evidence).status).toBe(0);
+    const authStarted = join(fixture.workspace, "held-auth-started");
+    const authRelease = join(fixture.workspace, "held-auth-release");
+    fixture.env.HOLD_AUTH_STARTED = authStarted;
+    fixture.env.HOLD_AUTH_RELEASE = authRelease;
+
+    const finalizing = spawnPromotionScript(fixture, evidence, "finalize");
+    await waitForPath(authStarted);
+    delete fixture.env.HOLD_AUTH_STARTED;
+    delete fixture.env.HOLD_AUTH_RELEASE;
+    const rolledBack = runPromotionScript(fixture, evidence, {
+      mode: "rollback",
+    });
+    await writeFile(authRelease, "release\n");
+    const finalized = await finalizing.completed;
+
+    expect(rolledBack.status).not.toBe(0);
+    expect(rolledBack.stderr).toContain("promotion_lock=BUSY");
+    expect(finalized.status, finalized.stderr).toBe(0);
+    await expect(lstat(fixture.promotionState)).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  }, 15_000);
+
+  it("releases the promotion lock after the lock-owning process is killed", async () => {
+    const fixture = await createReleaseFixture();
+    expect(runReleaseScript(fixture).status).toBe(0);
+    const evidence = await writeDeviceEvidence(fixture);
+    expect(runPromotionScript(fixture, evidence).status).toBe(0);
+    const authStarted = join(fixture.workspace, "crash-auth-started");
+    const authRelease = join(fixture.workspace, "crash-auth-release");
+    fixture.env.HOLD_AUTH_STARTED = authStarted;
+    fixture.env.HOLD_AUTH_RELEASE = authRelease;
+
+    const finalizing = spawnPromotionScript(fixture, evidence, "finalize");
+    await waitForPath(authStarted);
+    finalizing.child.kill("SIGKILL");
+    await writeFile(authRelease, "release\n");
+    await finalizing.completed;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    delete fixture.env.HOLD_AUTH_STARTED;
+    delete fixture.env.HOLD_AUTH_RELEASE;
+
+    const rolledBack = runPromotionScript(fixture, evidence, {
+      mode: "rollback",
+    });
+
+    expect(rolledBack.status, rolledBack.stderr).toBe(0);
+    expect(rolledBack.stderr).toContain("promotion_rollback=PASS");
+  }, 15_000);
 
   it("keeps finalize strict when owned spec is current but status is stale and unready", async () => {
     const fixture = await createReleaseFixture();
@@ -1743,6 +1807,12 @@ const value = (prefix) => {
   return item ? item.slice(prefix.length + 1) : "";
 };
 if (text === "auth print-access-token") {
+  if (process.env.HOLD_AUTH_STARTED && process.env.HOLD_AUTH_RELEASE) {
+    fs.writeFileSync(process.env.HOLD_AUTH_STARTED, "started\\n");
+    while (!fs.existsSync(process.env.HOLD_AUTH_RELEASE)) {
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
+    }
+  }
   if (
     process.env.REPLACE_PROMOTION_STATE_ON_AUTH === "1" &&
     fs.existsSync(process.env.PROMOTION_STATE_FILE)
@@ -2289,18 +2359,72 @@ function runPromotionScript(
   return spawnSync("bash", [promotionScriptPath], {
     cwd: options.cwd ?? repoRoot,
     encoding: "utf8",
-    env: {
-      ...fixture.env,
-      CANDIDATE_REVISION: fixture.candidateRevision,
-      CANDIDATE_TAG: fixture.candidateTag,
-      DEVICE_SMOKE_EVIDENCE: evidence,
-      EXPECTED_IMAGE_DIGEST: fixture.imageDigest,
-      EXPECTED_SOURCE_COMMIT: fixture.commitSha,
-      PROMOTION_MODE: options.mode ?? "promote",
-      PROMOTION_STATE_FILE: fixture.promotionState,
-    },
+    env: promotionEnvironment(fixture, evidence, options.mode ?? "promote"),
     timeout: 5_000,
   });
+}
+
+function spawnPromotionScript(
+  fixture: ReleaseFixture,
+  evidence: string,
+  mode: "finalize" | "promote" | "rollback",
+) {
+  const child = spawn("bash", [promotionScriptPath], {
+    cwd: repoRoot,
+    env: promotionEnvironment(fixture, evidence, mode),
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let stdout = "";
+  let stderr = "";
+  child.stdout.setEncoding("utf8");
+  child.stderr.setEncoding("utf8");
+  child.stdout.on("data", (chunk: string) => {
+    stdout += chunk;
+  });
+  child.stderr.on("data", (chunk: string) => {
+    stderr += chunk;
+  });
+  const completed = new Promise<{
+    signal: NodeJS.Signals | null;
+    status: number | null;
+    stderr: string;
+    stdout: string;
+  }>((resolve) => {
+    child.on("close", (status, signal) => {
+      resolve({ signal, status, stderr, stdout });
+    });
+  });
+  return { child, completed };
+}
+
+function promotionEnvironment(
+  fixture: ReleaseFixture,
+  evidence: string,
+  mode: "finalize" | "promote" | "rollback",
+) {
+  return {
+    ...fixture.env,
+    CANDIDATE_REVISION: fixture.candidateRevision,
+    CANDIDATE_TAG: fixture.candidateTag,
+    DEVICE_SMOKE_EVIDENCE: evidence,
+    EXPECTED_IMAGE_DIGEST: fixture.imageDigest,
+    EXPECTED_SOURCE_COMMIT: fixture.commitSha,
+    PROMOTION_MODE: mode,
+    PROMOTION_STATE_FILE: fixture.promotionState,
+  };
+}
+
+async function waitForPath(path: string) {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    try {
+      await lstat(path);
+      return;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`Timed out waiting for ${path}`);
 }
 
 type DeviceEvidenceOverrides = {
