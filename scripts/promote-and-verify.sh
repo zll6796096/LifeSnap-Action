@@ -679,8 +679,19 @@ verify_candidate_endpoints() {
     --retry 6 --retry-all-errors --retry-delay 5 \
     --output "${release_workspace}/lifesnap-candidate-privacy.html" \
     "${candidate_url}/privacy"
-  grep -qi privacy \
-    "${release_workspace}/lifesnap-candidate-privacy.html"
+  python3 - "${release_workspace}/lifesnap-candidate-privacy.html" <<'PY'
+import sys
+from pathlib import Path
+
+privacy = Path(sys.argv[1]).read_text()
+required_markers = (
+    '<html lang="ja">',
+    '<title>よていスナップ プライバシーポリシー</title>',
+    'Last updated:',
+)
+if not all(marker in privacy for marker in required_markers):
+    raise SystemExit("Candidate privacy page identity is invalid")
+PY
   curl --fail --silent --show-error \
     --max-time 120 \
     --form "image=@test-assets/service_notice.png;type=image/png" \
