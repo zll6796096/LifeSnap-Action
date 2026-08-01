@@ -621,8 +621,41 @@ if actual_status != expected_status:
     raise SystemExit(
         f"Negative v2 status mismatch: expected {expected_status}, got {actual_status}"
     )
-headers = Path(headers_path).read_text().lower()
-if "cache-control: no-store" not in headers:
+
+def has_exact_no_store_header(path):
+    blocks = []
+    current = []
+    for line in Path(path).read_text().splitlines():
+        if line.startswith("HTTP/"):
+            if current:
+                blocks.append(current)
+            current = [line]
+        elif current and line == "":
+            blocks.append(current)
+            current = []
+        elif current:
+            current.append(line)
+    if current:
+        blocks.append(current)
+    if not blocks:
+        return False
+    values = []
+    for line in blocks[-1][1:]:
+        if line.startswith((" ", "\t")) or ":" not in line:
+            return False
+        name, value = line.split(":", 1)
+        if name.lower() == "cache-control":
+            values.append(value)
+    if not values:
+        return False
+    directives = [
+        directive.strip().lower()
+        for value in values
+        for directive in value.split(",")
+    ]
+    return bool(directives) and all(directives) and "no-store" in directives
+
+if not has_exact_no_store_header(headers_path):
     raise SystemExit("Negative v2 response is cacheable")
 body = json.loads(Path(body_path).read_text())
 if (

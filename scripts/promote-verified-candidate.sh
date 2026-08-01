@@ -45,6 +45,10 @@ CANDIDATE_CONTAINER_CONCURRENCY=4
 script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 repo_root="$(cd -- "${script_directory}/.." && pwd -P)"
 scratch_parent="${RELEASE_WORKSPACE:-${TMPDIR:-/tmp}}"
+scratch_parent_requires_canonical=0
+if [[ -n "${RELEASE_WORKSPACE:-}" ]]; then
+  scratch_parent_requires_canonical=1
+fi
 release_workspace=""
 service_api="https://${DEPLOY_REGION}-run.googleapis.com/apis/serving.knative.dev/v1/namespaces/${PROJECT_ID}/services/${SERVICE_NAME}"
 prepromotion_service_json=""
@@ -102,12 +106,53 @@ print(f"{details.st_dev}:{details.st_ino}:{details.st_uid}")
 PY
 }
 
+validate_release_workspace_parent() {
+  python3 - "$1" "$2" <<'PY'
+import os
+import stat
+import sys
+from pathlib import Path
+
+def fail(reason):
+    print(f"promotion_workspace=INVALID {reason}", file=sys.stderr)
+    raise SystemExit(1)
+
+requested = Path(sys.argv[1])
+require_canonical = sys.argv[2] == "1"
+if not requested.is_absolute():
+    fail("canonical_parent_required")
+try:
+    resolved = requested.resolve(strict=True)
+except FileNotFoundError:
+    fail("parent_missing")
+if require_canonical and requested != resolved:
+    fail("canonical_parent_required")
+details = os.lstat(resolved)
+if not stat.S_ISDIR(details.st_mode):
+    fail("parent_not_directory")
+mode = stat.S_IMODE(details.st_mode)
+private_user_parent = (
+    details.st_uid == os.getuid()
+    and mode & (stat.S_IWGRP | stat.S_IWOTH) == 0
+)
+safe_root_sticky_shared_parent = (
+    details.st_uid == 0
+    and bool(details.st_mode & stat.S_ISVTX)
+    and bool(mode & stat.S_IWOTH)
+)
+if not (private_user_parent or safe_root_sticky_shared_parent):
+    fail("unsafe_parent")
+if not os.access(resolved, os.W_OK | os.X_OK):
+    fail("parent_not_accessible")
+print(resolved)
+PY
+}
+
 create_private_workspace() {
-  if [[ ! -d "${scratch_parent}" ]]; then
-    printf 'promotion_workspace=INVALID parent_missing\n' >&2
-    return 1
-  fi
-  scratch_parent="$(cd -- "${scratch_parent}" && pwd -P)"
+  scratch_parent="$(
+    validate_release_workspace_parent \
+      "${scratch_parent}" "${scratch_parent_requires_canonical}"
+  )" || return $?
   release_workspace="$(mktemp -d "${scratch_parent}/lifesnap-promotion.XXXXXXXX")"
   if [[ ! -d "${release_workspace}" || -L "${release_workspace}" ]]; then
     printf 'promotion_workspace=INVALID scratch_type\n' >&2
@@ -1022,18 +1067,25 @@ PY
 
 wait_for_promotion() {
   local attempt
-  for ((attempt = 1; attempt <= 90; attempt += 1)); do
+  local max_attempts="${PROMOTION_MAX_ATTEMPTS:-90}"
+  local poll_interval="${PROMOTION_POLL_INTERVAL_SECONDS:-2}"
+  if [[ ! "${max_attempts}" =~ ^[1-9][0-9]*$ ]] ||
+    [[ ! "${poll_interval}" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+    printf 'promotion_reconciliation=INVALID_POLL_CONFIG\n' >&2
+    return 1
+  fi
+  for ((attempt = 1; attempt <= max_attempts; attempt += 1)); do
     api_get_service "${promotion_verified_json}"
     if assert_promoted "${promotion_verified_json}" 2>/dev/null; then
       return 0
     fi
-    sleep 2
+    sleep "${poll_interval}"
   done
   printf 'promotion_reconciliation=TIMEOUT\n' >&2
   return 1
 }
 
-assert_pending_promotion_owned() {
+assert_pending_rollback_owned() {
   local service_json="$1"
   local revision_json="$2"
   python3 - \
@@ -1049,9 +1101,12 @@ state = json.loads(Path(state_path).read_text())
 service = json.loads(Path(service_path).read_text())
 revision = json.loads(Path(revision_path).read_text())
 metadata = service.get("metadata", {})
+resource_version = metadata.get("resourceVersion")
+if not isinstance(resource_version, str) or not resource_version:
+    raise SystemExit("Pending promotion current resourceVersion is missing")
 if (
     state["phase"] == "pending_gate_e"
-    and metadata.get("resourceVersion") != state["promoted_resource_version"]
+    and resource_version != state["promoted_resource_version"]
 ):
     raise SystemExit("Pending promotion resourceVersion no longer matches")
 labels = metadata.get("labels", {})
@@ -1065,6 +1120,42 @@ expected_traffic = [
 ]
 if service.get("spec", {}).get("traffic", []) != expected_traffic:
     raise SystemExit("Pending promotion traffic no longer matches")
+
+if revision.get("metadata", {}).get("name") != state["candidate_revision"]:
+    raise SystemExit("Pending candidate revision identity no longer matches")
+revision_labels = revision.get("metadata", {}).get("labels", {})
+if revision_labels.get("source-commit") != state["expected_source_commit"]:
+    raise SystemExit("Pending candidate source commit no longer matches")
+if revision_labels.get("api-contract") != "v2-app-check":
+    raise SystemExit("Pending candidate API contract no longer matches")
+if revision.get("status", {}).get("imageDigest") != state["expected_image_digest"]:
+    raise SystemExit("Pending candidate image digest no longer matches")
+revision_spec = revision.get("spec", {})
+if revision_spec.get("serviceAccountName") != state["runtime_service_account"]:
+    raise SystemExit("Pending candidate runtime identity no longer matches")
+if revision_spec.get("containerConcurrency") != state["candidate_container_concurrency"]:
+    raise SystemExit("Pending candidate concurrency no longer matches")
+PY
+}
+
+assert_pending_promotion_healthy() {
+  local service_json="$1"
+  local revision_json="$2"
+  python3 - \
+    "${pending_state_copy_json}" \
+    "${service_json}" \
+    "${revision_json}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+state_path, service_path, revision_path = sys.argv[1:]
+state = json.loads(Path(state_path).read_text())
+service = json.loads(Path(service_path).read_text())
+revision = json.loads(Path(revision_path).read_text())
+expected_traffic = [
+    {"revisionName": state["candidate_revision"], "percent": 100}
+]
 
 def normalized_traffic(items):
     return [
@@ -1084,21 +1175,6 @@ if not any(
     for item in service_conditions
 ):
     raise SystemExit("Pending promoted service is not ready")
-
-if revision.get("metadata", {}).get("name") != state["candidate_revision"]:
-    raise SystemExit("Pending candidate revision identity no longer matches")
-revision_labels = revision.get("metadata", {}).get("labels", {})
-if revision_labels.get("source-commit") != state["expected_source_commit"]:
-    raise SystemExit("Pending candidate source commit no longer matches")
-if revision_labels.get("api-contract") != "v2-app-check":
-    raise SystemExit("Pending candidate API contract no longer matches")
-if revision.get("status", {}).get("imageDigest") != state["expected_image_digest"]:
-    raise SystemExit("Pending candidate image digest no longer matches")
-revision_spec = revision.get("spec", {})
-if revision_spec.get("serviceAccountName") != state["runtime_service_account"]:
-    raise SystemExit("Pending candidate runtime identity no longer matches")
-if revision_spec.get("containerConcurrency") != state["candidate_container_concurrency"]:
-    raise SystemExit("Pending candidate concurrency no longer matches")
 revision_conditions = revision.get("status", {}).get("conditions", [])
 if not any(
     item.get("type") == "Ready" and item.get("status") == "True"
@@ -1302,7 +1378,10 @@ finalize_pending_promotion() {
   access_token="$(gcloud auth print-access-token)"
   api_get_service "${promotion_verified_json}"
   describe_pending_candidate
-  assert_pending_promotion_owned \
+  assert_pending_rollback_owned \
+    "${promotion_verified_json}" \
+    "${candidate_revision_json}"
+  assert_pending_promotion_healthy \
     "${promotion_verified_json}" \
     "${candidate_revision_json}"
   trap '' INT TERM
@@ -1327,7 +1406,7 @@ recover_write_ahead_state() {
       ;;
     promoted)
       describe_pending_candidate || return $?
-      assert_pending_promotion_owned \
+      assert_pending_rollback_owned \
         "${current_json}" "${candidate_revision_json}" || return $?
       prepare_pending_rollback_payload "${current_json}" || return $?
       conditional_replace \
@@ -1379,7 +1458,41 @@ from pathlib import Path
 headers_path, body_path, status, expected_code = sys.argv[1:]
 if status != "401":
     raise SystemExit("Production negative v2 smoke did not return 401")
-if "cache-control: no-store" not in Path(headers_path).read_text().lower():
+
+def has_exact_no_store_header(path):
+    blocks = []
+    current = []
+    for line in Path(path).read_text().splitlines():
+        if line.startswith("HTTP/"):
+            if current:
+                blocks.append(current)
+            current = [line]
+        elif current and line == "":
+            blocks.append(current)
+            current = []
+        elif current:
+            current.append(line)
+    if current:
+        blocks.append(current)
+    if not blocks:
+        return False
+    values = []
+    for line in blocks[-1][1:]:
+        if line.startswith((" ", "\t")) or ":" not in line:
+            return False
+        name, value = line.split(":", 1)
+        if name.lower() == "cache-control":
+            values.append(value)
+    if not values:
+        return False
+    directives = [
+        directive.strip().lower()
+        for value in values
+        for directive in value.split(",")
+    ]
+    return bool(directives) and all(directives) and "no-store" in directives
+
+if not has_exact_no_store_header(headers_path):
     raise SystemExit("Production negative v2 smoke is cacheable")
 body = json.loads(Path(body_path).read_text())
 if (

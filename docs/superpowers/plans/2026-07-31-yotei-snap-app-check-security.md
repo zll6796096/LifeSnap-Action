@@ -4947,7 +4947,11 @@ Identify the one global automatic trigger for this repository's `main` branch by
 its exact regional trigger UUID. Before the first merge, capture its complete
 REST representation to a private local file, record its prior boolean
 `disabled` state, disable only that field with `updateMask=disabled`, and verify
-the read-back. Do not print the access token or the snapshot contents.
+the read-back. An omitted `disabled` field is the normal enabled default and is
+captured as `false`; if the field is present, it must be a JSON boolean.
+Explicit `null`, strings, and other types are invalid in the snapshot, PATCH
+response, and every fresh GET. Do not print the access token or the snapshot
+contents.
 
 ```bash
 set -Eeuo pipefail
@@ -4975,9 +4979,12 @@ curl --fail --silent --show-error \
   --header "Authorization: Bearer ${access_token}" \
   --output "${trigger_snapshot_path}" \
   "${trigger_api}"
-jq -e '((.disabled // false) | type) == "boolean"' \
+jq -e '(has("disabled") | not) or (.disabled | type == "boolean")' \
   "${trigger_snapshot_path}" >/dev/null
-prior_trigger_disabled="$(jq -r '.disabled // false' "${trigger_snapshot_path}")"
+prior_trigger_disabled="$(
+  jq -r 'if has("disabled") then .disabled else false end' \
+    "${trigger_snapshot_path}"
+)"
 jq -n '{disabled: true}' > "${trigger_patch_path}"
 curl --fail --silent --show-error \
   --request PATCH \
@@ -5222,6 +5229,17 @@ will consume an exact already-restored/pre-promotion state, conditionally
 restore an exact owned promoted state, or preserve a foreign/ambiguous state
 without mutation.
 
+Rollback ownership is deliberately independent of promotion health: an exact
+owned candidate spec and immutable revision identity may be restored even when
+status traffic is stale or `Ready` is false/missing. Finalize still requires
+exact reconciled status and readiness, and rollback deletes the WAL only after
+the restored spec, status, readiness, and observed generation all reconcile.
+If `RELEASE_WORKSPACE` is supplied, it must already be a canonical safe parent:
+either current-user-owned without group/other write access, or a root-owned
+sticky shared directory such as the resolved canonical path of `/tmp`
+(`/private/tmp` on macOS). The built-in `TMPDIR`/`/tmp` default is resolved to
+its canonical path before the same ownership and mode checks.
+
 - [ ] **Step 8: Run Gate E production smoke**
 
 Verify:
@@ -5291,9 +5309,12 @@ verification fails, keep the snapshot and report the trigger as not restored.
 ```bash
 set -Eeuo pipefail
 access_token="$(gcloud auth print-access-token)"
-jq -e '((.disabled // false) | type) == "boolean"' \
+jq -e '(has("disabled") | not) or (.disabled | type == "boolean")' \
   "${trigger_snapshot_path}" >/dev/null
-prior_trigger_disabled="$(jq -r '.disabled // false' "${trigger_snapshot_path}")"
+prior_trigger_disabled="$(
+  jq -r 'if has("disabled") then .disabled else false end' \
+    "${trigger_snapshot_path}"
+)"
 jq -n \
   --argjson disabled "${prior_trigger_disabled}" \
   '{disabled: $disabled}' > "${trigger_patch_path}"
@@ -5306,7 +5327,8 @@ curl --fail --silent --show-error \
   "${trigger_api}?updateMask=disabled"
 jq -e \
   --argjson disabled "${prior_trigger_disabled}" \
-  '((.disabled // false) | type) == "boolean" and (.disabled // false) == $disabled' \
+  '((has("disabled") | not) or (.disabled | type == "boolean")) and
+   ((if has("disabled") then .disabled else false end) == $disabled)' \
   "${trigger_readback_path}" >/dev/null
 curl --fail --silent --show-error \
   --header "Authorization: Bearer ${access_token}" \
@@ -5314,11 +5336,12 @@ curl --fail --silent --show-error \
   "${trigger_api}"
 jq -e \
   --argjson disabled "${prior_trigger_disabled}" \
-  '((.disabled // false) | type) == "boolean" and (.disabled // false) == $disabled' \
+  '((has("disabled") | not) or (.disabled | type == "boolean")) and
+   ((if has("disabled") then .disabled else false end) == $disabled)' \
   "${trigger_fresh_path}" >/dev/null
-jq -S '.disabled = (.disabled // false)' \
+jq -S '.disabled = (if has("disabled") then .disabled else false end)' \
   "${trigger_snapshot_path}" > "${trigger_snapshot_compare_path}"
-jq -S '.disabled = (.disabled // false)' \
+jq -S '.disabled = (if has("disabled") then .disabled else false end)' \
   "${trigger_fresh_path}" > "${trigger_fresh_compare_path}"
 cmp --silent \
   "${trigger_snapshot_compare_path}" \
