@@ -549,6 +549,34 @@ describe("protected extraction routes", () => {
     expect(harness.extraction.extract).not.toHaveBeenCalled();
   });
 
+  it("rejects a legacy multipart text field before quota and Gemini", async () => {
+    const harness = securityHarness();
+    const form = imageForm("image/png", 16);
+    form.append("metadata", "must-not-be-buffered");
+
+    const response = await harness.postLegacy(form);
+
+    await expectStablePublicError(response, 400, "MULTIPART_REQUEST_INVALID");
+    expect(harness.quota.consume).not.toHaveBeenCalled();
+    expect(harness.extraction.extract).not.toHaveBeenCalled();
+  });
+
+  it("rejects a second legacy multipart file before quota and Gemini", async () => {
+    const harness = securityHarness();
+    const form = imageForm("image/png", 16);
+    form.append(
+      "image",
+      new Blob([Buffer.alloc(16)], { type: "image/png" }),
+      "second-fixture",
+    );
+
+    const response = await harness.postLegacy(form);
+
+    await expectStablePublicError(response, 400, "MULTIPART_REQUEST_INVALID");
+    expect(harness.quota.consume).not.toHaveBeenCalled();
+    expect(harness.extraction.extract).not.toHaveBeenCalled();
+  });
+
   it("caps legacy requests before Gemini", async () => {
     const harness = securityHarness({
       quotaDecision: {

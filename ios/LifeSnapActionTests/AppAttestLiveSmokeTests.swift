@@ -4,6 +4,37 @@ import XCTest
 @testable import LifeSnapAction
 
 final class AppAttestLiveSmokeTests: XCTestCase {
+    func testLiveSmokeUsesNoRedirectSessionForBothRequests() throws {
+        let source = try String(
+            contentsOfFile: #filePath,
+            encoding: .utf8
+        )
+        let start = try XCTUnwrap(
+            source.range(
+                of: "    private "
+                    + "func runLiveSmokeWithoutLoggingCredentials"
+            )
+        )
+        let suffix = source[start.lowerBound...]
+        let end = try XCTUnwrap(suffix.range(of: "\n    #endif"))
+        let liveSmokeSource = String(suffix[..<end.lowerBound])
+
+        XCTAssertFalse(
+            liveSmokeSource.contains("URLSession." + "shared")
+        )
+        XCTAssertTrue(
+            liveSmokeSource.contains(
+                "let liveSession = SecureURLSessionFactory.shared"
+            )
+        )
+        XCTAssertEqual(
+            liveSmokeSource.components(
+                separatedBy: "liveSession.data("
+            ).count - 1,
+            2
+        )
+    }
+
     func testLiveAppAttestAndReplayProtection() async throws {
         #if RUN_LIVE_APP_ATTEST_SMOKE
         try await runLiveSmokeWithoutLoggingCredentials()
@@ -90,7 +121,8 @@ final class AppAttestLiveSmokeTests: XCTestCase {
         body.append(Data("\r\n--\(boundary)--\r\n".utf8))
         request.httpBody = body
 
-        let (firstData, firstResponse) = try await URLSession.shared.data(
+        let liveSession = SecureURLSessionFactory.shared
+        let (firstData, firstResponse) = try await liveSession.data(
             for: request
         )
         guard let firstHTTP = firstResponse as? HTTPURLResponse,
@@ -104,7 +136,7 @@ final class AppAttestLiveSmokeTests: XCTestCase {
         }
         print("v2_extract=PASS")
 
-        let (secondData, secondResponse) = try await URLSession.shared.data(
+        let (secondData, secondResponse) = try await liveSession.data(
             for: request
         )
         guard let secondHTTP = secondResponse as? HTTPURLResponse,

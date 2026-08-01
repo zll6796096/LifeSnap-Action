@@ -12,6 +12,7 @@ umask 077
 : "${SERVICE_NAME:?SERVICE_NAME is required}"
 
 RUNTIME_SERVICE_ACCOUNT=lifesnap-runtime@zhang23-23.iam.gserviceaccount.com
+CANDIDATE_CONTAINER_CONCURRENCY=4
 script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 repo_root="$(cd -- "${script_directory}/.." && pwd -P)"
 scratch_parent="${RELEASE_WORKSPACE:-${TMPDIR:-/tmp}}"
@@ -238,6 +239,7 @@ capture_and_validate_candidate() {
       "${EXPECTED_IMAGE_DIGEST}" \
       "${EXPECTED_SOURCE_COMMIT}" \
       "${RUNTIME_SERVICE_ACCOUNT}" \
+      "${CANDIDATE_CONTAINER_CONCURRENCY}" \
       "${production_revision_before_device_smoke}" <<'PY'
 import json
 import sys
@@ -251,6 +253,7 @@ from pathlib import Path
     expected_digest,
     expected_source_commit,
     runtime_service_account,
+    expected_container_concurrency,
     production_before_smoke,
 ) = sys.argv[1:]
 service = json.loads(Path(service_path).read_text())
@@ -305,6 +308,8 @@ if revision.get("status", {}).get("imageDigest") != expected_digest:
     raise SystemExit("Candidate image digest mismatch")
 if revision.get("spec", {}).get("serviceAccountName") != runtime_service_account:
     raise SystemExit("Candidate runtime identity mismatch")
+if revision.get("spec", {}).get("containerConcurrency") != int(expected_container_concurrency):
+    raise SystemExit("Candidate container concurrency mismatch")
 revision_conditions = revision.get("status", {}).get("conditions", [])
 if not any(
     item.get("type") == "Ready" and item.get("status") == "True"

@@ -31,6 +31,7 @@ fi
 test -n "${firebase_app_id}"
 
 RUNTIME_SERVICE_ACCOUNT=lifesnap-runtime@zhang23-23.iam.gserviceaccount.com
+CANDIDATE_CONTAINER_CONCURRENCY=4
 FIREBASE_PROJECT_ID=zhang23-23
 FIREBASE_APP_ID="${firebase_app_id}"
 FIRESTORE_DATABASE_ID=lifesnap-quota
@@ -234,6 +235,7 @@ prepare_candidate_payload() {
     "${candidate_tag}" \
     "${image_digest}" \
     "${RUNTIME_SERVICE_ACCOUNT}" \
+    "${CANDIDATE_CONTAINER_CONCURRENCY}" \
     "${FIREBASE_PROJECT_ID}" \
     "${FIREBASE_APP_ID}" \
     "${FIRESTORE_DATABASE_ID}" \
@@ -251,6 +253,7 @@ from pathlib import Path
     candidate_tag,
     image_digest,
     runtime_service_account,
+    candidate_container_concurrency,
     firebase_project_id,
     firebase_app_id,
     firestore_database_id,
@@ -326,7 +329,9 @@ container["env"] = [
     {"name": "FIREBASE_APP_ID", "value": firebase_app_id},
     {"name": "FIRESTORE_DATABASE_ID", "value": firestore_database_id},
 ]
-template.setdefault("spec", {})["serviceAccountName"] = runtime_service_account
+template_spec = template.setdefault("spec", {})
+template_spec["serviceAccountName"] = runtime_service_account
+template_spec["containerConcurrency"] = int(candidate_container_concurrency)
 traffic = copy.deepcopy(current.get("spec", {}).get("traffic", []))
 if any(item.get("tag") == candidate_tag for item in traffic):
     raise SystemExit("Unique candidate tag already exists")
@@ -495,6 +500,7 @@ verify_candidate_runtime() {
     "${revision_json}" \
     "${image_digest}" \
     "${RUNTIME_SERVICE_ACCOUNT}" \
+    "${CANDIDATE_CONTAINER_CONCURRENCY}" \
     "${BUILD_ID}" \
     "${COMMIT_SHA}" \
     "${FIREBASE_PROJECT_ID}" \
@@ -509,6 +515,7 @@ from pathlib import Path
     path,
     expected_image_digest,
     expected_service_account,
+    expected_container_concurrency,
     build_id,
     commit_sha,
     firebase_project_id,
@@ -541,6 +548,8 @@ for key in (
         raise SystemExit(f"Legacy candidate revision label remains: {key}")
 if revision.get("spec", {}).get("serviceAccountName") != expected_service_account:
     raise SystemExit("Candidate runtime service account is not dedicated")
+if revision.get("spec", {}).get("containerConcurrency") != int(expected_container_concurrency):
+    raise SystemExit("Candidate container concurrency mismatch")
 conditions = revision.get("status", {}).get("conditions", [])
 if not any(
     item.get("type") == "Ready" and item.get("status") == "True"

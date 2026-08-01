@@ -34,6 +34,7 @@ dotenv.config({ quiet: true });
 
 const PORT = parseInt(process.env.PORT || "8080", 10);
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+const MAX_MULTIPART_FIELD_NAME_CHARACTERS = 64;
 const ALLOWED_IMAGE_MIME_TYPES = new Set(["image/jpeg", "image/png", "image/webp", "image/jpg"]);
 const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash";
 
@@ -291,9 +292,26 @@ function buildUploadMiddleware(
     | "LEGACY_UNSUPPORTED_IMAGE_TYPE"
     | "V2_UNSUPPORTED_IMAGE_TYPE",
 ) {
+  // Multer 2.2 enforces fieldNestingDepth even though @types/multer 1.4
+  // has not added it yet. Busboy 1.6 independently hard-caps each part at
+  // 2,000 headers and 16 KiB of header bytes; its headerPairs option is inert.
+  const uploadLimits: NonNullable<multer.Options["limits"]> & {
+    fieldNestingDepth: number;
+  } = {
+    fieldNameSize: MAX_MULTIPART_FIELD_NAME_CHARACTERS,
+    fieldNestingDepth: 0,
+    fieldSize: 0,
+    fields: 0,
+    fileSize: MAX_IMAGE_BYTES,
+    files: 1,
+    // Busboy 1.6 emits partsLimit when count reaches the cutoff, so 2
+    // permits exactly one image part and rejects any second part.
+    parts: 2,
+  };
+
   return multer({
     storage: multer.memoryStorage(),
-    limits: { fileSize: MAX_IMAGE_BYTES, files: 1 },
+    limits: uploadLimits,
     fileFilter: (_req, file, cb) => {
       if (isAllowedImageMimeType(file.mimetype)) {
         cb(null, true);
@@ -333,6 +351,17 @@ const APP_CHECK_ERROR_CODES = new Set<AppCheckRequestErrorCode>([
   "APP_CHECK_REPLAYED",
   "APP_ID_FORBIDDEN",
   "SECURITY_SERVICE_UNAVAILABLE",
+]);
+
+const MALFORMED_MULTIPART_ERROR_CODES = new Set([
+  "LIMIT_FIELD_COUNT",
+  "LIMIT_FIELD_KEY",
+  "LIMIT_FIELD_NESTING",
+  "LIMIT_FIELD_VALUE",
+  "LIMIT_FILE_COUNT",
+  "LIMIT_PART_COUNT",
+  "LIMIT_UNEXPECTED_FILE",
+  "MISSING_FIELD_NAME",
 ]);
 
 function appCheckHttpError(error: unknown): Error {
@@ -753,6 +782,23 @@ export function createApp(options: CreateAppOptions = {}) {
         code: tooLargeError.code,
       });
       sendPublicError(res, tooLargeError);
+      return;
+    }
+    if (
+      typeof errorCode === "string" &&
+      MALFORMED_MULTIPART_ERROR_CODES.has(errorCode) &&
+      isExtractionRoute
+    ) {
+      const multipartError = publicErrorSnapshot(
+        "MULTIPART_REQUEST_INVALID",
+      );
+      logger.warn("extract_rejected", {
+        request_id: requestId,
+        route_category: routeCategory,
+        status: multipartError.statusCode,
+        code: multipartError.code,
+      });
+      sendPublicError(res, multipartError);
       return;
     }
 

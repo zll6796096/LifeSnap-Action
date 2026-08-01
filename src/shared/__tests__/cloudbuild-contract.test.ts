@@ -18,6 +18,7 @@ import { parse } from "yaml";
 
 const repoRoot = fileURLToPath(new URL("../../../", import.meta.url));
 const configPath = join(repoRoot, "cloudbuild.yaml");
+const dockerfilePath = join(repoRoot, "Dockerfile");
 const packagePath = join(repoRoot, "package.json");
 const releaseScriptPath = join(repoRoot, "scripts/promote-and-verify.sh");
 const promotionScriptPath = join(
@@ -28,6 +29,7 @@ const temporaryDirectories: string[] = [];
 
 type BuildStep = {
   id: string;
+  name: string;
   args?: string[];
   env?: string[];
 };
@@ -206,6 +208,37 @@ describe("Cloud Build release contract", () => {
     expect(packageJson.devDependencies.yaml).toBe("2.9.0");
   });
 
+  it("builds and runs with supported Node 24 and production-only non-root dependencies", async () => {
+    const config = parse(await readFile(configPath, "utf8")) as {
+      steps: BuildStep[];
+    };
+    const dockerfile = await readFile(dockerfilePath, "utf8");
+    const npmSteps = config.steps.filter(({ id }) => id.startsWith("npm-"));
+    const nodeBaseImages = dockerfile
+      .split("\n")
+      .filter((line) => line.startsWith("FROM node:"));
+
+    expect(npmSteps.map(({ name }) => name)).toEqual([
+      "node:24",
+      "node:24",
+      "node:24",
+      "node:24",
+    ]);
+    expect(nodeBaseImages.length).toBeGreaterThanOrEqual(2);
+    expect(nodeBaseImages.every((line) => line.startsWith("FROM node:24-slim"))).toBe(
+      true,
+    );
+    expect(dockerfile).toContain("RUN npm ci --omit=dev");
+    expect(dockerfile).toContain("--from=production-dependencies");
+    expect(dockerfile).not.toContain("COPY --from=builder /app/node_modules");
+    expect(dockerfile.indexOf("USER node")).toBeGreaterThan(
+      dockerfile.indexOf("ENV NODE_ENV=production"),
+    );
+    expect(dockerfile.indexOf("CMD [\"node\", \"dist/server.cjs\"]")).toBeGreaterThan(
+      dockerfile.indexOf("USER node"),
+    );
+  });
+
   it("keeps production unchanged after candidate validation", async () => {
     const fixture = await createReleaseFixture();
     const result = runReleaseScript(fixture);
@@ -247,6 +280,7 @@ describe("Cloud Build release contract", () => {
     ) as {
       environment: Array<Record<string, unknown>>;
       image: string;
+      containerConcurrency: number;
       revisionLabels: Record<string, string>;
       serviceAccountName: string;
       serviceLabels: Record<string, string>;
@@ -267,6 +301,7 @@ describe("Cloud Build release contract", () => {
       "api-contract": "v2-app-check",
     });
     expect(candidateSnapshot.image).toBe(fixture.imageDigest);
+    expect(candidateSnapshot.containerConcurrency).toBe(4);
     expect(candidateSnapshot.serviceAccountName).toBe(
       "lifesnap-runtime@zhang23-23.iam.gserviceaccount.com",
     );
@@ -391,6 +426,22 @@ describe("Cloud Build release contract", () => {
     expect(result.stderr).toContain("Production changed after device smoke began");
     const mutationCalls = (calls: string) =>
       calls.split("\n").filter((line) => line.startsWith("PUT "));
+    expect(mutationCalls(callsAfter)).toEqual(mutationCalls(callsBefore));
+  });
+
+  it("blocks promotion when the candidate upload concurrency contract drifts", async () => {
+    const fixture = await createReleaseFixture();
+    const candidateResult = runReleaseScript(fixture);
+    expect(candidateResult.status, candidateResult.stderr).toBe(0);
+    const evidence = await writeDeviceEvidence(fixture);
+    fixture.env.CANDIDATE_CONCURRENCY_OVERRIDE = "80";
+    const callsBefore = await readFile(fixture.curlLog, "utf8");
+
+    const result = runPromotionScript(fixture, evidence);
+    const callsAfter = await readFile(fixture.curlLog, "utf8");
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("Candidate container concurrency mismatch");
     expect(mutationCalls(callsAfter)).toEqual(mutationCalls(callsBefore));
   });
 
@@ -916,6 +967,10 @@ if (text === "auth print-access-token") {
       containers: [{
         env: state.spec.template.spec.containers[0].env,
       }],
+      containerConcurrency: Number(
+        process.env.CANDIDATE_CONCURRENCY_OVERRIDE ||
+          state.spec.template.spec.containerConcurrency
+      ),
       serviceAccountName: state.spec.template.spec.serviceAccountName,
     },
     status: {
@@ -1078,6 +1133,7 @@ if (url === serviceUrl && method === "GET") {
       JSON.stringify({
         environment: payload.spec.template.spec.containers[0].env,
         image: payload.spec.template.spec.containers[0].image,
+        containerConcurrency: payload.spec.template.spec.containerConcurrency,
         revisionLabels,
         serviceAccountName: payload.spec.template.spec.serviceAccountName,
         serviceLabels: payload.metadata.labels,

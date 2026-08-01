@@ -1,27 +1,27 @@
 steps:
   - id: npm-ci
-    name: node:20
+    name: node:24
     entrypoint: bash
     args:
       - -ceu
       - npm ci
 
   - id: npm-test
-    name: node:20
+    name: node:24
     entrypoint: bash
     args:
       - -ceu
       - npm test
 
   - id: npm-lint
-    name: node:20
+    name: node:24
     entrypoint: bash
     args:
       - -ceu
       - npm run lint
 
   - id: npm-build
-    name: node:20
+    name: node:24
     entrypoint: bash
     args:
       - -ceu

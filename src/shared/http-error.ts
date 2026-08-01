@@ -5,6 +5,7 @@ export type PublicErrorKey =
   | "APP_ID_FORBIDDEN"
   | "SECURITY_SERVICE_UNAVAILABLE"
   | "INSTALLATION_ID_INVALID"
+  | "MULTIPART_REQUEST_INVALID"
   | "IMAGE_REQUIRED"
   | "LEGACY_UNSUPPORTED_IMAGE_TYPE"
   | "V2_UNSUPPORTED_IMAGE_TYPE"
@@ -64,6 +65,11 @@ const PUBLIC_ERROR_CATALOG: Readonly<
     400,
     "INSTALLATION_ID_INVALID",
     "インストール識別子が無効です。",
+  ),
+  MULTIPART_REQUEST_INVALID: entry(
+    400,
+    "MULTIPART_REQUEST_INVALID",
+    "画像アップロードの形式が無効です。",
   ),
   IMAGE_REQUIRED: entry(
     400,
