@@ -729,7 +729,7 @@ if not isinstance(operation, dict) or "error" in operation:
     raise SystemExit("Trigger run did not return a successful Operation")
 operation_name = operation.get("name")
 operation_patterns = (
-    rf"operations/build/{re.escape(project_number)}/[^/\s]+",
+    rf"operations/build/{re.escape(project_id)}/[^/\s]+",
     rf"projects/{re.escape(project_number)}/locations/{re.escape(region)}/operations/[^/\s]+",
 )
 if not isinstance(operation_name, str) or not any(
