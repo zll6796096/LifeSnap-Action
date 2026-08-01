@@ -1104,11 +1104,6 @@ metadata = service.get("metadata", {})
 resource_version = metadata.get("resourceVersion")
 if not isinstance(resource_version, str) or not resource_version:
     raise SystemExit("Pending promotion current resourceVersion is missing")
-if (
-    state["phase"] == "pending_gate_e"
-    and resource_version != state["promoted_resource_version"]
-):
-    raise SystemExit("Pending promotion resourceVersion no longer matches")
 labels = metadata.get("labels", {})
 if (
     labels.get("source-commit") != state["expected_source_commit"]
@@ -1135,6 +1130,23 @@ if revision_spec.get("serviceAccountName") != state["runtime_service_account"]:
     raise SystemExit("Pending candidate runtime identity no longer matches")
 if revision_spec.get("containerConcurrency") != state["candidate_container_concurrency"]:
     raise SystemExit("Pending candidate concurrency no longer matches")
+PY
+}
+
+assert_pending_finalize_resource_version() {
+  local service_json="$1"
+  python3 - \
+    "${pending_state_copy_json}" \
+    "${service_json}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+state_path, service_path = sys.argv[1:]
+state = json.loads(Path(state_path).read_text())
+service = json.loads(Path(service_path).read_text())
+if service.get("metadata", {}).get("resourceVersion") != state["promoted_resource_version"]:
+    raise SystemExit("Pending promotion resourceVersion no longer matches")
 PY
 }
 
@@ -1226,11 +1238,6 @@ owned_promoted = (
     and labels.get("promotion-owner") == state["promotion_owner"]
 )
 if owned_promoted:
-    if (
-        state["phase"] == "pending_gate_e"
-        and metadata.get("resourceVersion") != state["promoted_resource_version"]
-    ):
-        raise SystemExit("Pending promotion resourceVersion no longer matches")
     print("promoted")
     raise SystemExit(0)
 
@@ -1258,11 +1265,7 @@ expected_traffic = [
     {"revisionName": state["candidate_revision"], "percent": 100}
 ]
 if (
-    (
-        state["phase"] == "pending_gate_e"
-        and metadata.get("resourceVersion") != state["promoted_resource_version"]
-    )
-    or labels.get("source-commit") != state["expected_source_commit"]
+    labels.get("source-commit") != state["expected_source_commit"]
     or labels.get("promotion-owner") != state["promotion_owner"]
     or current.get("spec", {}).get("traffic", []) != expected_traffic
 ):
@@ -1378,6 +1381,7 @@ finalize_pending_promotion() {
   access_token="$(gcloud auth print-access-token)"
   api_get_service "${promotion_verified_json}"
   describe_pending_candidate
+  assert_pending_finalize_resource_version "${promotion_verified_json}"
   assert_pending_rollback_owned \
     "${promotion_verified_json}" \
     "${candidate_revision_json}"

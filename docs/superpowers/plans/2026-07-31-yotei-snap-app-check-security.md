@@ -4944,73 +4944,26 @@ Expected: clean worktree and only approved security/rebrand scope.
 - [ ] **Step 1: Snapshot and disable the automatic main trigger before publishing**
 
 Identify the one global automatic trigger for this repository's `main` branch by
-its exact regional trigger UUID. Before the first merge, capture its complete
-REST representation to a private local file, record its prior boolean
-`disabled` state, disable only that field with `updateMask=disabled`, and verify
-the read-back. An omitted `disabled` field is the normal enabled default and is
-captured as `false`; if the field is present, it must be a JSON boolean.
-Explicit `null`, strings, and other types are invalid in the snapshot, PATCH
-response, and every fresh GET. Do not print the access token or the snapshot
-contents.
+its exact regional trigger UUID. Use the lifecycle helper before the first
+merge. It atomically saves the complete trigger REST representation before any
+PATCH, records the prior boolean `disabled` state, sends a full-trigger PATCH
+with `updateMask=disabled`, and checks a fresh GET differs only in that field.
+The helper derives the same private manifest path from the canonical current
+Git worktree on every invocation, so every command below is safe to run in a
+new shell. Its state directory is user-owned mode `0700`; the manifest is mode
+`0600`, rejects symlinks and hard links, and never stores the access token.
 
 ```bash
-set -Eeuo pipefail
-umask 077
-project_id=zhang23-23
-trigger_region=asia-northeast1
-trigger_id="<exact reviewed main-trigger UUID>"
-trigger_api="https://cloudbuild.googleapis.com/v1/projects/${project_id}/locations/${trigger_region}/triggers/${trigger_id}"
-trigger_snapshot_path="$(mktemp "${TMPDIR:-/tmp}/lifesnap-main-trigger.XXXXXXXX.json")"
-trigger_patch_path="$(mktemp "${TMPDIR:-/tmp}/lifesnap-main-trigger-patch.XXXXXXXX.json")"
-trigger_readback_path="$(mktemp "${TMPDIR:-/tmp}/lifesnap-main-trigger-readback.XXXXXXXX.json")"
-trigger_fresh_path="$(mktemp "${TMPDIR:-/tmp}/lifesnap-main-trigger-fresh.XXXXXXXX.json")"
-trigger_snapshot_compare_path="$(mktemp "${TMPDIR:-/tmp}/lifesnap-main-trigger-snapshot-compare.XXXXXXXX.json")"
-trigger_fresh_compare_path="$(mktemp "${TMPDIR:-/tmp}/lifesnap-main-trigger-fresh-compare.XXXXXXXX.json")"
-chmod 600 \
-  "${trigger_snapshot_path}" \
-  "${trigger_patch_path}" \
-  "${trigger_readback_path}" \
-  "${trigger_fresh_path}" \
-  "${trigger_snapshot_compare_path}" \
-  "${trigger_fresh_compare_path}"
-access_token="$(gcloud auth print-access-token)"
-
-curl --fail --silent --show-error \
-  --header "Authorization: Bearer ${access_token}" \
-  --output "${trigger_snapshot_path}" \
-  "${trigger_api}"
-jq -e '(has("disabled") | not) or (.disabled | type == "boolean")' \
-  "${trigger_snapshot_path}" >/dev/null
-prior_trigger_disabled="$(
-  jq -r 'if has("disabled") then .disabled else false end' \
-    "${trigger_snapshot_path}"
-)"
-jq -n '{disabled: true}' > "${trigger_patch_path}"
-curl --fail --silent --show-error \
-  --request PATCH \
-  --header "Authorization: Bearer ${access_token}" \
-  --header 'Content-Type: application/json' \
-  --data-binary "@${trigger_patch_path}" \
-  --output "${trigger_readback_path}" \
-  "${trigger_api}?updateMask=disabled"
-jq -e '.disabled == true' "${trigger_readback_path}" >/dev/null
-curl --fail --silent --show-error \
-  --header "Authorization: Bearer ${access_token}" \
-  --output "${trigger_fresh_path}" \
-  "${trigger_api}"
-jq -e '.disabled == true' "${trigger_fresh_path}" >/dev/null
-jq -S 'del(.disabled)' \
-  "${trigger_snapshot_path}" > "${trigger_snapshot_compare_path}"
-jq -S 'del(.disabled)' \
-  "${trigger_fresh_path}" > "${trigger_fresh_compare_path}"
-cmp --silent \
-  "${trigger_snapshot_compare_path}" \
-  "${trigger_fresh_compare_path}"
-unset access_token
+PROJECT_ID=zhang23-23 \
+TRIGGER_REGION=asia-northeast1 \
+TRIGGER_ID="<exact reviewed main-trigger UUID>" \
+  ./scripts/manage-lifesnap-trigger.sh prepare-disable
 ```
 
-Keep the private snapshot until restoration is verified. If any snapshot,
-PATCH, or verification step fails, stop before publishing. Use the
+Keep the durable private manifest until restoration is verified. A retry of
+`prepare-disable` resumes a saved pre-PATCH state or verifies the already
+disabled state; a corrupt, mismatched, or drifted manifest fails closed. If any
+snapshot, PATCH, or verification step fails, stop before publishing. Use the
 finishing-development-branch workflow only after the trigger is proven
 disabled. Push only the reviewed branch, create or update one PR, wait for
 required CI, and merge only if the repository's current branch policy permits
@@ -5038,25 +4991,17 @@ assumptions, stop before candidate creation. A passing preflight is not
 candidate, deployment, traffic, or production acceptance evidence.
 
 ```bash
-set -Eeuo pipefail
 git fetch origin main
-merged_sha="$(git rev-parse origin/main)"
-test -n "${merged_sha}"
-access_token="$(gcloud auth print-access-token)"
-curl --fail --silent --show-error \
-  --header "Authorization: Bearer ${access_token}" \
-  --output "${trigger_fresh_path}" \
-  "${trigger_api}"
-jq -e '.disabled == true' "${trigger_fresh_path}" >/dev/null
-jq -S 'del(.disabled)' \
-  "${trigger_fresh_path}" > "${trigger_fresh_compare_path}"
-cmp --silent \
-  "${trigger_snapshot_compare_path}" \
-  "${trigger_fresh_compare_path}"
-unset access_token
+git rev-parse origin/main
+
+PROJECT_ID=zhang23-23 \
+TRIGGER_REGION=asia-northeast1 \
+TRIGGER_ID="<exact reviewed main-trigger UUID>" \
+  ./scripts/manage-lifesnap-trigger.sh verify-disabled
 ```
 
-The fresh Gate B record must name `${merged_sha}` and the trigger must remain
+The fresh Gate B record must name the exact 40-hex SHA printed by
+`git rev-parse origin/main`, and the trigger must remain
 disabled throughout Gate B and the candidate/manual release sequence.
 
 - [ ] **Step 3: Trigger the candidate-only Cloud Build**
@@ -5065,14 +5010,16 @@ Manually run the disabled regional trigger against the exact merged SHA. Do not
 re-enable its automatic `main` event to create the candidate:
 
 ```bash
-set -Eeuo pipefail
-gcloud builds triggers run "${trigger_id}" \
-  --project="${project_id}" \
-  --region="${trigger_region}" \
-  --sha="${merged_sha}"
+PROJECT_ID=zhang23-23 \
+TRIGGER_REGION=asia-northeast1 \
+TRIGGER_ID="<exact reviewed main-trigger UUID>" \
+MERGED_SHA="<exact reviewed 40-hex origin/main SHA>" \
+  ./scripts/manage-lifesnap-trigger.sh run-exact
 ```
 
-Require the resulting build's `COMMIT_SHA` to equal `${merged_sha}`. Record:
+The helper re-verifies the durable manifest and fresh disabled trigger before
+one invocation, requires the resulting build's `COMMIT_SHA` to equal
+`MERGED_SHA`, and prints the build ID plus commit. Record:
 
 - build ID;
 - source commit;
@@ -5301,59 +5248,19 @@ all release and evidence mutations to `main` are complete.
 
 - [ ] **Step 10: Restore the exact prior automatic-trigger disabled state**
 
-Only after the release/evidence merge is verified on `origin/main`, PATCH the
-same trigger's `disabled` field back to the saved boolean. Verify a fresh GET
-matches the saved value, then remove the private trigger files. If PATCH or
-verification fails, keep the snapshot and report the trigger as not restored.
+Only after every release/evidence mutation is merged and verified on
+`origin/main`, restore the same trigger. The helper re-derives and validates the
+durable manifest, requires the current trigger to match the saved snapshot
+except for `disabled`, sends a full-trigger PATCH back to the saved state, and
+requires a fresh GET to equal the exact original snapshot. It deletes the
+manifest only after that verification. If PATCH or verification fails, it
+keeps the manifest and the trigger must be reported as not restored.
 
 ```bash
-set -Eeuo pipefail
-access_token="$(gcloud auth print-access-token)"
-jq -e '(has("disabled") | not) or (.disabled | type == "boolean")' \
-  "${trigger_snapshot_path}" >/dev/null
-prior_trigger_disabled="$(
-  jq -r 'if has("disabled") then .disabled else false end' \
-    "${trigger_snapshot_path}"
-)"
-jq -n \
-  --argjson disabled "${prior_trigger_disabled}" \
-  '{disabled: $disabled}' > "${trigger_patch_path}"
-curl --fail --silent --show-error \
-  --request PATCH \
-  --header "Authorization: Bearer ${access_token}" \
-  --header 'Content-Type: application/json' \
-  --data-binary "@${trigger_patch_path}" \
-  --output "${trigger_readback_path}" \
-  "${trigger_api}?updateMask=disabled"
-jq -e \
-  --argjson disabled "${prior_trigger_disabled}" \
-  '((has("disabled") | not) or (.disabled | type == "boolean")) and
-   ((if has("disabled") then .disabled else false end) == $disabled)' \
-  "${trigger_readback_path}" >/dev/null
-curl --fail --silent --show-error \
-  --header "Authorization: Bearer ${access_token}" \
-  --output "${trigger_fresh_path}" \
-  "${trigger_api}"
-jq -e \
-  --argjson disabled "${prior_trigger_disabled}" \
-  '((has("disabled") | not) or (.disabled | type == "boolean")) and
-   ((if has("disabled") then .disabled else false end) == $disabled)' \
-  "${trigger_fresh_path}" >/dev/null
-jq -S '.disabled = (if has("disabled") then .disabled else false end)' \
-  "${trigger_snapshot_path}" > "${trigger_snapshot_compare_path}"
-jq -S '.disabled = (if has("disabled") then .disabled else false end)' \
-  "${trigger_fresh_path}" > "${trigger_fresh_compare_path}"
-cmp --silent \
-  "${trigger_snapshot_compare_path}" \
-  "${trigger_fresh_compare_path}"
-unset access_token
-rm -f -- \
-  "${trigger_snapshot_path}" \
-  "${trigger_patch_path}" \
-  "${trigger_readback_path}" \
-  "${trigger_fresh_path}" \
-  "${trigger_snapshot_compare_path}" \
-  "${trigger_fresh_compare_path}"
+PROJECT_ID=zhang23-23 \
+TRIGGER_REGION=asia-northeast1 \
+TRIGGER_ID="<exact reviewed main-trigger UUID>" \
+  ./scripts/manage-lifesnap-trigger.sh restore
 ```
 
 ### Task 15: Establish the legacy retirement observation gate

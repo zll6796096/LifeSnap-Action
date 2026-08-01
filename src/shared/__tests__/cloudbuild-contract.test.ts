@@ -445,27 +445,34 @@ describe("Cloud Build release contract", () => {
 
   it("documents disabled-trigger exact-SHA execution and two-phase cutover commands", async () => {
     const plan = await readFile(securityPlanPath, "utf8");
+    const helper = await readFile(
+      join(repoRoot, "scripts/manage-lifesnap-trigger.sh"),
+      "utf8",
+    );
     const triggerPlan = plan.slice(
       plan.indexOf("### Task 14:"),
       plan.indexOf("### Task 15:"),
     );
 
-    expect(plan).toContain("trigger_snapshot_path=");
-    expect((plan.match(/set -Eeuo pipefail/g) ?? []).length)
-      .toBeGreaterThanOrEqual(3);
-    expect(plan).toContain("updateMask=disabled");
-    expect(plan).toContain("'{disabled: true}'");
-    expect(plan).toContain(
-      "jq -e '(has(\"disabled\") | not) or (.disabled | type == \"boolean\")'",
+    expect(triggerPlan).toContain(
+      "./scripts/manage-lifesnap-trigger.sh prepare-disable",
     );
-    expect(plan).toContain(
-      "jq -r 'if has(\"disabled\") then .disabled else false end'",
+    expect(triggerPlan).toContain(
+      "./scripts/manage-lifesnap-trigger.sh verify-disabled",
     );
-    expect(triggerPlan).not.toContain(".disabled // false");
-    expect(plan).toContain("del(.disabled)");
-    expect(plan).toContain("cmp --silent");
-    expect(plan).toContain('--sha="${merged_sha}"');
-    expect(plan).toContain("prior_trigger_disabled");
+    expect(triggerPlan).toContain(
+      "./scripts/manage-lifesnap-trigger.sh run-exact",
+    );
+    expect(triggerPlan).toContain("./scripts/manage-lifesnap-trigger.sh restore");
+    expect(triggerPlan).not.toContain("trigger_snapshot_path=");
+    expect(triggerPlan).not.toContain("prior_trigger_disabled=");
+    expect(triggerPlan).not.toContain("merged_sha=");
+    expect(triggerPlan).not.toContain("access_token=");
+    expect(helper).toContain("updateMask=disabled");
+    expect(helper).toContain('trigger["disabled"] = disabled == "true"');
+    expect(helper).toContain('getattr(os, "O_NOFOLLOW", 0)');
+    expect(helper).toContain("details.st_nlink != 1");
+    expect(helper).toContain("os.fsync");
     expect(plan).toContain("PROMOTION_MODE=promote");
     expect(plan).toContain("PROMOTION_MODE=finalize");
     expect(plan).toContain("PROMOTION_MODE=rollback");
@@ -474,61 +481,17 @@ describe("Cloud Build release contract", () => {
   });
 
   it("treats only an omitted trigger disabled field as false", async () => {
-    const plan = await readFile(securityPlanPath, "utf8");
-    const validationFilter =
-      '(has("disabled") | not) or (.disabled | type == "boolean")';
-    const captureFilter =
-      'if has("disabled") then .disabled else false end';
-    const restorationFilter =
-      `((has("disabled") | not) or (.disabled | type == "boolean")) and ` +
-      `((if has("disabled") then .disabled else false end) == $disabled)`;
+    const helper = await readFile(
+      join(repoRoot, "scripts/manage-lifesnap-trigger.sh"),
+      "utf8",
+    );
 
-    expect(plan).toContain(`jq -e '${validationFilter}'`);
-    expect(plan).toContain(`jq -r '${captureFilter}'`);
-    for (const document of [{}, { disabled: false }, { disabled: true }]) {
-      expect(spawnSync("jq", ["-e", validationFilter], {
-        encoding: "utf8",
-        input: JSON.stringify(document),
-      }).status).toBe(0);
-    }
-    for (const document of [{ disabled: null }, { disabled: "false" }]) {
-      expect(spawnSync("jq", ["-e", validationFilter], {
-        encoding: "utf8",
-        input: JSON.stringify(document),
-      }).status).not.toBe(0);
-    }
-    expect(spawnSync("jq", ["-r", captureFilter], {
-      encoding: "utf8",
-      input: "{}",
-    }).stdout.trim()).toBe("false");
-    for (const document of [{}, { disabled: false }]) {
-      expect(spawnSync("jq", [
-        "-e",
-        "--argjson",
-        "disabled",
-        "false",
-        restorationFilter,
-      ], {
-        encoding: "utf8",
-        input: JSON.stringify(document),
-      }).status).toBe(0);
-    }
-    for (const document of [
-      { disabled: null },
-      { disabled: "false" },
-      { disabled: true },
-    ]) {
-      expect(spawnSync("jq", [
-        "-e",
-        "--argjson",
-        "disabled",
-        "false",
-        restorationFilter,
-      ], {
-        encoding: "utf8",
-        input: JSON.stringify(document),
-      }).status).not.toBe(0);
-    }
+    expect(helper).toContain('snapshot.get("disabled", False)');
+    expect(helper).toContain(
+      '"disabled" in snapshot and not isinstance(snapshot["disabled"], bool)',
+    );
+    expect(helper).toContain('current_without.pop("disabled", False)');
+    expect(helper).not.toContain(".disabled // false");
   });
 
   it("promotes only the exact candidate named by sanitized device evidence", async () => {
@@ -841,7 +804,7 @@ describe("Cloud Build release contract", () => {
     });
   });
 
-  it("preserves pending state when finalize no longer owns the resource version", async () => {
+  it("keeps finalize strict but rolls back an owned pending promotion after its resource version advances", async () => {
     const fixture = await createReleaseFixture();
     expect(runReleaseScript(fixture).status).toBe(0);
     const evidence = await writeDeviceEvidence(fixture);
@@ -849,14 +812,64 @@ describe("Cloud Build release contract", () => {
     expect(promoted.status, promoted.stderr).toBe(0);
     const state = await readServiceState(fixture);
     state.metadata.resourceVersion = "rv-99";
+    state.status.traffic = [
+      { percent: 100, revisionName: fixture.rollbackRevision },
+    ];
+    state.status.conditions = [];
     await writeFile(fixture.serviceState, `${JSON.stringify(state)}\n`);
+    const callsBeforeFinalize = await readFile(fixture.curlLog, "utf8");
 
     const finalized = runPromotionScript(fixture, evidence, {
       mode: "finalize",
     });
+    const callsAfterFinalize = await readFile(fixture.curlLog, "utf8");
 
     expect(finalized.status).not.toBe(0);
     expect(finalized.stderr).toContain("resourceVersion");
+    expect(mutationCalls(callsAfterFinalize)).toEqual(
+      mutationCalls(callsBeforeFinalize),
+    );
+    expect((await lstat(fixture.promotionState)).isFile()).toBe(true);
+
+    const rolledBack = runPromotionScript(fixture, evidence, {
+      mode: "rollback",
+    });
+    const rolledBackState = await readServiceState(fixture);
+
+    expect(rolledBack.status, rolledBack.stderr).toBe(0);
+    expect(rolledBack.stderr).toContain("promotion_rollback=PASS");
+    expect(rolledBackState.spec.traffic).toEqual([
+      { percent: 100, revisionName: fixture.rollbackRevision },
+      {
+        latestRevision: true,
+        percent: 0,
+        tag: fixture.candidateTag,
+      },
+    ]);
+    await expect(lstat(fixture.promotionState)).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  });
+
+  it("preserves the WAL when a concurrent change wins after rollback GET", async () => {
+    const fixture = await createReleaseFixture();
+    expect(runReleaseScript(fixture).status).toBe(0);
+    const evidence = await writeDeviceEvidence(fixture);
+    expect(runPromotionScript(fixture, evidence).status).toBe(0);
+    fixture.env.INJECT_STALE_ROLLBACK = "1";
+
+    const rolledBack = runPromotionScript(fixture, evidence, {
+      mode: "rollback",
+    });
+    const state = await readServiceState(fixture);
+    const calls = await readFile(fixture.curlLog, "utf8");
+
+    expect(rolledBack.status).not.toBe(0);
+    expect(calls).toContain("result=precondition-failed status=409");
+    expect(state.spec.traffic).toEqual([
+      { percent: 100, revisionName: fixture.candidateRevision },
+    ]);
+    expect(state.metadata.resourceVersion).toBe("rv-99");
     expect((await lstat(fixture.promotionState)).isFile()).toBe(true);
   });
 
@@ -1901,6 +1914,11 @@ if (url === serviceUrl && method === "GET") {
     revisionLabels["release-build"] === process.env.BUILD_ID &&
     Boolean(candidateTarget);
   const isPromotion = source === process.env.COMMIT_SHA;
+  const isRollback =
+    source !== process.env.COMMIT_SHA &&
+    payload.spec.traffic.some(
+      (target) => target.revisionName === process.env.ROLLBACK_REVISION,
+    );
   if (
     isPromotion &&
     process.env.INJECT_STALE_PROMOTION === "1" &&
@@ -1917,9 +1935,25 @@ if (url === serviceUrl && method === "GET") {
     log(
       "PUT source=" + source + " resourceVersion=" +
       payload.metadata.resourceVersion +
-      " result=precondition-failed",
+      " result=precondition-failed status=409",
     );
     respond('{"error":{"code":409,"status":"ABORTED"}}\\n');
+    process.exit(22);
+  }
+  if (
+    isRollback &&
+    process.env.INJECT_STALE_ROLLBACK === "1" &&
+    !fs.existsSync(process.env.STALE_INJECTION_FLAG)
+  ) {
+    fs.writeFileSync(process.env.STALE_INJECTION_FLAG, "injected\\n");
+    state.metadata.resourceVersion = "rv-99";
+    writeState(state);
+    log(
+      "PUT source=" + source + " resourceVersion=" +
+      payload.metadata.resourceVersion +
+      " result=precondition-failed status=409",
+    );
+    respond('{"error":{"code":409,"status":"ABORTED"}}\\n', 409);
     process.exit(22);
   }
   if (
@@ -1996,11 +2030,6 @@ if (url === serviceUrl && method === "GET") {
     respond(JSON.stringify(state) + "\\n");
     process.exit(0);
   }
-  const isRollback =
-    source !== process.env.COMMIT_SHA &&
-    payload.spec.traffic.some(
-      (target) => target.revisionName === process.env.ROLLBACK_REVISION,
-    );
   state.metadata.labels = payload.metadata.labels;
   state.metadata.annotations = payload.metadata.annotations;
   state.spec = payload.spec;
