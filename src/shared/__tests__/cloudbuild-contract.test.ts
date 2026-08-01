@@ -21,6 +21,7 @@ import { parse } from "yaml";
 
 const repoRoot = fileURLToPath(new URL("../../../", import.meta.url));
 const configPath = join(repoRoot, "cloudbuild.yaml");
+const ciWorkflowPath = join(repoRoot, ".github/workflows/ci.yml");
 const dockerfilePath = join(repoRoot, "Dockerfile");
 const packagePath = join(repoRoot, "package.json");
 const securityPlanPath = join(
@@ -244,6 +245,27 @@ describe("Cloud Build release contract", () => {
     expect(dockerfile.indexOf("CMD [\"node\", \"dist/server.cjs\"]")).toBeGreaterThan(
       dockerfile.indexOf("USER node"),
     );
+  });
+
+  it("checks out complete main history and tests with Node 24 in GitHub CI", async () => {
+    const workflow = parse(await readFile(ciWorkflowPath, "utf8")) as {
+      jobs: {
+        "build-and-test": {
+          steps: Array<{
+            uses?: string;
+            with?: Record<string, string | number>;
+          }>;
+        };
+      };
+    };
+    const steps = workflow.jobs["build-and-test"].steps;
+    const checkout = steps.find(({ uses }) => uses === "actions/checkout@v4");
+    const setupNode = steps.find(({ uses }) => uses === "actions/setup-node@v4");
+
+    expect([
+      checkout?.with?.["fetch-depth"],
+      setupNode?.with?.["node-version"],
+    ]).toEqual([0, "24.x"]);
   });
 
   it("keeps production unchanged after candidate validation", async () => {
