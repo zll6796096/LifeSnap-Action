@@ -121,7 +121,165 @@ assert_contains "$calendar_service" '— よていスナップで作成' 'Calend
 assert_contains "$upload_consent" 'よていスナップ' 'Upload consent brand'
 assert_not_contains "$upload_consent" 'LifeSnap' 'Upload consent old brand removed'
 assert_contains "$project_yml" 'MARKETING_VERSION: "1.1"' 'project.yml marketing version'
-assert_contains "$project_yml" 'CURRENT_PROJECT_VERSION: "4"' 'project.yml build version'
+yml_build_count=$(grep -Ec '^[[:space:]]+CURRENT_PROJECT_VERSION:[[:space:]]+"6"[[:space:]]*$' "$project_yml" 2>/dev/null || true)
+yml_build_key_count=$(grep -Ec '^[[:space:]]+CURRENT_PROJECT_VERSION:' "$project_yml" 2>/dev/null || true)
+yml_team_count=$(grep -Ec '^[[:space:]]+DEVELOPMENT_TEAM:[[:space:]]+YMUG864233[[:space:]]*$' "$project_yml" 2>/dev/null || true)
+yml_team_key_count=$(grep -Ec '^[[:space:]]+DEVELOPMENT_TEAM:' "$project_yml" 2>/dev/null || true)
+yml_signing_count=$(grep -Ec '^[[:space:]]+CODE_SIGN_STYLE:[[:space:]]+Automatic[[:space:]]*$' "$project_yml" 2>/dev/null || true)
+yml_signing_key_count=$(grep -Ec '^[[:space:]]+CODE_SIGN_STYLE:' "$project_yml" 2>/dev/null || true)
+assert_equal "${yml_build_count}/${yml_build_key_count}" '1/1' 'project.yml build version'
+assert_equal "${yml_team_count}/${yml_team_key_count}" '2/2' 'project.yml Team assignments'
+assert_equal "${yml_signing_count}/${yml_signing_key_count}" '2/2' 'project.yml automatic signing assignments'
+if node --input-type=module - "$project_yml" <<'NODE'
+import fs from 'node:fs';
+
+const projectPath = process.argv[2];
+const lines = fs.readFileSync(projectPath, 'utf8').split(/\r?\n/);
+
+function indentation(line) {
+  return line.match(/^ */)[0].length;
+}
+
+function isContent(line) {
+  const trimmed = line.trim();
+  return trimmed !== '' && !trimmed.startsWith('#');
+}
+
+function blockEnd(start, parentIndent) {
+  for (let index = start + 1; index < lines.length; index += 1) {
+    if (isContent(lines[index]) && indentation(lines[index]) <= parentIndent) {
+      return index;
+    }
+  }
+  return lines.length;
+}
+
+function stripInlineComment(value) {
+  let singleQuoted = false;
+  let doubleQuoted = false;
+  let escaped = false;
+
+  for (let index = 0; index < value.length; index += 1) {
+    const character = value[index];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (doubleQuoted && character === '\\') {
+      escaped = true;
+      continue;
+    }
+    if (!doubleQuoted && character === "'") {
+      singleQuoted = !singleQuoted;
+      continue;
+    }
+    if (!singleQuoted && character === '"') {
+      doubleQuoted = !doubleQuoted;
+      continue;
+    }
+    if (!singleQuoted && !doubleQuoted && character === '#' && (index === 0 || /\s/.test(value[index - 1]))) {
+      return value.slice(0, index);
+    }
+  }
+  return value;
+}
+
+function scalar(value) {
+  const normalized = stripInlineComment(value).trim();
+  if (
+    normalized.length >= 2 &&
+    ((normalized.startsWith('"') && normalized.endsWith('"')) ||
+      (normalized.startsWith("'") && normalized.endsWith("'")))
+  ) {
+    return normalized.slice(1, -1);
+  }
+  return normalized;
+}
+
+function uniqueLine(pattern) {
+  const matches = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    if (pattern.test(lines[index])) {
+      matches.push(index);
+    }
+  }
+  return matches.length === 1 ? matches[0] : -1;
+}
+
+function targetSettings(targetName) {
+  const targetsStart = uniqueLine(/^targets:\s*(?:#.*)?$/);
+  if (targetsStart < 0) {
+    return null;
+  }
+  const targetsEnd = blockEnd(targetsStart, 0);
+  const targetPattern = new RegExp(`^ {2}${targetName}:\\s*(?:#.*)?$`);
+  const targetMatches = [];
+  for (let index = targetsStart + 1; index < targetsEnd; index += 1) {
+    if (targetPattern.test(lines[index])) {
+      targetMatches.push(index);
+    }
+  }
+  if (targetMatches.length !== 1) {
+    return null;
+  }
+
+  const targetStart = targetMatches[0];
+  const targetEnd = blockEnd(targetStart, 2);
+  const settingsMatches = [];
+  for (let index = targetStart + 1; index < targetEnd; index += 1) {
+    if (/^ {4}settings:\s*(?:#.*)?$/.test(lines[index])) {
+      settingsMatches.push(index);
+    }
+  }
+  if (settingsMatches.length !== 1) {
+    return null;
+  }
+
+  const settingsStart = settingsMatches[0];
+  const settingsEnd = blockEnd(settingsStart, 4);
+  const settings = new Map();
+  for (let index = settingsStart + 1; index < settingsEnd; index += 1) {
+    const match = lines[index].match(/^ {6}([A-Za-z0-9_]+):\s*(.*)$/);
+    if (!match) {
+      continue;
+    }
+    const values = settings.get(match[1]) ?? [];
+    values.push(scalar(match[2]));
+    settings.set(match[1], values);
+  }
+  return settings;
+}
+
+function hasExactSettings(targetName, expected) {
+  const settings = targetSettings(targetName);
+  return settings !== null && Object.entries(expected).every(([key, value]) => {
+    const actual = settings.get(key) ?? [];
+    return actual.length === 1 && actual[0] === value;
+  });
+}
+
+const appValid = hasExactSettings('LifeSnapAction', {
+  MARKETING_VERSION: '1.1',
+  CURRENT_PROJECT_VERSION: '6',
+  DEVELOPMENT_TEAM: 'YMUG864233',
+  CODE_SIGN_STYLE: 'Automatic',
+  PRODUCT_BUNDLE_IDENTIFIER: 'com.zll.lifesnapaction',
+  API_BASE_URL: 'https://lifesnap-action-sxielk4wua-an.a.run.app',
+  CODE_SIGN_ENTITLEMENTS: 'LifeSnapAction/LifeSnapAction.entitlements',
+});
+const testsValid = hasExactSettings('LifeSnapActionTests', {
+  DEVELOPMENT_TEAM: 'YMUG864233',
+  CODE_SIGN_STYLE: 'Automatic',
+  PRODUCT_BUNDLE_IDENTIFIER: 'com.zll.lifesnapaction.tests',
+});
+
+process.exit(appValid && testsValid ? 0 : 1);
+NODE
+then
+  pass 'project.yml target-scoped release settings'
+else
+  fail 'project.yml target-scoped release settings'
+fi
 assert_contains "$project_yml" 'exactVersion: 12.17.0' 'Firebase iOS SDK exact version'
 assert_contains "$api_client" '/api/v2/extract' 'APIClient uses the attested v2 extract route'
 
@@ -184,9 +342,178 @@ else
 fi
 
 marketing_count=$(grep -cF 'MARKETING_VERSION = 1.1;' "$pbxproj" 2>/dev/null || true)
-build_count=$(grep -cF 'CURRENT_PROJECT_VERSION = 4;' "$pbxproj" 2>/dev/null || true)
+build_count=$(grep -Ec '^[[:space:]]+CURRENT_PROJECT_VERSION = 6;$' "$pbxproj" 2>/dev/null || true)
+build_key_count=$(grep -Ec '^[[:space:]]+CURRENT_PROJECT_VERSION = ' "$pbxproj" 2>/dev/null || true)
+team_count=$(grep -Ec '^[[:space:]]+DEVELOPMENT_TEAM = YMUG864233;$' "$pbxproj" 2>/dev/null || true)
+team_key_count=$(grep -Ec '^[[:space:]]+DEVELOPMENT_TEAM = ' "$pbxproj" 2>/dev/null || true)
+signing_count=$(grep -Ec '^[[:space:]]+CODE_SIGN_STYLE = Automatic;$' "$pbxproj" 2>/dev/null || true)
+signing_key_count=$(grep -Ec '^[[:space:]]+CODE_SIGN_STYLE = ' "$pbxproj" 2>/dev/null || true)
 assert_equal "$marketing_count" '2' 'project.pbxproj marketing version occurrences'
-assert_equal "$build_count" '2' 'project.pbxproj build version occurrences'
+assert_equal "${build_count}/${build_key_count}" '2/2' 'project.pbxproj build version occurrences'
+assert_equal "${team_count}/${team_key_count}" '4/4' 'project.pbxproj Team assignment occurrences'
+assert_equal "${signing_count}/${signing_key_count}" '4/4' 'project.pbxproj automatic signing occurrences'
+
+if node --input-type=module - "$pbxproj" <<'NODE'
+import { spawnSync } from 'node:child_process';
+
+const pbxprojPath = process.argv[2];
+const conversion = spawnSync('/usr/bin/plutil', [
+  '-convert', 'json',
+  '-o', '-',
+  pbxprojPath,
+], {
+  encoding: 'utf8',
+  maxBuffer: 32 * 1024 * 1024,
+});
+if (conversion.error || conversion.status !== 0) {
+  process.exit(1);
+}
+
+let project;
+try {
+  project = JSON.parse(conversion.stdout);
+} catch {
+  process.exit(1);
+}
+
+const isRecord = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
+if (!isRecord(project) || !isRecord(project.objects) || typeof project.rootObject !== 'string') {
+  process.exit(1);
+}
+
+const rootObject = project.objects[project.rootObject];
+if (
+  !isRecord(rootObject) ||
+  rootObject.isa !== 'PBXProject' ||
+  !Array.isArray(rootObject.targets) ||
+  rootObject.targets.length !== 2 ||
+  new Set(rootObject.targets).size !== 2 ||
+  rootObject.targets.some((targetId) => typeof targetId !== 'string')
+) {
+  process.exit(1);
+}
+
+const targetIdsByName = new Map();
+for (const targetId of rootObject.targets) {
+  const target = project.objects[targetId];
+  if (!isRecord(target) || target.isa !== 'PBXNativeTarget' || typeof target.name !== 'string') {
+    process.exit(1);
+  }
+  const ids = targetIdsByName.get(target.name) ?? [];
+  ids.push(targetId);
+  targetIdsByName.set(target.name, ids);
+}
+
+const requiredTargets = ['LifeSnapAction', 'LifeSnapActionTests'];
+if (
+  targetIdsByName.size !== requiredTargets.length ||
+  requiredTargets.some((targetName) => (targetIdsByName.get(targetName) ?? []).length !== 1)
+) {
+  process.exit(1);
+}
+
+const targetAttributes = rootObject.attributes?.TargetAttributes;
+const requiredTargetIds = requiredTargets.map((targetName) => targetIdsByName.get(targetName)[0]).sort();
+if (
+  !isRecord(rootObject.attributes) ||
+  !isRecord(targetAttributes) ||
+  JSON.stringify(Object.keys(targetAttributes).sort()) !== JSON.stringify(requiredTargetIds)
+) {
+  process.exit(1);
+}
+
+const requiredAttributeKeys = ['DevelopmentTeam', 'ProvisioningStyle'];
+for (const targetId of requiredTargetIds) {
+  const attributes = targetAttributes[targetId];
+  if (
+    !isRecord(attributes) ||
+    JSON.stringify(Object.keys(attributes).sort()) !== JSON.stringify(requiredAttributeKeys) ||
+    attributes.DevelopmentTeam !== 'YMUG864233' ||
+    attributes.ProvisioningStyle !== 'Automatic'
+  ) {
+    process.exit(1);
+  }
+}
+NODE
+then
+  pass 'project.pbxproj target-scoped TargetAttributes'
+else
+  fail 'project.pbxproj target-scoped TargetAttributes'
+fi
+
+if node --input-type=module - "$project_root/ios/LifeSnapAction.xcodeproj" <<'NODE'
+import { spawnSync } from 'node:child_process';
+
+const projectPath = process.argv[2];
+const expectations = {
+  LifeSnapAction: {
+    MARKETING_VERSION: '1.1',
+    CURRENT_PROJECT_VERSION: '6',
+    DEVELOPMENT_TEAM: 'YMUG864233',
+    CODE_SIGN_STYLE: 'Automatic',
+    PRODUCT_BUNDLE_IDENTIFIER: 'com.zll.lifesnapaction',
+    API_BASE_URL: 'https://lifesnap-action-sxielk4wua-an.a.run.app',
+    CODE_SIGN_ENTITLEMENTS: 'LifeSnapAction/LifeSnapAction.entitlements',
+  },
+  LifeSnapActionTests: {
+    DEVELOPMENT_TEAM: 'YMUG864233',
+    CODE_SIGN_STYLE: 'Automatic',
+    PRODUCT_BUNDLE_IDENTIFIER: 'com.zll.lifesnapaction.tests',
+  },
+};
+
+let valid = true;
+for (const [target, expected] of Object.entries(expectations)) {
+  for (const configuration of ['Debug', 'Release']) {
+    const result = spawnSync('/usr/bin/xcrun', [
+      'xcodebuild',
+      '-project', projectPath,
+      '-target', target,
+      '-configuration', configuration,
+      '-showBuildSettings',
+      '-json',
+    ], {
+      encoding: 'utf8',
+      env: process.env,
+      maxBuffer: 32 * 1024 * 1024,
+      timeout: 120000,
+    });
+
+    if (result.error || result.status !== 0) {
+      valid = false;
+      continue;
+    }
+
+    let rows;
+    try {
+      rows = JSON.parse(result.stdout);
+    } catch {
+      valid = false;
+      continue;
+    }
+    if (!Array.isArray(rows) || rows.length !== 1 || rows[0]?.target !== target) {
+      valid = false;
+      continue;
+    }
+
+    const settings = rows[0]?.buildSettings;
+    if (
+      settings === null ||
+      typeof settings !== 'object' ||
+      Object.entries(expected).some(([key, value]) => settings[key] !== value)
+    ) {
+      valid = false;
+    }
+  }
+}
+
+process.exit(valid ? 0 : 1);
+NODE
+then
+  pass 'project.pbxproj effective target/config release settings'
+else
+  fail 'project.pbxproj effective target/config release settings'
+fi
 
 validate_icon() {
   filename=$1
