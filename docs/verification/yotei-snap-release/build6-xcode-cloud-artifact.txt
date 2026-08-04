@@ -1,0 +1,13 @@
+workflow=Build 6 App Store
+branch=codex/lifesnap-build6-xcode-cloud
+source_commit=755ecd1651ec5186e5b0baba8fcfad6916c0d92e
+app_version=1.1
+app_build=6
+bundle_id=com.zll.lifesnapaction
+api_base_url=https://lifesnap-action-sxielk4wua-an.a.run.app
+build_machine_os_build=25G72
+dtxcode_build=17F113
+dtsdk_build=23F81a
+signature_verification=PASS
+get_task_allow=false
+app_attest_environment=production
