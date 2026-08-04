@@ -561,6 +561,32 @@ describe("Cloud Build release contract", () => {
     });
   });
 
+  it("accepts Cloud Run zero-percent tag entries that omit percent", async () => {
+    const fixture = await createReleaseFixture();
+    expect(runReleaseScript(fixture).status).toBe(0);
+    const evidence = await writeDeviceEvidence(fixture);
+    const prepromotion = await readServiceState(fixture);
+    for (const traffic of [
+      prepromotion.spec.traffic,
+      prepromotion.status.traffic,
+    ]) {
+      const candidateTag = traffic.find(
+        (item) => item.tag === fixture.candidateTag,
+      );
+      expect(candidateTag).toBeDefined();
+      delete candidateTag?.percent;
+    }
+    await writeFile(
+      fixture.serviceState,
+      `${JSON.stringify(prepromotion)}\n`,
+    );
+
+    const promotion = runPromotionScript(fixture, evidence);
+
+    expect(promotion.status, promotion.stderr).toBe(0);
+    expect(promotion.stdout).toContain("promotion_result=PENDING_GATE_E");
+  });
+
   it("persists a sanitized private pending state and finalizes the exact owned promotion", async () => {
     const fixture = await createReleaseFixture();
     expect(runReleaseScript(fixture).status).toBe(0);
