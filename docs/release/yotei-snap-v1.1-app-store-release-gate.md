@@ -1,4 +1,4 @@
-# よていスナップ 1.1 Build 4 App Store Release Gate
+# よていスナップ 1.1 Build 6 Resubmission Release Gate
 
 ## Scope
 
@@ -16,7 +16,7 @@
 |---|---|
 | Bundle ID | `com.zll.lifesnapaction` |
 | Marketing version | `1.1` |
-| Build | `4` |
+| Required next build | `6` (pending local configuration) |
 | App Store name | `よていスナップ` |
 | Japanese subtitle | `紙の案内を予定に変える` |
 | Target / scheme | `LifeSnapAction` |
@@ -25,30 +25,34 @@
 
 | Gate | Status | Evidence |
 |---|---|---|
-| Release contract | PASS | `npm run validate:ios-release` exited 0; identity, App Attest production entitlement, Firebase 12.17.0 pin, v2 endpoint, Firebase plist identity, semantic launch screen, version/build, and the exact 17 opaque AppIcon descriptors passed |
-| Privacy disclosures | LOCAL PASS | Runtime `/privacy` source and five App Store/release drafts disclose App Check/App Attest, the unlinked installation UUID/HMAC, quota retention, and no application persistence of document content |
-| iOS tests | PASS | 12/12 passed, 0 failed, 0 skipped on `LifeSnap iPhone 15` (`56C4DC85-0732-49CF-8389-10D16B2BBDC3`), iOS 26.5 (23F77) |
-| Simulator visual acceptance | PASS | Exact normally signed Release bundle verified on clean light and dark iPhone 15 simulators; five evidence paths are listed below |
-| Backend regression | PASS | `npm test`: 9 files and 230/230 tests passed; `npm run lint` and `npm run build` exited 0 |
+| 2026-08-04 Build 5 release contract | PASS (historical) | During the Build 5 release operation, `npm run validate:ios-release` exited 0 against synchronized `CURRENT_PROJECT_VERSION=5` in `ios/project.yml` and the tracked `ios/LifeSnapAction.xcodeproj/project.pbxproj`, before Build 6 preparation; this is time-bound operation evidence, not a claim that the validator at the current documentation-only HEAD independently proves Build 5 |
+| Privacy disclosures | LIVE PASS | Current Japanese `/privacy` page returned HTTP 200 with the expected localized title, language marker, and update marker at the stable production URL |
+| Historical iOS tests | PASS | 12/12 passed, 0 failed, 0 skipped on `LifeSnap iPhone 15` (`56C4DC85-0732-49CF-8389-10D16B2BBDC3`), iOS 26.5 (23F77) |
+| Historical simulator visual acceptance | PASS | Exact normally signed Release bundle verified on clean light and dark iPhone 15 simulators; five evidence paths are listed below |
+| Historical backend regression | PASS | During the 2026-08-04 pre-Build 6 release operation, `npm test` passed 10 files and 309/309 tests; `npm run lint` and `npm run build` exited 0. The earlier 9-file/230-test baseline is recorded separately below |
 | Gemini Paid Plan | VERIFIED | AI Studio displayed `Paid 1`; the LifeSnap key in project `zhang23-23` displayed `Tier 1` / prepaid; masked identity comparison with Secret Manager passed |
-| Prior production backend | PASS | Revision `lifesnap-action-00039-rwn` is the sole untagged `100%` target; this is retained historical evidence and is not Build 4 App Check acceptance |
-| Build 4 App Check backend | PENDING | This local disclosure task did not deploy, invoke, tag, or promote a backend; candidate and production acceptance remain separate future gates |
-| Signing identity | PENDING | Distribution identity not checked; local simulator ad-hoc signature verification is not App Store signing evidence |
-| Archive | PENDING | Not run |
-| Export validation | PENDING | Not run |
-| Build 4 upload | PENDING | Not run |
-| App Store metadata | PENDING | Not changed |
-| App Review submission | PENDING | Not submitted |
+| Production backend | PASS | Revision `lifesnap-action-00041-n9n` is the sole untagged `100%` target at the stable URL; exact image digest, source, runtime service account, environment, secrets, labels, and structured-log allowlist passed |
+| Build 5 physical App Attest | PASS (historical) | Public Xcode 26.6 Release on a real iPhone: `app_attest_provider=PASS`, `v2_extract=PASS`, `replay_rejected=PASS`; 1/1 test passed |
+| Build 5 signing identity | PASS (historical) | Exported IPA is signed by Apple Distribution for team `YMUG864233`; strict deep signature validation passed and `get-task-allow=false` |
+| Build 5 archive | PASS (historical) | Public Xcode 26.6 (`17F113`) archived version 1.1 Build 5 with the stable production API URL and production App Attest entitlement |
+| Build 5 export validation | PASS (historical) | Exported IPA identity, public toolchain metadata, production URL, distribution signature, and production entitlement passed inspection |
+| Build 4 upload | BLOCKED (historical) | Upload succeeded, but App Store Connect rejected review submission because it was compiled with Xcode 27 beta |
+| Build 5 upload | BLOCKED (historical) | App Store Connect received and processed the binary, then Apple mail rejected it as `ITMS-90111`; the beta host build marker makes it invalid for App Review |
+| Build 5 App Store metadata | PASS (historical) | Seven Japanese 1320 × 2868 RGB screenshots, current support/privacy URL, the Build 5 review note, manual release, existing ratings, and no-login state were saved for the invalidated submission attempt; the Build 6 reviewer-facing note remains a draft until processing passes |
+| Build 6 local configuration | PENDING | Build number, Team assignment, release validator, and branch verification have not yet completed |
+| Xcode Cloud stable archive | PENDING | No stable-macOS cloud archive has run |
+| Build 6 processing | PENDING | No Build 6 binary has been uploaded |
+| Build 6 App Review submission | PENDING | No Build 6 item has been submitted |
 
 ## Observed Local Evidence
 
-### Release contract
+### Historical Build 5 release contract (2026-08-04 operation)
 
 ```bash
 npm run validate:ios-release
 ```
 
-Result: `PASS` (exit 0). The contract reported `All よていスナップ release-contract checks passed`, including the App Attest production entitlement, exact Firebase iOS SDK version `12.17.0`, `/api/v2/extract`, absence of a hard-coded App Check token, consistent Firebase bundle/project/app identifiers, and the exact 17 expected icon descriptors. The Firebase API key value was not printed.
+Historical result: `PASS` (exit 0). During the 2026-08-04 Build 5 release operation, `ios/project.yml`, the tracked `ios/LifeSnapAction.xcodeproj/project.pbxproj`, and the release validator were temporarily synchronized to `CURRENT_PROJECT_VERSION=5` before Build 6 preparation. The contract reported `All よていスナップ release-contract checks passed`, including the App Attest production entitlement, exact Firebase iOS SDK version `12.17.0`, `/api/v2/extract`, absence of a hard-coded App Check token, consistent Firebase bundle/project/app identifiers, and the exact 17 expected icon descriptors. The Firebase API key value was not printed. This PASS records that observed temporary Build 5 state; the validator at the current documentation-only HEAD is not independently claimed to prove Build 5.
 
 ### Current privacy disclosure contract
 
@@ -104,7 +108,7 @@ Result: `PASS` (both exited 0). `CODE_SIGNING_ALLOWED` was not overridden. The c
 
 Result: `PASS`. Both recordings are unique clean first launches of the same normally signed Release bundle. Light black-mismatch frames: `0`; dark light-flash frames: `0`; SplashBoard denylist rejections: `0` for each simulator. Normal/default simulator signing is required for valid SplashBoard evidence; a `CODE_SIGNING_ALLOWED=NO` installed product is not accepted.
 
-### Backend regression
+### Historical backend regression runs
 
 ```bash
 npm test
@@ -112,9 +116,12 @@ npm run lint
 npm run build
 ```
 
-Result: `PASS`. Vitest passed 9 files and 230/230 tests. TypeScript lint/type-check and the esbuild production bundle both exited 0.
+- Earlier baseline: `PASS`. Vitest passed 9 files and 230/230 tests. TypeScript lint/type-check and the esbuild production bundle both exited 0.
+- 2026-08-04 pre-Build 6 release operation: `PASS`. Vitest passed 10 files and 309/309 tests. TypeScript lint/type-check and the esbuild production bundle both exited 0.
 
-### Current Gemini Paid Plan and production backend
+### Historical Gemini Paid Plan and prior production backend
+
+The following 2026-07-31 evidence is retained for provenance only. It was superseded by the Build 5 finalization evidence above and must not be read as the current control-plane state.
 
 - Gemini Paid Plan state was freshly verified on 2026-07-31 JST: AI Studio displayed `Paid 1`; the LifeSnap key belongs to project `zhang23-23` and displayed `Tier 1` / prepaid; the masked AI Studio key identity matched Secret Manager `lifesnap-gemini-api-key:latest`.
 - The Cloud Billing API was not enabled or called. No billing or payment setting was changed.
@@ -125,11 +132,24 @@ Result: `PASS`. Vitest passed 9 files and 230/230 tests. TypeScript lint/type-ch
 
 ## Remaining Apple Release Gates
 
-- Distribution signing identity remains unverified.
-- A matching Build 4 App Check backend candidate, real-device evidence, production promotion, and live privacy-page verification remain separate pending gates.
-- Archive, export validation, Build 4 upload, App Store metadata save, and App Review submission have not been performed.
-- App Review approval and storefront availability remain separate future states.
-- The verified backend and Paid Plan state are not authorization for any remaining Apple action.
+- Build 5 did not reach substantive App Review. The 18:04 `審査待ち` observation was transient and was superseded at 18:05:14 JST by Apple validation error `ITMS-90111`, which made the binary invalid.
+- Build 6 is required. Its build number, Team assignment, release validator, branch verification, and stable-macOS Xcode Cloud archive remain pending.
+- Build 6 upload, processing, reviewer-note save, App Review submission, and approval remain separate pending gates.
+- Manual release is a later independent gate after approval; release, propagation, and storefront availability must each be verified separately.
+- The verified production backend and historical Build 5 evidence do not authorize or prove any Build 6 Apple action.
+
+## Build 5 Submission Attempt Evidence (Invalid Binary)
+
+- App Store Connect rejected Build 4 at the add-to-review step solely because its binary was built with Xcode 27 beta; no claim was made that Build 4 entered review.
+- The project build number and release validator were advanced to Build 5 because App Store Connect does not accept a second upload of version 1.1 Build 4.
+- Public Xcode 26.6 (`17F113`, iOS SDK build `23F81a`) produced the Build 5 archive. The exported IPA reports `DTXcode=2660`, `DTXcodeBuild=17F113`, version `1.1`, build `5`, bundle `com.zll.lifesnapaction`, and the stable production API URL.
+- The exported IPA is signed by Apple Distribution, has `get-task-allow=false`, and retains `com.apple.developer.devicecheck.appattest-environment=production`; `codesign --verify --deep --strict` passed.
+- A real-iPhone Release test built by public Xcode 26.6 passed the production App Attest provider, v2 extraction, and replay-rejection path: 1 test, 0 failures.
+- The public-Xcode archive was uploaded successfully. Xcode 27 beta provided only the authenticated upload transport; it did not compile or relink the Build 5 binary. Apple nevertheless rejected the resulting binary because its recorded beta host build marker was unsupported.
+- App Store Connect already contains seven ordered Japanese 6.9-inch screenshots. All are 1320 × 2868 RGB PNGs without alpha, and the re-encoding preserved identical RGB pixels.
+- Build 5 export compliance was answered as implementing none of the listed custom or non-Apple-system encryption algorithms, consistent with the inspected source and linked binary. App Store Connect then showed the build as submission-ready.
+- At 2026-08-04 18:04 JST, App Store Connect initially displayed `提出物がApp Reviewに送信されました`, version/submission status `審査待ち`, one submitted item, and zero draft items for version 1.1 Build 5. This was a transient initial observation, not substantive App Review acceptance.
+- At 2026-08-04 18:05:14 JST, Apple mail invalidated Build 5 with `ITMS-90111: Unsupported SDK or Xcode version`. The recorded `macOS 27.0 beta` host build `26A5378n` requires a new binary produced and uploaded with a currently supported non-beta toolchain.
 
 ## External-State Rule
 
@@ -152,3 +172,5 @@ Append timestamped, sanitized evidence here during execution. Do not include cre
   - Candidate runtime and strict smoke checks passed: exact non-stale provenance, preserved runtime service account/config/resources, `NODE_ENV=production`, `MOCK_MODE=false`, Secret Manager reference unchanged, `/health` HTTP 200 with status `ok`, current `/privacy` HTTP 200, and synthetic `/api/extract` HTTP 200 with a schema-complete response and `Cache-Control: no-store`. No response or document contents were recorded.
   - The exact candidate was conditionally promoted. The unchanged production URL passed the same strict smoke checks. Final control-plane state is one untagged `100%` target to `lifesnap-action-00039-rwn`, `lifesnap-action-00037-89l` at `0%`, latest ready revision `lifesnap-action-00039-rwn`, no traffic tags, and exact service/template/revision provenance. Rollback was not needed. No App Store action was taken.
 - `2026-08-01T01:34:55+0900` (`2026-07-31T16:34:55Z`) — Corrected Local Task 11 provenance: the changes began from clean baseline `578a94f911a207b173ef7b7ec7e48dc80043d607`; that baseline was the starting point, not the object containing the Task 11 changes. Privacy disclosures and the initial release contract were implemented in `4fa177512fc4fedf9d851800bd25193c391414bb`; the strengthened runtime privacy test contract was added in `5cda94568a9df030841661739f573d9a8263e3af`. The reproducible, clean verification target was quality-fix commit `338a2b311c0747555610503acf559fd432dbdee4`: focused runtime privacy test 8/8 PASS; full backend test 9 files and 230/230 PASS; `bash -n`, TypeScript lint, and esbuild production bundle PASS; release validator PASS for App Attest production entitlement, Firebase iOS SDK 12.17.0, v2 extraction route, the sole App Check header assignment using a freshly obtained and validated token, Firebase plist identity, and redacted API-key presence; controlled `bash -x` verification confirmed the real Firebase API key appeared in neither trace nor validator stdout without printing either the key or trace. The subsequent provenance-only commit containing this correction changes only this release-gate evidence entry and does not alter runtime, tests, validator, privacy answers, or review notes. No cloud, App Store Connect, deployment, traffic, or real-network action was performed; Build 4 backend and live privacy acceptance remain pending.
+- `2026-08-04T18:04:00+0900` (`2026-08-04T09:04:00Z`) — Final production/App Store execution: exact candidate `lifesnap-action-00041-n9n` passed real-iPhone App Attest/v2/replay evidence and was promoted to the sole untagged 100% production target; final stable URL health, Japanese privacy page, negative App Check cases, one legacy extraction, control-plane binding, and structured-log allowlist passed. Build 4 was uploaded but rejected from review because Xcode 27 beta compiled it. Version 1.1 Build 5 was then produced by public Xcode 26.6 (`17F113`), reverified on the real iPhone, distribution-exported with production App Attest and `get-task-allow=false`, uploaded, processed, export-compliance-cleared, bound to version 1.1, and submitted with seven RGB screenshots and the current reviewer note. App Store Connect displayed submission success and `審査待ち`; manual release remains selected, so approval, manual release, and storefront availability are not yet proven.
+- `2026-08-04T18:05:14+0900` (`2026-08-04T09:05:14Z`) — Apple mail invalidated version 1.1 Build 5 with `ITMS-90111: Unsupported SDK or Xcode version`. App Store Connect had received and processed the upload, but the binary recorded beta host `macOS 27.0 beta` build `26A5378n`; the earlier 18:04 `審査待ち` observation was transient and did not establish substantive App Review acceptance. Build 6 from a currently supported non-beta toolchain is required. Manual release remains a later independent gate.
