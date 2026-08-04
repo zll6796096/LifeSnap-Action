@@ -8,13 +8,13 @@
 
 ## Screenshots
 
-1. Capture screen with camera and library actions.
-2. Visible privacy disclosure and privacy policy link on the capture screen.
-3. Processing screen while extraction is running.
-4. Review screen with a successful `calendar_action` result.
-5. Needs-review screen showing editable uncertain extraction.
-6. No-action screen for documents without a calendar action.
-7. Success screen after adding a confirmed event to Calendar.
+1. `01-capture.png`: capture screen with camera and library actions.
+2. `02-consent.png`: per-upload data-sharing consent screen before processing.
+3. `03-processing.png`: processing screen while extraction is running.
+4. `04-review.png`: review screen with a successful `calendar_action` result.
+5. `05-needs-review.png`: needs-review screen showing editable uncertain extraction.
+6. `06-no-action.png`: no-action screen for documents without a calendar action.
+7. `07-success.png`: success screen after adding a confirmed event to Calendar.
 
 ## Screenshot Rules
 
@@ -24,3 +24,5 @@
 - Keep the displayed flow aligned with Scan -> Confirm -> Schedule.
 - Screenshots must use the approved Apple-native UI and the よていスナップ brand.
 - Do not show the old LifeSnap icon, old launch name, mock badges, or personal document data.
+- The prepared local 6.9-inch iPhone set contains all seven ordered files at 1320 × 2868 pixels in RGB PNG format with no alpha channel.
+- This local evidence update does not record any Build 6 App Store Connect screenshot change.

@@ -16,7 +16,7 @@
 |---|---|
 | Bundle ID | `com.zll.lifesnapaction` |
 | Marketing version | `1.1` |
-| Required next build | `6` (pending local configuration) |
+| Required next build | `6` (local configuration passed; cloud archive pending) |
 | App Store name | `よていスナップ` |
 | Japanese subtitle | `紙の案内を予定に変える` |
 | Target / scheme | `LifeSnapAction` |
@@ -39,10 +39,14 @@
 | Build 4 upload | BLOCKED (historical) | Upload succeeded, but App Store Connect rejected review submission because it was compiled with Xcode 27 beta |
 | Build 5 upload | BLOCKED (historical) | App Store Connect received and processed the binary, then Apple mail rejected it as `ITMS-90111`; the beta host build marker makes it invalid for App Review |
 | Build 5 App Store metadata | PASS (historical) | Seven Japanese 1320 × 2868 RGB screenshots, current support/privacy URL, the Build 5 review note, manual release, existing ratings, and no-login state were saved for the invalidated submission attempt; the Build 6 reviewer-facing note remains a draft until processing passes |
-| Build 6 local configuration | PENDING | Build number, Team assignment, release validator, and branch verification have not yet completed |
-| Xcode Cloud stable archive | PENDING | No stable-macOS cloud archive has run |
-| Build 6 processing | PENDING | No Build 6 binary has been uploaded |
-| Build 6 App Review submission | PENDING | No Build 6 item has been submitted |
+| Build 6 local configuration | PASS | Build number, source/generated project, Team assignment, automatic signing, shared archive scheme, and release validator passed |
+| Xcode Cloud stable archive | PENDING | The approved stable workflow has not run |
+| Build 6 processing | PENDING | No Build 6 binary has completed App Store Connect processing |
+| Exact Build 6 TestFlight device smoke | PENDING | The cloud-produced build has not been installed on the real iPhone |
+| Build 6 App Review submission | PENDING | Build 6 has not been submitted |
+| Build 6 App Review approval | PENDING | Build 6 has not been approved |
+| Build 6 manual release | PENDING | No approved Build 6 version has been manually released |
+| Build 6 storefront availability | PENDING | Build 6 availability has not been verified on the storefront |
 
 ## Observed Local Evidence
 
@@ -53,6 +57,20 @@ npm run validate:ios-release
 ```
 
 Historical result: `PASS` (exit 0). During the 2026-08-04 Build 5 release operation, `ios/project.yml`, the tracked `ios/LifeSnapAction.xcodeproj/project.pbxproj`, and the release validator were temporarily synchronized to `CURRENT_PROJECT_VERSION=5` before Build 6 preparation. The contract reported `All よていスナップ release-contract checks passed`, including the App Attest production entitlement, exact Firebase iOS SDK version `12.17.0`, `/api/v2/extract`, absence of a hard-coded App Check token, consistent Firebase bundle/project/app identifiers, and the exact 17 expected icon descriptors. The Firebase API key value was not printed. This PASS records that observed temporary Build 5 state; the validator at the current documentation-only HEAD is not independently claimed to prove Build 5.
+
+### Build 6 local configuration
+
+```bash
+npm run validate:ios-release
+```
+
+Result: `PASS` (exit 0) at local source configuration commit `0a80e6bb63f16b9bd64cd775f31f6fb1da53fa01` (not claimed as pushed). Build number `6`, the source and tracked generated project, Team assignment, automatic signing, the shared archive scheme, and the release validator passed. This is local configuration evidence only; it does not prove an Xcode Cloud archive, App Store Connect processing, installation of the exact cloud binary on the real iPhone, submission, approval, manual release, or storefront availability.
+
+### Historical physical-device evidence scope
+
+- `docs/verification/yotei-snap-security/device-app-attest-smoke.txt` records the earlier historical Gate D backend-candidate promotion binding. It does not record an app binary identity and is not an exact Build 6/TestFlight binary run.
+- `docs/verification/yotei-snap-security/build5-device-app-attest-smoke.txt` records a separate, later historical Build 5 physical-device binary smoke. It is not an exact Build 6/TestFlight binary run.
+- These files describe separate runs and do not assert a shared run identifier. Neither file proves installation or smoke of the exact cloud-produced Build 6 TestFlight binary, so `Exact Build 6 TestFlight device smoke` remains `PENDING`.
 
 ### Current privacy disclosure contract
 
@@ -133,8 +151,9 @@ The following 2026-07-31 evidence is retained for provenance only. It was supers
 ## Remaining Apple Release Gates
 
 - Build 5 did not reach substantive App Review. The 18:04 `審査待ち` observation was transient and was superseded at 18:05:14 JST by Apple validation error `ITMS-90111`, which made the binary invalid.
-- Build 6 is required. Its build number, Team assignment, release validator, branch verification, and stable-macOS Xcode Cloud archive remain pending.
-- Build 6 upload, processing, reviewer-note save, App Review submission, and approval remain separate pending gates.
+- Build 6 local configuration passed at local commit `0a80e6bb63f16b9bd64cd775f31f6fb1da53fa01`; no pushed/public-source claim is made for that commit in this document.
+- The approved stable Xcode Cloud workflow has not run, so no cloud archive or cloud-produced Build 6 binary exists as release evidence.
+- Build 6 processing, exact-cloud-binary TestFlight installation and real-iPhone smoke, reviewer-note save, App Review submission, and approval remain separate pending gates.
 - Manual release is a later independent gate after approval; release, propagation, and storefront availability must each be verified separately.
 - The verified production backend and historical Build 5 evidence do not authorize or prove any Build 6 Apple action.
 

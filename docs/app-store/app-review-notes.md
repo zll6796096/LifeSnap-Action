@@ -5,7 +5,7 @@ This reusable reviewer-note draft is pending version 1.1 Build 6. Build 5 was in
 ## Pending Build 6 App Store Connect Review Note
 
 ```text
-Version 1.1 is intended for production App Review after the replacement Build 6 passes processing.
+Build 6 (version 1.1) is the production review build.
 
 No account, login, subscription, or payment is required.
 
@@ -16,7 +16,9 @@ Review path:
 4. Tap “キャンセル” to refuse; the pending image is cleared and nothing is sent.
 5. Select an image again and tap “同意して続ける”.
 6. Review the extracted event fields.
-7. Tap “カレンダーに追加”, grant Calendar access if prompted, then tap “追加する”.
+7. Tap “カレンダーの使用を許可”.
+8. Grant Calendar access when prompted.
+9. Tap “カレンダーに追加”, then tap “追加する”.
 
 Privacy and data handling:
 - Consent is required before every image upload, including retries.

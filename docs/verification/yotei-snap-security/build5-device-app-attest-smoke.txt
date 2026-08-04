@@ -1,0 +1,17 @@
+evidence_scope=historical_build5_physical_device_smoke
+evidence_purpose=build5_binary_app_attest_verification
+exact_build6_testflight_binary=false
+related_backend_evidence=device-app-attest-smoke.txt
+related_evidence_relation=separate_earlier_gate_d_backend_candidate_smoke
+toolchain=Xcode 26.6 (17F113)
+app_version=1.1
+app_build=5
+configuration=Release
+production_api_url=https://lifesnap-action-sxielk4wua-an.a.run.app
+app_attest_provider=PASS
+v2_extract=PASS
+replay_rejected=PASS
+test_count=1
+failure_count=0
+started_at_utc=2026-08-04T08:49:54Z
+completed_at_utc=2026-08-04T08:50:01Z
