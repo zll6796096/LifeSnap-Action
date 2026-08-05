@@ -1,6 +1,39 @@
-# よていスナップ (Yotei Snap) App Review Notes Draft
+# よていスナップ (Yotei Snap) App Review Notes
 
-Prepared for the 1.1 Build 4 release candidate on 2026-08-01 JST. These notes describe the Build 4 App Check data flow and must not be submitted until the matching backend has independently passed its deployment and production acceptance gates. This document update does not change App Store Connect or production state.
+This reviewer note is the current version 1.1 Build 6 App Review note. Build 5 was invalidated by Apple with `ITMS-90111` and is not the production review build. Build 6 passed App Store Connect processing, was bound to version 1.1, and was submitted to App Review on 2026-08-05 JST.
+
+## Submitted Build 6 App Store Connect Review Note
+
+```text
+Build 6 (version 1.1) is the production review build.
+
+No account, login, subscription, or payment is required.
+
+Review path:
+1. Launch the app.
+2. Tap “カメラで撮影” or “写真から選ぶ”.
+3. Review the data-sharing consent screen. No image is uploaded before consent.
+4. Tap “キャンセル” to refuse; the pending image is cleared and nothing is sent.
+5. Select an image again and tap “同意して続ける”.
+6. Review the extracted event fields.
+7. Tap “カレンダーの使用を許可”.
+8. Grant Calendar access when prompted.
+9. Tap “カレンダーに追加”, then tap “追加する”.
+
+Privacy and data handling:
+- Consent is required before every image upload, including retries.
+- The selected image is sent through the よていスナップ backend on Google Cloud Run to Google Gemini, a third-party AI service provided by Google LLC, only to extract calendar or task information.
+- The backend processes images transiently for the request and does not persist uploaded images or extracted calendar content.
+- Existing Calendar contents are not uploaded.
+- Production extraction requests are protected by Firebase App Check backed by Apple App Attest.
+
+Permissions:
+- Camera and Photo Library: capture or select the document chosen by the user.
+- Calendar: add only the event confirmed by the user.
+
+Privacy Policy:
+https://lifesnap-action-sxielk4wua-an.a.run.app/privacy
+```
 
 ## App Summary
 
@@ -28,14 +61,14 @@ Prepared for the 1.1 Build 4 release candidate on 2026-08-01 JST. These notes de
 - Production deployment uses Secret Manager injection for `GEMINI_API_KEY`.
 - Current Gemini Paid Plan verification is `VERIFIED` as of 2026-07-31 JST: AI Studio displayed `Paid 1`; the LifeSnap key belongs to project `zhang23-23` and displayed `Tier 1` / prepaid; the masked AI Studio key identity matched Secret Manager `lifesnap-gemini-api-key:latest`.
 - The Cloud Billing API was not enabled or called, and no billing or payment setting was changed.
-- Production revision `lifesnap-action-00039-rwn` runs Cloud Build `14c3eff7-a07c-479b-81c5-453b0d5e7256` source `8e1b6f5eb679c95a420c7307f5bedf4fe5a5a50d` at image digest `sha256:8bb5f60e05db572fa9232c1bec894620567025ee61b1d19f44cd3fe3ce338a26`.
+- Production revision `lifesnap-action-00041-n9n` runs source `5accd522373d8fbc813ace52baae78e9638466f0` at image digest `sha256:0b36c6e32b81d71692df0d181220b712ec6fc246398fd1d95ba391c90880e3a5`.
 - The zero-traffic candidate and unchanged production URL both passed strict `/health`, current `/privacy`, and synthetic `/api/extract` smoke checks. The extraction response was schema-complete with `Cache-Control: no-store`; no document contents or raw AI output were recorded.
-- Production traffic is one untagged `100%` target to `lifesnap-action-00039-rwn`; rollback revision `lifesnap-action-00037-89l` is at `0%`.
+- Production traffic is one untagged `100%` target to `lifesnap-action-00041-n9n`.
 - `MOCK_MODE` is development-only and forbidden in production.
 
 ## App Integrity and Quota Protection
 
-- Build 4 sends extraction requests to `/api/v2/extract` with a fresh Firebase App Check token backed by Apple App Attest. Apple and Firebase process the attestation/assertion objects needed to validate app integrity and reject replayed tokens.
+- The production binary sends extraction requests to `/api/v2/extract` with a fresh Firebase App Check token backed by Apple App Attest. Apple and Firebase process the attestation/assertion objects needed to validate app integrity and reject replayed tokens.
 - The app generates a random installation UUID on first use and stores it only in the device Keychain. It sends that UUID in the extraction request header for quota enforcement.
 - The backend immediately derives an HMAC digest. Firestore stores only the HMAC digest and quota counters, never the original UUID.
 - This unlinked identifier is used only for App Functionality and Fraud Prevention. It is not used for advertising, cross-app tracking, or user profiling.
@@ -76,4 +109,4 @@ Before each image upload, including retries, よていスナップ shows a dedic
 
 よていスナップ does not persist uploaded images, raw Gemini output, or extracted document contents. Existing calendar contents are not uploaded. Production application logs are structured operational metadata only and do not include image bytes, request bodies, raw Gemini output, OCR text, titles, names, addresses, amounts, or summaries.
 
-The only application-persisted server data introduced for quota enforcement is the HMAC digest/counter record described above, retained for no longer than its 24-hour or 30-day expiry window. The original random UUID remains only in the device Keychain; the backend receives it in a request header but does not persist it. The app does not use Firebase Analytics, Firebase Authentication, Crashlytics, advertising services, tracking, or profiling.
+The only application-persisted server data introduced for quota enforcement is the HMAC digest/counter record described above. Records become logically expired at their configured 24-hour or 30-day boundary; Firestore TTL cleanup is asynchronous. The original random UUID remains only in the device Keychain; the backend receives it in a request header but does not persist it. The app does not use Firebase Analytics, Firebase Authentication, Crashlytics, advertising services, tracking, or profiling.

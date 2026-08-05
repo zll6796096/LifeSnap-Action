@@ -715,7 +715,7 @@ def validate_traffic(name):
             {"revisionName", "latestRevision", "percent", "tag"}
         ):
             raise SystemExit(f"Promotion state {name} is invalid")
-        percent = item.get("percent")
+        percent = item.get("percent", 0)
         if not isinstance(percent, int) or not 0 <= percent <= 100:
             raise SystemExit(f"Promotion state {name} percent is invalid")
         revision_name = item.get("revisionName")
@@ -739,9 +739,9 @@ production = [
     item for item in prepromotion_traffic
     if item.get("percent") == 100 and isinstance(item.get("revisionName"), str)
 ]
-if len(production) != 1 or sum(item["percent"] for item in prepromotion_traffic) != 100:
+if len(production) != 1 or sum(item.get("percent", 0) for item in prepromotion_traffic) != 100:
     raise SystemExit("Promotion state prepromotion traffic is invalid")
-if sum(item["percent"] for item in prepromotion_status_traffic) != 100:
+if sum(item.get("percent", 0) for item in prepromotion_status_traffic) != 100:
     raise SystemExit("Promotion state prepromotion status traffic is invalid")
 provenance_keys = {
     "commit-sha",

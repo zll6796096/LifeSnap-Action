@@ -1,0 +1,16 @@
+evidence_scope=historical_gate_d_backend_candidate_smoke
+evidence_purpose=backend_candidate_promotion_binding
+exact_build6_testflight_binary=false
+app_binary_identity_recorded=false
+related_binary_evidence=build5-device-app-attest-smoke.txt
+related_evidence_relation=separate_later_build5_binary_smoke
+app_attest_provider=PASS
+v2_extract=PASS
+replay_rejected=PASS
+gemini_valid_request_count=1
+gemini_replay_request_count=0
+candidate_revision=lifesnap-action-00041-n9n
+candidate_tag=candidate-5accd52-b58b5444
+image_digest=asia-northeast1-docker.pkg.dev/zhang23-23/apps/lifesnap-action@sha256:0b36c6e32b81d71692df0d181220b712ec6fc246398fd1d95ba391c90880e3a5
+source_commit=5accd522373d8fbc813ace52baae78e9638466f0
+production_revision_before_device_smoke=lifesnap-action-00039-rwn

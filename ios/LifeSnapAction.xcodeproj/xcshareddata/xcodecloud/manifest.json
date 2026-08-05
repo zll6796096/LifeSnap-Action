@@ -1,0 +1,9 @@
+{
+  "id" : "f4c144ab-fb9d-4bb1-8a6a-a20f180900c1",
+  "targets" : [
+    {
+      "id" : "6e44ad7a-fc40-43ad-aee4-90271f50c59f",
+      "name" : "LifeSnapAction"
+    }
+  ]
+}
