@@ -1,8 +1,8 @@
 # よていスナップ (Yotei Snap) App Review Notes
 
-This reusable reviewer-note draft is pending version 1.1 Build 6. Build 5 was invalidated by Apple with `ITMS-90111` and is not the production review build. Do not save or present the following reviewer-facing note as current until Build 6 has uploaded and passed App Store Connect processing.
+This reviewer note is the current version 1.1 Build 6 App Review note. Build 5 was invalidated by Apple with `ITMS-90111` and is not the production review build. Build 6 passed App Store Connect processing, was bound to version 1.1, and was submitted to App Review on 2026-08-05 JST.
 
-## Pending Build 6 App Store Connect Review Note
+## Submitted Build 6 App Store Connect Review Note
 
 ```text
 Build 6 (version 1.1) is the production review build.
